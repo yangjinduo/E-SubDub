@@ -1,0 +1,68 @@
+﻿
+================================================================
+[STEP] 1. extract_audio: poc/test_mixed.wav -> full_audio.wav
+================================================================
+    [progress] 0.00 复制音频 test_mixed.wav
+    [progress] 1.00 音频复制完成
+  -> D:\program projects\20260920 Minimalist subtitle and dubbing generation\poc\test_front_workdir\full_audio.wav  sr=44100 ch=2 dur=9.18s
+
+================================================================
+[STEP] 2. separate_vocals: 分离人声/伴奏
+================================================================
+    [progress] 0.02 加载人声分离模型 htdemucs
+    [progress] 0.08 人声分离推理中
+    [progress] 0.10 人声分离中（已处理 0/9 秒）
+    [progress] 0.64 人声分离中（已处理 6/9 秒）
+    [progress] 0.95 保存人声/伴奏音频
+    [progress] 1.00 人声分离完成
+  -> 耗时 17.3s
+  -> D:\program projects\20260920 Minimalist subtitle and dubbing generation\poc\test_front_workdir\vocals.wav  sr=44100 ch=2 dur=9.18s
+  -> D:\program projects\20260920 Minimalist subtitle and dubbing generation\poc\test_front_workdir\no_vocals.wav  sr=44100 ch=2 dur=9.18s
+
+================================================================
+[STEP] 3. ASRModule: 加载 + transcribe(poc/test_audio.wav)
+================================================================
+python.exe : Traceback (most recent call last):
+At line:15 char:2370
++ ... ONUTF8='1'; & ".venv\Scripts\python.exe" "poc\test_pipeline_front.py" ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "D:\program projects\20260920 Minimalist subtitle and dubbing generation\poc\test_pipeline_front.py", line 193, 
+in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "D:\program projects\20260920 Minimalist subtitle and dubbing generation\poc\test_pipeline_front.py", line 89, i
+n main
+    asr.load(str(MODEL_ASR), device="cpu")
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\program projects\20260920 Minimalist subtitle and dubbing generation\app\pipeline\asr.py", line 81, in load
+    self._model = AutoModelForCausalLM.from_pretrained(
+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        model_dir,
+        ^^^^^^^^^^
+    ...<2 lines>...
+        attn_implementation="sdpa",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ).eval()
+    ^
+  File "D:\program projects\20260920 Minimalist subtitle and dubbing generation\.venv\Lib\site-packages\transformers\mo
+dels\auto\auto_factory.py", line 558, in from_pretrained
+    model_class = get_class_from_dynamic_module(
+        class_ref, pretrained_model_name_or_path, code_revision=code_revision, **hub_kwargs, **kwargs
+    )
+  File "D:\program projects\20260920 Minimalist subtitle and dubbing generation\.venv\Lib\site-packages\transformers\dy
+namic_module_utils.py", line 581, in get_class_from_dynamic_module
+    return get_class_in_module(class_name, final_module, force_reload=force_download)
+  File "D:\program projects\20260920 Minimalist subtitle and dubbing generation\.venv\Lib\site-packages\transformers\dy
+namic_module_utils.py", line 277, in get_class_in_module
+    module_spec.loader.exec_module(module)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "<frozen importlib._bootstrap_external>", line 1026, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "C:\Users\杨金多\.cache\huggingface\modules\transformers_modules\MOSS-Transcribe-Diarize\modeling_moss_transcribe_d
+iarize.py", line 21, in <module>
+    from transformers.utils import torch_compilable_check
+ImportError: cannot import name 'torch_compilable_check' from 'transformers.utils' (D:\program projects\20260920 Minima
+list subtitle and dubbing generation\.venv\Lib\site-packages\transformers\utils\__init__.py)

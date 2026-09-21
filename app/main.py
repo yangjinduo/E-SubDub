@@ -1,0 +1,30 @@
+"""应用入口：创建 QApplication、应用全局样式并显示主窗口。"""
+
+import sys
+from pathlib import Path
+
+# 允许以 `python app/main.py` 方式直接启动：把项目根加入 sys.path
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from PySide6.QtWidgets import QApplication
+
+from app.core.hardware import detect_device_standalone
+from app.ui.main_window import MainWindow
+from app.ui.style import APPLICATION_QSS
+
+
+def main() -> int:
+    app = QApplication(sys.argv)
+    app.setStyleSheet(APPLICATION_QSS)
+
+    # 启动早期用不依赖 torch 的粗检测快速显示设备状态
+    device = detect_device_standalone()
+    window = MainWindow(device_info=device)
+    window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
