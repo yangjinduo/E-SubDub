@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
-"""参考音色挑选：为每个说话人从人声轨中挑一条高质量片段作为 TTS 音色参考。"""
+"""参考音色挑选：说话人级参考（音色基准）+ 逐句参考切片（语气跟随）。
+
+说话人级：为每个说话人从人声轨中挑一条高质量片段作为 TTS 音色参考；
+逐句参考：为每个待合成句切出其自身的人声片段做参考，使克隆出的配音
+继承原句的语气/情绪/节奏（过短或近无声的句子回退说话人级参考）。
+"""
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -14,10 +20,22 @@ from app.core.ffmpeg import get_ffmpeg_path
 from app.core.segment import Segment
 from app.pipeline.base import ProgressCallback, report_progress
 
+logger = logging.getLogger(__name__)
+
 # 参考音频分析帧长（秒）
 _FRAME_SEC = 0.05
 # 候选数量：文本最长的前 N 条进入音质评估
 _TOP_CANDIDATES = 3
+# 兜底候选时长下限（秒）：说话人没有 [min_dur, max_dur] 窗口内的长句时，
+# 放宽到 >=1.5 秒；再不行取任意非零时长——宁可选短参考也不能漏掉说话人，
+# 否则该说话人在音色管理窗口不出现、配音阶段整段被跳过
+_MIN_FALLBACK_SEC = 1.5
+# 逐句参考克隆：句长达到该下限才用自身切片做参考（更短的句子克隆质量差）
+MIN_SEG_REF_SEC = 2.5
+# 单句参考最长截取时长（秒）：参考过长只增加每次合成的编码开销
+MAX_SEG_REF_SEC = 12.0
+# 自身切片近无声判定阈值（与 _quality_score 的 -1e9 / -inf 对应）
+_SILENT_SCORE_THRESHOLD = -1e8
 
 
 def _quality_score(vocals_wav: str, start: float, end: float) -> float:
@@ -90,33 +108,40 @@ def pick_reference_segments(
     """为每个说话人挑参考音色片段，返回 {spk: ref_wav_path}。
 
     - 候选 = 未删除、时长在 [min_dur, max_dur] 的分段，取文本最长的前 3 条；
-    - 从候选中选音频质量最好的一条（RMS 适中且波动小）；
+    - 无窗口内候选的说话人逐级放宽：>=1.5 秒 → 任意非零时长（宁短勿缺）；
+    - 从候选中选音频质量最好的一条（RMS 适中且波动小），
+      全部得分无效（片段过短）时取时长最长的一条；
     - 用 ffmpeg 切出 work_dir/ref_{spk}.wav（16kHz 单声道）。
-    - 无候选的说话人不出现在返回值中。
+    - 仅当说话人所有分段均被删除或时长为 0 时才不出现在返回值中。
     """
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     by_spk: dict[str, list[Segment]] = {}
+    all_spk: dict[str, list[Segment]] = {}
     for seg in segments:
-        if seg.deleted:
+        if seg.deleted or seg.duration <= 0:
             continue
-        if not (min_dur <= seg.duration <= max_dur):
-            continue
-        by_spk.setdefault(seg.spk, []).append(seg)
+        all_spk.setdefault(seg.spk, []).append(seg)
+        if min_dur <= seg.duration <= max_dur:
+            by_spk.setdefault(seg.spk, []).append(seg)
 
     refs: dict[str, str] = {}
-    spk_list = sorted(by_spk.keys())
+    spk_list = sorted(all_spk.keys())
     for i, spk in enumerate(spk_list):
+        pool = by_spk.get(spk) or [
+            s for s in all_spk[spk] if s.duration >= _MIN_FALLBACK_SEC
+        ] or all_spk[spk]
         # 文本较长的 top 3 候选（文本长 -> 语音信息多）
-        candidates = sorted(by_spk[spk], key=lambda s: len(s.text), reverse=True)[:_TOP_CANDIDATES]
+        candidates = sorted(pool, key=lambda s: len(s.text), reverse=True)[:_TOP_CANDIDATES]
         best, best_score = None, float("-inf")
         for seg in candidates:
             score = _quality_score(vocals_wav, seg.start, seg.end)
             if score > best_score:
                 best, best_score = seg, score
         if best is None:
-            continue
+            # 片段过短无法评分（<0.1s）时取时长最长的一条
+            best = max(candidates, key=lambda s: s.duration)
 
         out_path = work_dir / f"ref_{spk}.wav"
         _cut_reference(vocals_wav, best.start, best.duration, out_path)
@@ -127,3 +152,56 @@ def pick_reference_segments(
             f"已生成 {spk} 参考音色（{best.start:.1f}~{best.end:.1f} 秒）",
         )
     return refs
+
+
+def cut_segment_references(
+    segments: list[Segment],
+    vocals_wav: str,
+    spk_refs: dict[str, str],
+    out_dir: Path,
+    progress: Optional[ProgressCallback] = None,
+) -> tuple[dict[int, str], int, int]:
+    """逐句参考克隆：为每个待合成句准备参考音频。
+
+    返回 ({分段索引: 参考音频路径}, 用自身切片的句数, 回退说话人参考的句数)；
+    自身切片不可用且说话人参考也缺失的句子不出现在映射中，由调用方跳过。
+
+    - 优先切出该句自身的人声片段做参考，使配音继承原句的语气/情绪/节奏；
+    - 时长 < MIN_SEG_REF_SEC 或近无声（RMS 均值过低）时回退说话人级参考；
+    - 超过 MAX_SEG_REF_SEC 的长句只截取开头部分（参考无需完整）；
+    - 切割失败（如时间戳越过文件末尾）同样回退，不让单句失败中断整条流水线。
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    todo = [
+        (i, seg) for i, seg in enumerate(segments)
+        if not seg.deleted and str(seg.target_text).strip()
+    ]
+    refs: dict[int, str] = {}
+    own = fallback = 0
+    total = len(todo)
+    for done, (i, seg) in enumerate(todo, 1):
+        usable = seg.duration >= MIN_SEG_REF_SEC
+        if usable and _quality_score(vocals_wav, seg.start, seg.end) < _SILENT_SCORE_THRESHOLD:
+            usable = False  # 近无声切片无法提供有效的音色/语气信息
+        if usable:
+            out_path = out_dir / f"seg_{i:04d}.wav"
+            try:
+                _cut_reference(
+                    vocals_wav, seg.start,
+                    min(seg.duration, MAX_SEG_REF_SEC), out_path,
+                )
+            except (RuntimeError, OSError) as exc:
+                logger.warning("切句参考失败（回退说话人参考）seg_%04d: %r", i, exc)
+                usable = False
+            else:
+                refs[i] = str(out_path)
+                own += 1
+        if not usable:
+            spk_ref = spk_refs.get(seg.spk)
+            if spk_ref:
+                refs[i] = spk_ref
+                fallback += 1
+        report_progress(progress, done / max(total, 1), f"逐句参考 {done}/{total}")
+    return refs, own, fallback

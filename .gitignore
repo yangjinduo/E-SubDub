@@ -4,3 +4,9 @@
 
 # 大模型
 models/
+
+# 提示词
+prompts.txt
+
+# python运行缓存
+__pycache__/

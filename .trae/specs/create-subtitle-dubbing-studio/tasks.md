@@ -30,7 +30,7 @@
   - [x] SubTask 5.2: 媒体导入区（拖拽+点击选择，视频/音频，文件信息展示）
   - [x] SubTask 5.3: 任务设置区（源语言/目标语言/字幕形式三选一/配音开关默认开/输出目录）
 - [x] Task 6: 资源设置对话框（已就绪：路径+删除；未就绪：下载大小+下载按钮+模型主页链接+下载进度）【UI 与信号完成；下载逻辑由 Task 4 下载器接入】
-- [x] Task 7: 流程进度界面（步骤级进度条、当前状态、日志、审核暂停点恢复）【步骤链与日志 UI 完成；暂停点恢复在 Task 22 编排时接入】
+- [x] Task 7: 流程进度界面（步骤级进度条、当前状态、日志、审核暂停点恢复）【步骤链与日志 UI 完成；暂停点恢复已随 Task 22 编排接入（runner 信号 → 面板状态/进度/日志）】
 
 ## Phase 3: 流水线后端模块
 
@@ -42,10 +42,10 @@
   - [x] SubTask 11.2: 滑动窗口分批校对（保留时间戳、修复断句、标记删除不物理删除）→ corrected.json
 - [x] Task 12: LLM 翻译模块（长度约束按 end-start 时长、滑动窗口）→ translated.json
 - [x] Task 13: 说话人参考音色自动挑选（每 spk 干净长句）
-- [ ] Task 14: TTS 生成模块【2026-09-21 换型调整：IndexTTS-2.5 → MOSS-TTS-Local-1.7B（魔搭 openmoss/MOSS-TTS-Local-Transformer，约 6.1GB），与主环境共用 transformers 5.17（trust_remote_code 加载，torchaudio 音频 IO），不再需要 .venv-tts 隔离环境/子进程；克隆仅需参考音频；时长优先用原生 token 级控制（1s ≈ 12.5 tokens），time-stretch 兜底】
-  - [ ] SubTask 14.1: MOSS-TTS-Local-1.7B 加载 POC（transformers 5.17 + trust_remote_code；MPS/CUDA/CPU；audio tokenizer 独立仓库 OpenMOSS-Team/MOSS-Audio-Tokenizer 预下载）
-  - [ ] SubTask 14.2: TTS 引擎模块（进程内加载：processor + AutoModel，克隆调用 build_user_message(text, reference=[wav])，逐句生成 wav + 时长 + 伸缩比）
-  - [ ] SubTask 14.3: TTS 调度器（token 级时长控制生成 → 偏差 time-stretch 对齐 → 伸缩比 >1.3x/<0.7x 打 needs_review 标记）
+- [x] Task 14: TTS 生成模块【2026-09-21 换型调整：IndexTTS-2.5 → MOSS-TTS-Local-1.7B（魔搭 openmoss/MOSS-TTS-Local-Transformer，约 6.1GB），与主环境共用 transformers 5.17（trust_remote_code 加载，torchaudio 音频 IO），不再需要 .venv-tts 隔离环境/子进程；克隆仅需参考音频；时长优先用原生 token 级控制（1s ≈ 12.5 tokens），time-stretch 兜底】【实现调整：音频 IO 用 soundfile（本机 torchaudio≥2.9 无 TorchCodec 后端）】
+  - [x] SubTask 14.1: MOSS-TTS-Local-1.7B 加载 POC（transformers 5.17 + trust_remote_code；MPS/CUDA/CPU；audio tokenizer 独立仓库 openmoss/MOSS-Audio-Tokenizer 已预下载到 models/tts/MOSS-Audio-Tokenizer）【M4 实测待真机测试阶段】
+  - [x] SubTask 14.2: TTS 引擎模块（进程内加载：processor + AutoModel，克隆调用 build_user_message(text, reference=[wav])，逐句生成 wav + 时长 + 伸缩比）→ app/pipeline/tts.py
+  - [x] SubTask 14.3: TTS 调度器（token 级时长控制生成 → 偏差 time-stretch 对齐 → 伸缩比 >1.3x/<0.7x 打 needs_review 标记）→ app/core/runner.py::_run_tts
 - [x] Task 15: 混音模块（响度对齐原人声→时间轴排布→叠加 no_vocals → ai_new_audio.wav）
 - [x] Task 16: 字幕生成（单语 / 双语目标在上 / 双语源在上 → SRT）
 - [x] Task 17: MKV 封装（追加 AAC 音轨设默认+软字幕轨带语言标记，视频 copy，原音轨保留）
@@ -59,11 +59,11 @@
 
 ## Phase 5: 编排与分发
 
-- [ ] Task 22: 流水线编排整合
-  - [ ] SubTask 22.1: 配音模式/仅字幕模式端到端串联（含审核暂停点）
-  - [ ] SubTask 22.2: 中间产物管理（同名文件夹、manifest 阶段状态、重复执行跳过复用）
-  - [ ] SubTask 22.3: 完成后临时文件清理询问弹窗（删除保留成品 / 留作备用）
-- [ ] Task 23: 分发打包（Win/macOS 安装包、首次配音使用的声音授权提示、模型引导下载首启流程）
+- [x] Task 22: 流水线编排整合【2026-09-21 完成：app/core/runner.py（QThread 编排 + 审核暂停点 + 设备回退 + 进度权重）+ app/core/workspace.py（manifest 阶段复用）+ main_window 接入（开始/停止按钮、四类审核对话框分发、清理询问弹窗、closeEvent 线程保护）】
+  - [x] SubTask 22.1: 配音模式/仅字幕模式端到端串联（含审核暂停点）
+  - [x] SubTask 22.2: 中间产物管理（同名文件夹、manifest 阶段状态、重复执行跳过复用）
+  - [x] SubTask 22.3: 完成后临时文件清理询问弹窗（删除保留成品 / 留作备用）
+- [ ] Task 23: 分发打包（Win/macOS 安装包、首次配音使用的声音授权提示、模型引导下载首启流程）【声音授权提示已在 main_window 实现（get_setting("voice_clone_ack")），其余待做】
 
 # Task Dependencies
 - Task 1（POC）blocks Task 9/10/11/12/13/14 —— 模型集成前必须完成

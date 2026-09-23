@@ -1,0 +1,1 @@
+在 安装引导/打包脚本 阶段：给最终用户的安装器检测 GPU——有 N 卡就装 cu 版 torch + CUDA 版 llama.cpp；Mac 装 CPU 版 torch + Metal 版 llama.cpp。到打包阶段我可以帮你做这个自适应逻辑，现在不需要动模型下载代码。

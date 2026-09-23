@@ -223,9 +223,11 @@ class ModelDownloader(QObject):
         # download_finished 的接收方（如设置窗口）会先刷新状态；若无人接管
         # （如窗口已关闭），这里按默认路径检测兜底刷新，供资源卡片更新。
         manager = get_resource_manager()
-        if any(info.key == key for info in manager.resources()):
-            if not manager.get(key).status.is_ready:
-                manager.refresh(key)
+        # codec 是 tts 的附属下载（无独立资源行），完成时刷新 tts 的就绪判定
+        refresh_key = "tts" if key == "tts_codec" else key
+        if any(info.key == refresh_key for info in manager.resources()):
+            if not manager.get(refresh_key).status.is_ready:
+                manager.refresh(refresh_key)
 
 
 # 模块级单例：通过 get_model_downloader() 获取。

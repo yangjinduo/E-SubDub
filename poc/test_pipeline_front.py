@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 import soundfile as sf
 
+from app.core.hardware import detect_device
 from app.core.segment import Segment, segments_from_json, segments_to_json
 from app.pipeline.asr import ASRModule
 from app.pipeline.audio_extract import extract_audio
@@ -38,6 +39,7 @@ from app.pipeline.voice_pick import pick_reference_segments
 WORK = ROOT / "poc" / "test_front_workdir"
 MODEL_ASR = ROOT / "models" / "asr" / "MOSS-Transcribe-Diarize"
 MODEL_LLM = ROOT / "models" / "llm" / "Qwen3-4B-GGUF" / "Qwen3-4B-Q4_K_M.gguf"
+DEVICE = detect_device().device
 
 
 class DemoProgress:
@@ -73,9 +75,9 @@ def main() -> int:
     assert Path(full_audio).is_file() and info.duration > 8
 
     # ---- 2. separate_vocals ----
-    step("2. separate_vocals: 分离人声/伴奏")
+    step(f"2. separate_vocals: 分离人声/伴奏（device={DEVICE}）")
     t0 = time.perf_counter()
-    vocals, no_vocals = separate_vocals(full_audio, WORK, device="cpu", progress=DemoProgress())
+    vocals, no_vocals = separate_vocals(full_audio, WORK, device=DEVICE, progress=DemoProgress())
     print(f"  -> 耗时 {time.perf_counter() - t0:.1f}s")
     for p in (vocals, no_vocals):
         i = sf.info(p)
@@ -83,10 +85,10 @@ def main() -> int:
         assert Path(p).is_file() and i.duration > 8
 
     # ---- 3. ASR ----
-    step("3. ASRModule: 加载 + transcribe(poc/test_audio.wav)")
+    step(f"3. ASRModule: 加载 + transcribe(poc/test_audio.wav)（device={DEVICE}）")
     asr = ASRModule()
     t0 = time.perf_counter()
-    asr.load(str(MODEL_ASR), device="cpu")
+    asr.load(str(MODEL_ASR), device=DEVICE)
     print(f"  -> 模型加载 {time.perf_counter() - t0:.1f}s")
     t0 = time.perf_counter()
     segments = asr.transcribe(str(ROOT / "poc" / "test_audio.wav"), progress=DemoProgress())

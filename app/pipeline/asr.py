@@ -21,7 +21,7 @@ from transformers.audio_utils import load_audio
 
 from app.core.ffmpeg import get_ffmpeg_path
 from app.core.segment import Segment
-from app.pipeline.base import ProgressCallback, report_progress
+from app.pipeline.base import ProgressCallback, report_progress, weights_loading_progress
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ class ASRModule:
     def loaded(self) -> bool:
         return self._model is not None
 
-    def load(self, model_dir: str, device: str = "cpu") -> None:
+    def load(self, model_dir: str, device: str = "cpu", progress=None) -> None:
         """按 POC 验证方式加载模型（bf16 + sdpa + trust_remote_code）。"""
         self.unload()
         self._device = device
@@ -130,15 +130,17 @@ class ASRModule:
         dtype_kwargs = (
             {"dtype": "bfloat16"} if _TF_MAJOR >= 5 else {"torch_dtype": torch.bfloat16}
         )
-        self._model = AutoModelForCausalLM.from_pretrained(
-            model_dir,
-            trust_remote_code=True,
-            attn_implementation="sdpa",
-            **dtype_kwargs,
-        ).eval()
-        if device != "cpu":
-            self._model.to(device)
-        self._processor = AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
+        report_progress(progress, 0.02, "加载转写模型权重")
+        with weights_loading_progress(progress, 0.02, 0.08, "加载转写模型权重"):
+            self._model = AutoModelForCausalLM.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                attn_implementation="sdpa",
+                **dtype_kwargs,
+            ).eval()
+            if device != "cpu":
+                self._model.to(device)
+            self._processor = AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
         # 4.52 不会读取独立的 chat_template.jinja（5.x 约定），手动补挂
         tokenizer = getattr(self._processor, "tokenizer", None)
         if tokenizer is not None and not getattr(tokenizer, "chat_template", None):

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Callable, Optional
 
@@ -19,6 +20,76 @@ def report_progress(progress: Optional[ProgressCallback], fraction: float, messa
     if progress is None:
         return
     progress(min(max(fraction, 0.0), 1.0), message)
+
+
+@contextlib.contextmanager
+def weights_loading_progress(
+    progress: Optional[ProgressCallback],
+    frac_from: float,
+    frac_to: float,
+    label: str,
+):
+    """把 transformers 权重加载 tqdm 进度转发为 progress 回调（区间线性映射）。
+
+    transformers 加载权重时在 core_model_loading 模块内用 tqdm（终端的
+    ``Loading weights: 100%|...| 1600/1600`` 进度条）。加载期间把该模块
+    命名空间里的 tqdm 工厂替换为包装版：每个进度条实例的 update 被转发，
+    按 [frac_from, frac_to] 映射后上报 ``label xx%``。
+
+    transformers 版本变动（无该模块/tqdm 非 `__call__` 对象）时静默退化，
+    进度停留在调用方事先上报的固定点位。取消检查异常照常向上传播。
+    """
+    if progress is None:
+        yield
+        return
+    try:
+        import transformers.core_model_loading as _cml
+
+        _original = _cml.tqdm
+        if not callable(_original):
+            yield
+            return
+    except Exception:
+        yield
+        return
+
+    def _forwarding_tqdm(*args, **kwargs):
+        bar = _original(*args, **kwargs)
+        original_update = bar.update
+        original_close = bar.close
+
+        def _report():
+            total = bar.total or 0
+            if total > 0:
+                ratio = min(bar.n / total, 1.0)
+                report_progress(
+                    progress,
+                    frac_from + (frac_to - frac_from) * ratio,
+                    f"{label} {ratio * 100:.0f}%",
+                )
+
+        def update(n=1):
+            shown = original_update(n)
+            _report()
+            return shown
+
+        def close():
+            # tqdm 迭代内联 n 累加（节流批量调 update），最后一次刷新后的
+            # 进度不会补发；close 时 bar.n 已是终值，在此补 100% 落点
+            try:
+                _report()
+            finally:
+                original_close()
+
+        bar.update = update
+        bar.close = close
+        return bar
+
+    _cml.tqdm = _forwarding_tqdm
+    try:
+        yield
+    finally:
+        _cml.tqdm = _original
 
 
 def sliding_windows(total: int, batch_size: int, overlap: int):

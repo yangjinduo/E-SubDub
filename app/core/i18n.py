@@ -51,8 +51,40 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.log.dubbing_on": "配音已开启（将执行人声分离、配音生成与混音步骤）",
         "main.log.dubbing_off": "配音已关闭（仅生成字幕，配音相关步骤已置灰）",
         "main.log.no_file": "请先导入媒体文件。",
-        "main.log.engine_pending": "开始处理（流程引擎待接入）：{settings}",
         "main.log.task_settings": "源语言 {src} → 目标语言 {dst}",
+        "main.log.missing_resources": "以下资源未就绪，请先在设置中下载：{names}",
+        "main.log.llm_server_missing": "未找到 llama-server（macOS 可通过 brew install llama.cpp 安装），无法执行文本校对与翻译。",
+        "main.log.finished": "处理完成：{outputs}",
+        "main.log.cancelled": "已取消处理（已完成阶段的产物已保留，重新开始可继续）。",
+        "main.log.failed": "处理失败：{error}",
+        "main.stop": "停止处理",
+        "main.log.cancelling": "正在取消，等待当前步骤结束…",
+        "main.cleanup_title": "处理完成",
+        "main.cleanup_question": "任务已完成。是否删除中间临时文件？\n成品将保留：\n{files}",
+        "main.cleanup_delete": "删除临时文件",
+        "main.cleanup_keep": "留作备用",
+        "main.cleanup_done": "临时文件已清理，成品保留在工作目录。",
+        "main.voice_clone_title": "声音克隆使用授权",
+        "main.voice_clone_text": (
+            "您即将使用声音克隆功能生成配音。请确认您拥有原音频中声音的合法使用权利，"
+            "且生成的配音仅用于合法用途。"
+        ),
+        "main.voice_clone_agree": "我已确认拥有授权",
+        # ---- 流程引擎 ----
+        "runner.started": "开始处理：{name}",
+        "runner.stage_skipped": "跳过{stage}（复用已有产物）",
+        "runner.device_fallback": "{stage}加速推理失败（{error}），回退 CPU 重试",
+        "runner.srt_done": "字幕已生成：{path}（{count} 条）",
+        "runner.mux_skipped_audio_input": "输入为音频文件，跳过 MKV 封装（配音成品为混音 wav）",
+        "runner.voice_picked": "已为 {count} 位说话人挑选参考音色",
+        "runner.voice_reused": "复用已确认的参考音色",
+        "runner.voice_none": "无法挑选参考音色（缺少足够长的有效语音段），请检查人声分离结果",
+        "runner.seg_ref_ready": "逐句参考克隆：{own} 句沿用原句语气，{fallback} 句回退说话人参考",
+        "runner.tts_no_ref": "说话人 {spk} 的句子无可用参考音频，跳过该句配音",
+        "runner.tts_progress": "配音生成 {done}/{total} 句",
+        "runner.tts_regen_progress": "复听修改，重新生成 {done}/{total} 句",
+        "runner.tts_review_needed": "{count} 句配音时长偏差较大，进入复听",
+        "runner.codec_missing": "TTS 音频编解码器未就绪：{path}（需下载 openmoss/MOSS-Audio-Tokenizer）",
         # ---- 资源状态栏 ----
         "bar.device_title": "推理设备",
         "bar.device_value": "设备：{value}",
@@ -228,8 +260,41 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.log.dubbing_on": "Dubbing enabled (vocal separation, dubbing generation and mixing will run)",
         "main.log.dubbing_off": "Dubbing disabled (subtitle-only mode; dubbing-related steps are grayed out)",
         "main.log.no_file": "Please import a media file first.",
-        "main.log.engine_pending": "Start requested (pipeline engine not yet wired): {settings}",
         "main.log.task_settings": "Source {src} → Target {dst}",
+        "main.log.missing_resources": "Resources not ready, please download them in Settings first: {names}",
+        "main.log.llm_server_missing": "llama-server not found (on macOS install via brew install llama.cpp); proofreading and translation are unavailable.",
+        "main.log.finished": "Finished: {outputs}",
+        "main.log.cancelled": "Cancelled (outputs of finished stages are kept; restart to resume).",
+        "main.log.failed": "Failed: {error}",
+        "main.stop": "Stop",
+        "main.log.cancelling": "Cancelling, waiting for the current step to finish…",
+        "main.cleanup_title": "Done",
+        "main.cleanup_question": "Task finished. Delete intermediate temporary files?\nThese outputs will be kept:\n{files}",
+        "main.cleanup_delete": "Delete temp files",
+        "main.cleanup_keep": "Keep for later",
+        "main.cleanup_done": "Temporary files cleaned; outputs kept in the work directory.",
+        "main.voice_clone_title": "Voice cloning notice",
+        "main.voice_clone_text": (
+            "You are about to use voice cloning to generate dubbing. Please confirm you "
+            "have the legal right to use the voice in the original audio and that the "
+            "generated dubbing is for lawful use only."
+        ),
+        "main.voice_clone_agree": "I confirm I have the right",
+        # ---- Pipeline engine ----
+        "runner.started": "Processing started: {name}",
+        "runner.stage_skipped": "Skipped {stage} (reusing existing outputs)",
+        "runner.device_fallback": "{stage} accelerated inference failed ({error}); retrying on CPU",
+        "runner.srt_done": "Subtitles generated: {path} ({count} entries)",
+        "runner.mux_skipped_audio_input": "Audio input: MKV muxing skipped (dubbing output is the mixed wav)",
+        "runner.voice_picked": "Reference voices picked for {count} speakers",
+        "runner.voice_reused": "Reusing confirmed reference voices",
+        "runner.voice_none": "Failed to pick reference voices (no long-enough valid speech); check the separation result",
+        "runner.seg_ref_ready": "Per-segment cloning: {own} segments reuse their original tone, {fallback} fall back to the speaker reference",
+        "runner.tts_no_ref": "No usable reference audio for a segment of speaker {spk}; skipped",
+        "runner.tts_progress": "Generating dubbing {done}/{total}",
+        "runner.tts_regen_progress": "Regenerating after review {done}/{total}",
+        "runner.tts_review_needed": "{count} segments deviate too much in duration; review needed",
+        "runner.codec_missing": "TTS audio codec not ready: {path} (openmoss/MOSS-Audio-Tokenizer required)",
         # ---- Resource bar ----
         "bar.device_title": "Inference device",
         "bar.device_value": "Device: {value}",
@@ -415,6 +480,43 @@ def get_language() -> str:
     return _current_language
 
 
+def _read_settings() -> dict:
+    """读取整个设置字典，损坏/缺失时返回空 dict。"""
+    try:
+        path = _settings_path()
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except (OSError, ValueError) as e:
+        logger.warning("读取设置文件失败: %s", e)
+    return {}
+
+
+def _write_settings(updates: dict) -> None:
+    """合并写入设置键（保留其它既有键）。"""
+    data = _read_settings()
+    data.update(updates)
+    try:
+        path = _settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        logger.warning("设置保存失败: %s", e)
+
+
+def get_setting(key: str, default=None):
+    """读取一个持久化设置键（与界面语言同一 settings.json）。"""
+    return _read_settings().get(key, default)
+
+
+def set_setting(key: str, value) -> None:
+    """持久化一个设置键（合并写入）。"""
+    _write_settings({key: value})
+
+
 def set_language(language: str) -> None:
     """切换当前界面语言并持久化；非法代码抛 ValueError。"""
     global _current_language
@@ -423,16 +525,7 @@ def set_language(language: str) -> None:
     if language == _current_language:
         return
     _current_language = language
-    try:
-        path = _settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"language": language}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError as e:
-        # 持久化失败不影响本次会话切换
-        logger.warning("语言设置保存失败: %s", e)
+    _write_settings({"language": language})
 
 
 def tr(key: str, **kwargs) -> str:

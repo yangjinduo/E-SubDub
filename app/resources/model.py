@@ -189,6 +189,14 @@ RESOURCE_META: dict[str, ResourceMeta] = {
     ),
 }
 
+# TTS 附属 audio tokenizer（processor 加载必需）：独立仓库、独立目录。
+# 声音克隆资源就绪 = 主模型 + audio tokenizer 两者齐备；
+# 下载由设置窗口在主模型完成后自动串联（见 resource_dialog）。
+TTS_CODEC_REPO_ID = "openmoss/MOSS-Audio-Tokenizer"
+TTS_CODEC_SUBDIR = "tts/MOSS-Audio-Tokenizer"
+TTS_CODEC_SIZE_GB = 7.1
+TTS_CODEC_MIN_BYTES = 5 * _GB  # 实际约 7.1GB，过小视为不完整
+
 
 # ---------------------------------------------------------------- 通用工具
 
@@ -276,7 +284,12 @@ def _detect_translate() -> Path | None:
 
 
 def _detect_tts() -> Path | None:
-    """TTS：目录存在 config 类文件且总大小 > 1GB，且无 *.incomplete 半成品文件。"""
+    """TTS：主模型与 audio tokenizer 两个目录均齐备才算就绪。
+
+    - 主模型：config 类文件存在、总大小 > 1GB、无 *.incomplete 半成品；
+    - audio tokenizer：config.json 存在、总大小 > 5GB、无半成品
+      （缺 tokenizer 时 TTS 阶段会直接失败，故一并纳入就绪判定）。
+    """
     d = get_models_root() / RESOURCE_META["tts"].default_subdir
     if not d.is_dir():
         return None
@@ -286,6 +299,11 @@ def _detect_tts() -> Path | None:
     ):
         return None
     if dir_size_bytes(d) <= _GB or _has_incomplete_files(d):
+        return None
+    codec = get_models_root() / TTS_CODEC_SUBDIR
+    if not (codec / "config.json").is_file():
+        return None
+    if dir_size_bytes(codec) <= TTS_CODEC_MIN_BYTES or _has_incomplete_files(codec):
         return None
     return d
 

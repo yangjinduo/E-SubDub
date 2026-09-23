@@ -180,10 +180,17 @@ def stretch_to_duration(wav_path: str, target_dur: float, out_path: str) -> floa
     if abs(rate - 1.0) < 1e-6:
         stretched = y
     else:
+        import warnings
+
         import librosa
 
-        # time_stretch 期望时间在最后一维：(n, ch) → (ch, n) → 拉伸 → 转回
-        stretched = librosa.effects.time_stretch(y.T, rate=rate).T.astype(np.float32)
+        # time_stretch 期望时间在最后一维：(n, ch) → (ch, n) → 拉伸 → 转回。
+        # librosa 1.0 的 effects→phase_vocoder 链会自行触发 FutureWarning；
+        # 近静音帧的相位计算可能产生 NaN（numba 转换告警），此处静音并清洗输出。
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            stretched = librosa.effects.time_stretch(y.T, rate=rate).T.astype(np.float32)
+        stretched = np.nan_to_num(stretched, nan=0.0, posinf=0.0, neginf=0.0)
     out_dur = len(stretched) / sr
     sf.write(out_path, stretched, sr, subtype="PCM_16")
     return out_dur

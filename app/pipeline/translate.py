@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from app.core.segment import Segment
@@ -17,18 +18,48 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 15
 BATCH_OVERLAP = 3
 
+# 修复"对象提前闭合"损坏时允许的键名（与本模块的输出 schema 一致）
+_REPAIRABLE_KEYS = r'"(?:target_text|spk|start|end|text)"'
+
+
+def _extract_json_array_with_repair(text: str) -> Optional[list]:
+    """extract_json_array 增强版：解析失败时修复常见损坏后重试。
+
+    Qwen3-4B 偶发输出"对象提前闭合"的 JSON（text 与译文内容相同的短句
+    上易触发），如 {"text": "Michael..."}, "target_text": "Michael..."}。
+    此处在数组上下文中把 `}, "白名单键":` 还原为 `, "键":` 再解析；
+    合法 JSON 不受影响（正常嵌套结构中 `}` 后跟的是 `{` 或 `]`）。
+    """
+    parsed = extract_json_array(text)
+    if parsed is not None or not text:
+        return parsed
+    left = text.find("[")
+    right = text.rfind("]")
+    if left == -1 or right <= left:
+        return None
+    snippet = text[left : right + 1]
+    repaired = re.sub(r"\}\s*,\s*(" + _REPAIRABLE_KEYS + r")\s*:", r", \1:", snippet)
+    if repaired == snippet:
+        return None
+    try:
+        data = json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, list) else None
+
 
 def _build_system_prompt(source_lang: str, target_lang: str) -> str:
     return (
         f"你是专业的字幕译制与配音适配引擎。用户给出一个 JSON 数组，"
         f"每个元素含 spk/start/end/text 字段。你的任务：\n"
-        f"1. 将 text 从{source_lang}翻译为{target_lang}，译文填入 target_text 字段；\n"
+        f"1. 为数组中每一项新增 target_text 字段，填入 text 从{source_lang}"
+        f"到{target_lang}的译文；\n"
         f"2. 译文必须口语化、自然流畅，适合直接用于配音朗读；\n"
         f"3. 每条译文的朗读时长应尽量匹配该条的 end-start 秒：按{target_lang}"
         f"正常语速估算字数，若原文内容明显超出该时长则压缩表达、只保留核心信息；\n"
         f"4. spk/start/end/text 字段原样保留，不得修改，不要添加注释；\n"
-        f"5. 只输出同结构的 JSON 数组（每项含 spk/start/end/text/target_text），"
-        f"不要输出任何其他文字或代码围栏。"
+        f"5. 只输出 JSON 数组，每一项必须含 spk/start/end/text/target_text "
+        f"五个字段，不要输出任何其他文字或代码围栏。"
     )
 
 
@@ -58,13 +89,22 @@ def translate_segments(
             {"spk": result[i].spk, "start": result[i].start, "end": result[i].end, "text": result[i].text}
             for i in idxs
         ]
-        user = "请翻译以下字幕 JSON 数组：\n" + json.dumps(payload, ensure_ascii=False)
+        # few-shot 示例：给出期望的输出形态（含 target_text 字段），
+        # 避免 Qwen3-4B 只按输入结构复述而漏掉 target_text
+        example_in = [{"spk": "S01", "start": 1.0, "end": 2.0, "text": "Are you coming with us?"}]
+        example_out = [{"spk": "S01", "start": 1.0, "end": 2.0, "text": "Are you coming with us?", "target_text": "你要跟我们来吗？"}]
+        user = (
+            "示例输入：\n" + json.dumps(example_in, ensure_ascii=False) + "\n"
+            "示例输出：\n" + json.dumps(example_out, ensure_ascii=False) + "\n\n"
+            "请翻译以下字幕 JSON 数组（为每一项添加 target_text 字段）：\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
 
         data = None
         for attempt in (1, 2):
             try:
                 resp = client.chat(system, user, temperature=0.2)
-                parsed = extract_json_array(resp)
+                parsed = _extract_json_array_with_repair(resp)
                 if parsed is not None and len(parsed) == len(idxs):
                     data = parsed
                     break

@@ -31,5 +31,16 @@ def get_ffmpeg_path() -> "str | None":
 
     path = root / relative
     if path.is_file():
+        # 压缩包分发/跨系统拷贝可能丢失执行位（macOS/Linux），首次调用时补上
+        if sys.platform != "win32":
+            import os
+            import stat
+
+            mode = path.stat().st_mode
+            if not mode & stat.S_IXUSR:
+                try:
+                    os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                except OSError:
+                    pass
         return str(path)
     return None

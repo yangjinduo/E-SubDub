@@ -32,11 +32,18 @@ from app.core.i18n import SUPPORTED_LANGUAGES, get_language, set_language, tr
 from app.resources.downloader import get_model_downloader
 from app.resources.model import (
     RESOURCE_META,
+    TTS_CODEC_REPO_ID,
+    TTS_CODEC_SIZE_GB,
+    TTS_CODEC_SUBDIR,
     ResourceInfo,
     ResourceManager,
     ResourceStatus,
     get_models_root,
 )
+
+# audio tokenizer 下载线程的 key（无独立资源行，进度/结果映射回 "tts" 行展示）
+_CODEC_KEY = "tts_codec"
+_CODEC_NAME = "MOSS-Audio-Tokenizer"
 
 
 class SettingsDialog(QDialog):
@@ -186,13 +193,23 @@ class SettingsDialog(QDialog):
         self._rows_host = host
         self._rows_layout.addWidget(host)
 
+    def _is_downloading(self, key: str) -> bool:
+        """资源行是否处于下载中（tts 行包含附属 codec 的串联下载）。"""
+        if self._downloader.is_downloading(key):
+            return True
+        return key == "tts" and self._downloader.is_downloading(_CODEC_KEY)
+
+    def _display_key(self, key: str) -> str:
+        """下载信号 key → 资源行 key（codec 下载映射回 tts 行）。"""
+        return "tts" if key == _CODEC_KEY else key
+
     def _build_location_cell(self, info: ResourceInfo) -> QWidget:
         """位置列：下载进度 / 就绪路径 / 需下载体积 / 内置提示。"""
         cell = QWidget()
         layout = QVBoxLayout(cell)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        if self._downloader.is_downloading(info.key):
+        if self._is_downloading(info.key):
             progress = QLabel(tr("settings.downloading", pct="0", speed="…"))
             progress.setStyleSheet("color: #2563EB;")
             self._row_refs[info.key] = {"progress": progress}
@@ -220,7 +237,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        if self._downloader.is_downloading(info.key):
+        if self._is_downloading(info.key):
             cancel_button = QPushButton(tr("common.cancel"))
             cancel_button.clicked.connect(lambda _=False, k=info.key: self._on_cancel_clicked(k))
             layout.addWidget(cancel_button)
@@ -316,11 +333,13 @@ class SettingsDialog(QDialog):
     def _on_cancel_clicked(self, key: str) -> None:
         """取消正在进行的下载（等待当前文件写完后清理，见 downloader 说明）。"""
         self._downloader.cancel(key)
+        if key == "tts":
+            self._downloader.cancel(_CODEC_KEY)
         self._rebuild_resource_rows()
 
     def _on_download_progress(self, key: str, percent: float, speed: str) -> None:
         """更新对应行的下载进度文案。"""
-        refs = self._row_refs.get(key)
+        refs = self._row_refs.get(self._display_key(key))
         if refs is not None:
             refs["progress"].setText(
                 tr("settings.downloading", pct=f"{percent * 100:.0f}", speed=speed)
@@ -328,6 +347,13 @@ class SettingsDialog(QDialog):
 
     def _on_download_finished(self, key: str, local_path: str) -> None:
         """下载完成：默认路径按检测结果刷新；自定义位置直接标记就绪。"""
+        if key == _CODEC_KEY:
+            # codec 是 tts 资源的附属：完成后刷新 tts 行的就绪判定
+            self._manager.refresh("tts")
+            self.log_requested.emit(tr("settings.download_done", name=_CODEC_NAME))
+            self._rebuild_resource_rows()
+            return
+
         info = self._manager.get(key)
         meta = RESOURCE_META.get(key)
         default_target = (
@@ -340,19 +366,38 @@ class SettingsDialog(QDialog):
         self.log_requested.emit(tr("settings.download_done", name=info.model_name))
         self._rebuild_resource_rows()
 
+        # 声音克隆主模型就绪后，自动串联下载附属 audio tokenizer（TTS 必需，
+        # 缺失时 _detect_tts 判定不就绪）；codec 固定放默认目录（运行期按
+        # 默认路径读取）
+        if key == "tts":
+            codec_dir = get_models_root() / TTS_CODEC_SUBDIR
+            if not (codec_dir / "config.json").is_file():
+                self._downloader.start_download(
+                    key=_CODEC_KEY,
+                    repo_id=TTS_CODEC_REPO_ID,
+                    target_dir=str(codec_dir),
+                    total_size_gb=TTS_CODEC_SIZE_GB,
+                )
+                self.log_requested.emit(
+                    tr("settings.download_started", name=_CODEC_NAME)
+                )
+                self._rebuild_resource_rows()
+
     def _on_download_failed(self, key: str, error: str) -> None:
         """下载失败：弹窗提示并恢复行的初始状态。"""
-        info = self._manager.get(key)
-        self.log_requested.emit(tr("settings.download_failed", name=info.model_name, error=error))
+        info = self._manager.get(self._display_key(key))
+        name = _CODEC_NAME if key == _CODEC_KEY else info.model_name
+        self.log_requested.emit(tr("settings.download_failed", name=name, error=error))
         QMessageBox.warning(
-            self, tr("settings.title"), tr("settings.download_failed", name=info.model_name, error=error)
+            self, tr("settings.title"), tr("settings.download_failed", name=name, error=error)
         )
         self._rebuild_resource_rows()
 
     def _on_download_cancelled(self, key: str) -> None:
         """下载被用户取消：记录日志并恢复行的初始状态。"""
-        info = self._manager.get(key)
-        self.log_requested.emit(tr("settings.download_cancelled", name=info.model_name))
+        info = self._manager.get(self._display_key(key))
+        name = _CODEC_NAME if key == _CODEC_KEY else info.model_name
+        self.log_requested.emit(tr("settings.download_cancelled", name=name))
         self._rebuild_resource_rows()
 
     # ------------------------------------------------------------------ 删除

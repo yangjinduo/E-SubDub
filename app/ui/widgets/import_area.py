@@ -111,7 +111,7 @@ class ImportArea(QFrame):
         # 导入后的文件信息卡片（初始隐藏）
         self._file_card = QFrame()
         self._file_card.setObjectName("fileInfoCard")
-        self._file_card.setFixedWidth(520)
+        self._file_card.setFixedWidth(680)
         card_layout = QVBoxLayout(self._file_card)
         card_layout.setContentsMargins(16, 12, 16, 12)
         card_layout.setSpacing(4)
@@ -122,6 +122,12 @@ class ImportArea(QFrame):
         self._file_path_label.setWordWrap(True)
         self._file_meta_label = QLabel("类型 / 时长")
         self._file_meta_label.setObjectName("fileInfoMeta")
+        for label in (
+            self._file_name_label,
+            self._file_path_label,
+            self._file_meta_label,
+        ):
+            label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         card_layout.addWidget(self._file_name_label)
         card_layout.addWidget(self._file_path_label)
         card_layout.addWidget(self._file_meta_label)

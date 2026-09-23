@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,69 @@ from app.pipeline.base import ProgressCallback, report_progress
 
 # Windows 下隐藏控制台窗口
 _CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def resolve_llama_server_exe() -> str:
+    """解析 llama-server 可执行文件路径，找不到返回空串。
+
+    查找顺序：
+    - Windows: 内置 tools/llama.cpp/llama-server.exe；
+    - macOS/Linux: 内置 tools/llama.cpp/llama-server → PATH（如 brew 安装）。
+    """
+    root = AppConfig.APP_ROOT / "tools" / "llama.cpp"
+    if os.name == "nt":
+        candidate = root / "llama-server.exe"
+        if candidate.is_file():
+            return str(candidate)
+        return ""
+    candidate = root / "llama-server"
+    if candidate.is_file():
+        return str(candidate)
+    which = shutil.which("llama-server")
+    return which or ""
+
+
+def _free_port(base: int = 8817, tries: int = 10) -> int:
+    """从 base 起找一个可绑定的空闲端口。"""
+    import socket
+
+    for port in range(base, base + tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return base
+
+
+def has_cuda_backend(server_exe: str) -> bool:
+    """判断 llama-server 是否为 CUDA 构建（同目录存在 ggml-cuda.dll）。
+
+    CPU-only 构建传 -ngl 无效，先探测再决定是否请求 GPU offload。
+    """
+    return bool(server_exe) and Path(server_exe).with_name("ggml-cuda.dll").is_file()
+
+
+def _build_server_cmd(
+    exe: str, model_path: str, port: int, threads: int, use_gpu: bool
+) -> list:
+    """构造 llama-server 启动命令。
+
+    GPU offload：-ngl 999 = 全部层进显存（llama.cpp CUDA 构建默认 ngl=0，
+    不传该参数则完全跑 CPU）；CPU 构建（如 macOS brew/Metal 构建）忽略。
+    """
+    cmd = [
+        exe,
+        "-m", str(model_path),
+        "--port", str(port),
+        "--host", "127.0.0.1",
+        "-c", "8192",
+        "-t", str(threads),
+    ]
+    if use_gpu:
+        cmd += ["-ngl", "999"]
+    return cmd
 
 
 class LlamaServerManager:
@@ -33,7 +97,7 @@ class LlamaServerManager:
 
     def __init__(self, server_exe: Optional[str] = None) -> None:
         if server_exe is None:
-            server_exe = str(AppConfig.APP_ROOT / "tools" / "llama.cpp" / "llama-server.exe")
+            server_exe = resolve_llama_server_exe()
         self._exe = server_exe
         self._proc: Optional[subprocess.Popen] = None
         self._log_file = None
@@ -54,31 +118,52 @@ class LlamaServerManager:
     def start(
         self,
         model_path: str,
-        port: int = 8817,
+        port: Optional[int] = None,
         threads: int = 8,
+        device: str = "cpu",
         progress: Optional[ProgressCallback] = None,
     ) -> None:
         """后台启动 llama-server 并轮询 /health 直到就绪（超时 120 秒）。
 
-        启动参数沿用 POC 结论：-m <model> --port <port> --host 127.0.0.1
-        -c 8192 -t <threads>。
+        device == "cuda" 时优先 GPU：CUDA 构建追加 -ngl 999（全部层 offload
+        到显存）；-ngl 启动失败（驱动/显存问题）自动降级 CPU 重试一次。
         """
         if self.is_running:
             raise RuntimeError("llama-server 已在运行，请先调用 stop()")
-        if not Path(self._exe).is_file():
-            raise FileNotFoundError(f"未找到 llama-server: {self._exe}")
+        if not self._exe or not Path(self._exe).is_file():
+            raise FileNotFoundError(
+                "未找到 llama-server 可执行文件（Windows 使用内置 "
+                "tools/llama.cpp/llama-server.exe；macOS/Linux 可通过 "
+                "brew install llama.cpp 安装或放入 tools/llama.cpp/）"
+            )
         if not Path(model_path).is_file():
             raise FileNotFoundError(f"未找到 LLM 模型: {model_path}")
 
+        if port is None:
+            port = _free_port()
         self._port = port
-        cmd = [
-            self._exe,
-            "-m", str(model_path),
-            "--port", str(port),
-            "--host", "127.0.0.1",
-            "-c", "8192",
-            "-t", str(threads),
-        ]
+
+        use_gpu = device == "cuda" and has_cuda_backend(self._exe)
+        if device == "cuda":
+            report_progress(
+                progress, 0.0,
+                "llama-server 启用 GPU 加速（-ngl 999）" if use_gpu
+                else "llama-server 为 CPU 构建（缺少 ggml-cuda.dll），校对/翻译仅用 CPU",
+            )
+        cmd_cpu = _build_server_cmd(self._exe, model_path, port, threads, use_gpu=False)
+        cmd_gpu = _build_server_cmd(self._exe, model_path, port, threads, use_gpu=True)
+        try:
+            self._launch(cmd_gpu if use_gpu else cmd_cpu, progress)
+        except RuntimeError as exc:
+            if not use_gpu:
+                raise
+            # GPU offload 启动失败（CUDA 不可用 / 显存装不下全部层）：降级 CPU
+            report_progress(progress, 0.0, f"GPU offload 启动失败，降级 CPU 重试（{exc}）")
+            self.stop()
+            self._launch(cmd_cpu, progress)
+
+    def _launch(self, cmd: list, progress: Optional[ProgressCallback]) -> None:
+        """按给定命令启动进程并轮询 /health 直到就绪；进程退出抛 RuntimeError。"""
         report_progress(progress, 0.0, "启动 llama-server")
         # stderr 落临时文件，避免管道阻塞，失败时可读取诊断
         self._log_file = tempfile.TemporaryFile()
