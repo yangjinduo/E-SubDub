@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""参考音色挑选：说话人级参考（音色基准）+ 逐句参考切片（语气跟随）。
+"""参考音色挑选：说话人级参考（音色基准）+ 逐句切片（语气跟随）。
 
-说话人级：为每个说话人从人声轨中挑一条高质量片段作为 TTS 音色参考；
-逐句参考：为每个待合成句切出其自身的人声片段做参考，使克隆出的配音
-继承原句的语气/情绪/节奏（过短或近无声的句子回退说话人级参考）。
+说话人级：为每个说话人从人声轨中挑一条高质量片段作为 TTS 音色基准；
+逐句切片：为每个待合成句切出其自身的人声片段，存入人工审核阶段的
+"句子切片"文件夹（命名 开始时间-结束时间-说话人ID-文本.wav），并直接
+作为该句 TTS 的参考音频——短句也用自身切片（MOSS-TTS 支持短参考克隆，
+可保留原句情绪），仅近无声或切割失败的句子回退说话人级参考。
 """
 
 from __future__ import annotations
@@ -30,12 +32,24 @@ _TOP_CANDIDATES = 3
 # 放宽到 >=1.5 秒；再不行取任意非零时长——宁可选短参考也不能漏掉说话人，
 # 否则该说话人在音色管理窗口不出现、配音阶段整段被跳过
 _MIN_FALLBACK_SEC = 1.5
-# 逐句参考克隆：句长达到该下限才用自身切片做参考（更短的句子克隆质量差）
-MIN_SEG_REF_SEC = 2.5
-# 单句参考最长截取时长（秒）：参考过长只增加每次合成的编码开销
-MAX_SEG_REF_SEC = 12.0
 # 自身切片近无声判定阈值（与 _quality_score 的 -1e9 / -inf 对应）
 _SILENT_SCORE_THRESHOLD = -1e8
+# 文件名中的非法字符（Windows 保留字符）
+_FILENAME_BAD = '\\/:*?"<>|'
+# 切片文件名中文本部分的最大长度（避免超出 Windows 路径长度限制）
+_TEXT_NAME_LIMIT = 40
+
+
+def _safe_text(text: str, limit: int = _TEXT_NAME_LIMIT) -> str:
+    """清理文本使其可安全用于文件名：去非法字符/换行，压缩空白并限长。"""
+    cleaned = "".join("-" if ch in _FILENAME_BAD else ch for ch in text)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:limit].strip() or "无文本"
+
+
+def sentence_base_name(start: float, end: float, spk: str, text: str) -> str:
+    """逐句音频文件基础名：开始时间-结束时间-说话人ID-文本（不含扩展名）。"""
+    return f"{start:.2f}-{end:.2f}-{_safe_text(spk, 20)}-{_safe_text(text)}"
 
 
 def _quality_score(vocals_wav: str, start: float, end: float) -> float:
@@ -154,25 +168,31 @@ def pick_reference_segments(
     return refs
 
 
-def cut_segment_references(
+def cut_sentence_slices(
     segments: list[Segment],
     vocals_wav: str,
     spk_refs: dict[str, str],
     out_dir: Path,
     progress: Optional[ProgressCallback] = None,
 ) -> tuple[dict[int, str], int, int]:
-    """逐句参考克隆：为每个待合成句准备参考音频。
+    """逐句切片：为每个待合成句切出其自身的人声片段（完整句长）。
 
-    返回 ({分段索引: 参考音频路径}, 用自身切片的句数, 回退说话人参考的句数)；
-    自身切片不可用且说话人参考也缺失的句子不出现在映射中，由调用方跳过。
+    切片存入人工审核阶段的"句子切片"文件夹（命名
+    开始时间-结束时间-说话人ID-文本.wav），并作为该句 TTS 的参考音频，
+    使配音继承原句的语气/情绪/节奏。短句也直接用自身切片（短参考克隆
+    保留原句情绪）；仅近无声或切割失败时回退说话人级参考。
 
-    - 优先切出该句自身的人声片段做参考，使配音继承原句的语气/情绪/节奏；
-    - 时长 < MIN_SEG_REF_SEC 或近无声（RMS 均值过低）时回退说话人级参考；
-    - 超过 MAX_SEG_REF_SEC 的长句只截取开头部分（参考无需完整）；
-    - 切割失败（如时间戳越过文件末尾）同样回退，不让单句失败中断整条流水线。
+    返回 ({分段索引: 参考音频路径}, 自身切片句数, 回退句数)；两者皆缺的
+    句子不出现在映射中，由调用方跳过。每次重切前清空旧切片，使文件夹
+    与当前待合成集合一致（审核删除/改文的句子不再残留旧文件）。
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("*.wav"):
+        try:
+            old.unlink()
+        except OSError:
+            logger.warning("清理旧切片失败: %s", old.name)
 
     todo = [
         (i, seg) for i, seg in enumerate(segments)
@@ -182,18 +202,15 @@ def cut_segment_references(
     own = fallback = 0
     total = len(todo)
     for done, (i, seg) in enumerate(todo, 1):
-        usable = seg.duration >= MIN_SEG_REF_SEC
-        if usable and _quality_score(vocals_wav, seg.start, seg.end) < _SILENT_SCORE_THRESHOLD:
+        out_path = out_dir / f"{sentence_base_name(seg.start, seg.end, seg.spk, seg.text)}.wav"
+        usable = True
+        if _quality_score(vocals_wav, seg.start, seg.end) < _SILENT_SCORE_THRESHOLD:
             usable = False  # 近无声切片无法提供有效的音色/语气信息
         if usable:
-            out_path = out_dir / f"seg_{i:04d}.wav"
             try:
-                _cut_reference(
-                    vocals_wav, seg.start,
-                    min(seg.duration, MAX_SEG_REF_SEC), out_path,
-                )
+                _cut_reference(vocals_wav, seg.start, seg.duration, out_path)
             except (RuntimeError, OSError) as exc:
-                logger.warning("切句参考失败（回退说话人参考）seg_%04d: %r", i, exc)
+                logger.warning("切句失败（回退说话人参考）%s: %r", out_path.name, exc)
                 usable = False
             else:
                 refs[i] = str(out_path)
@@ -203,5 +220,5 @@ def cut_segment_references(
             if spk_ref:
                 refs[i] = spk_ref
                 fallback += 1
-        report_progress(progress, done / max(total, 1), f"逐句参考 {done}/{total}")
+        report_progress(progress, done / max(total, 1), f"逐句切片 {done}/{total}")
     return refs, own, fallback

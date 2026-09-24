@@ -101,9 +101,11 @@ class ResourceStatusBar(QFrame):
         layout.addWidget(self._settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addSpacing(8)
 
-        # 角落：当前推理设备
-        device_column = QVBoxLayout()
-        device_column.setContentsMargins(0, 0, 4, 0)
+        # 角落：当前推理设备（标题 + 设备值包进同一带边框组件，视觉上成一体）
+        device_badge = QFrame()
+        device_badge.setObjectName("deviceBadge")
+        device_column = QVBoxLayout(device_badge)
+        device_column.setContentsMargins(12, 6, 12, 6)
         device_column.setSpacing(2)
         self._device_title = QLabel(tr("bar.device_title"))
         self._device_title.setObjectName("deviceLabelTitle")
@@ -113,7 +115,7 @@ class ResourceStatusBar(QFrame):
         self._device_value.setAlignment(Qt.AlignmentFlag.AlignRight)
         device_column.addWidget(self._device_title)
         device_column.addWidget(self._device_value)
-        layout.addLayout(device_column)
+        layout.addWidget(device_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # 订阅管理器状态变化
         self._manager.resource_status_changed.connect(self._on_status_changed)

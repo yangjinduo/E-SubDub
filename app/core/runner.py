@@ -82,6 +82,8 @@ class TaskConfig:
     subtitle_mode: str             # task_settings 的 SUBTITLE_* 代码
     dubbing_enabled: bool
     device: str                    # "cuda"/"mps"/"cpu"
+    task_category: str = ""        # 任务类别（工作夹名后缀，固定中文）
+    auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
     asr_model_dir: str = ""
     tts_model_dir: str = ""
     tts_codec_dir: str = ""
@@ -148,10 +150,14 @@ class PipelineRunner(QThread):
     failed = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, config: TaskConfig, parent=None) -> None:
+    def __init__(self, config: TaskConfig, workspace: Workspace | None = None, parent=None) -> None:
         super().__init__(parent)
         self._cfg = config
-        self._ws = Workspace(config.output_dir, config.media_path)
+        # 优先复用外部传入的 Workspace：与 TaskManager 持同一实例，
+        # manifest 完成标记在内存中即时可见（否则 UI 侧副本会过期）
+        self._ws = workspace or Workspace(
+            config.output_dir, config.media_path, category=config.task_category
+        )
         self._cancel = threading.Event()
         self._review_event = threading.Event()
         self._review_result: ReviewResult | None = None
@@ -205,7 +211,10 @@ class PipelineRunner(QThread):
         if self._ws.is_done(STAGE_EXTRACT):
             self._skip_stage(STAGE_EXTRACT)
         else:
-            extract_audio(cfg.media_path, self._ws.dir, progress=self._stage_progress(STAGE_EXTRACT))
+            extract_audio(
+                cfg.media_path, self._ws.ensure_stage_dir(STAGE_EXTRACT),
+                progress=self._stage_progress(STAGE_EXTRACT),
+            )
             self._ws.mark_done(STAGE_EXTRACT)
             self._stage_end(STAGE_EXTRACT)
         full_audio = str(self._ws.full_audio)
@@ -222,7 +231,8 @@ class PipelineRunner(QThread):
                 from app.pipeline.separate import separate_vocals
                 try:
                     separate_vocals(
-                        full_audio, self._ws.dir, device=cfg.device,
+                        full_audio, self._ws.ensure_stage_dir(STAGE_SEPARATE),
+                        device=cfg.device,
                         progress=self._stage_progress(STAGE_SEPARATE),
                     )
                 except Exception as exc:
@@ -230,7 +240,8 @@ class PipelineRunner(QThread):
                         raise
                     self._log(tr("runner.device_fallback", stage=tr("step.separate"), error=exc))
                     separate_vocals(
-                        full_audio, self._ws.dir, device="cpu",
+                        full_audio, self._ws.ensure_stage_dir(STAGE_SEPARATE),
+                        device="cpu",
                         progress=self._stage_progress(STAGE_SEPARATE),
                     )
                 self._ws.mark_done(STAGE_SEPARATE)
@@ -254,7 +265,7 @@ class PipelineRunner(QThread):
         # 4. LLM 校对
         self._stage_begin(STAGE_PROOFREAD)
         if self._ws.is_done(STAGE_PROOFREAD):
-            segments = self._ws.load_segments(self._ws.corrected_json)
+            segments = self._ws.load_segments(self._ws.corrected_pre)
             self._skip_stage(STAGE_PROOFREAD)
         else:
             with self._llm_session() as client:
@@ -262,7 +273,7 @@ class PipelineRunner(QThread):
                 segments = proofread_segments(
                     client, segments, progress=self._stage_progress(STAGE_PROOFREAD)
                 )
-            self._ws.save_segments(self._ws.corrected_json, segments)
+            self._ws.save_segments(self._ws.corrected_pre, segments)
             self._ws.mark_done(STAGE_PROOFREAD)
             self._stage_end(STAGE_PROOFREAD)
         self._check()
@@ -270,15 +281,15 @@ class PipelineRunner(QThread):
         # 5. ASR 人工审核
         self._stage_begin(STAGE_REVIEW)
         if self._ws.is_done(STAGE_REVIEW):
+            segments = self._ws.load_segments(self._ws.corrected_post)
             self._skip_stage(STAGE_REVIEW)
         else:
-            before = self._ws.corrected_json.read_text(encoding="utf-8")
-            self._pause_for_review(ReviewPayload(
+            pre_text = self._read_text(self._ws.corrected_pre)
+            self._request_review(ReviewPayload(
                 kind="asr", segments=segments, audio_wav=vocals,
             ))
-            self._ws.save_segments(self._ws.corrected_json, segments)
-            after = self._ws.corrected_json.read_text(encoding="utf-8")
-            if after != before:
+            self._ws.save_segments(self._ws.corrected_post, segments)
+            if self._read_text(self._ws.corrected_post) != pre_text:
                 # 人工修改过内容：下游翻译及其后全部失效重跑
                 self._ws.reset_stages([
                     STAGE_TRANSLATE, STAGE_REVIEW_TRANSLATION, STAGE_TTS, STAGE_MIX, STAGE_MUX,
@@ -293,11 +304,11 @@ class PipelineRunner(QThread):
             for seg in segments:
                 if not seg.target_text:
                     seg.target_text = seg.text
-            self._ws.save_segments(self._ws.translated_json, segments)
+            self._ws.save_segments(self._ws.translated_pre, segments)
             self._ws.mark_done(STAGE_TRANSLATE)
             self._stage_end(STAGE_TRANSLATE)
         elif self._ws.is_done(STAGE_TRANSLATE):
-            segments = self._ws.load_segments(self._ws.translated_json)
+            segments = self._ws.load_segments(self._ws.translated_pre)
             self._skip_stage(STAGE_TRANSLATE)
         else:
             with self._llm_session() as client:
@@ -308,7 +319,7 @@ class PipelineRunner(QThread):
                     LANG_NAMES.get(cfg.target_lang_code, "目标语言"),
                     progress=self._stage_progress(STAGE_TRANSLATE),
                 )
-            self._ws.save_segments(self._ws.translated_json, segments)
+            self._ws.save_segments(self._ws.translated_pre, segments)
             self._ws.mark_done(STAGE_TRANSLATE)
             self._stage_end(STAGE_TRANSLATE)
         self._check()
@@ -316,25 +327,28 @@ class PipelineRunner(QThread):
         # 7. 译文人工审核
         self._stage_begin(STAGE_REVIEW_TRANSLATION)
         if self._ws.is_done(STAGE_REVIEW_TRANSLATION):
+            segments = self._ws.load_segments(self._ws.translated_post)
             self._skip_stage(STAGE_REVIEW_TRANSLATION)
         else:
-            before = self._ws.translated_json.read_text(encoding="utf-8")
-            self._pause_for_review(ReviewPayload(
+            pre_text = self._read_text(self._ws.translated_pre)
+            self._request_review(ReviewPayload(
                 kind="translation", segments=segments, audio_wav=vocals,
                 source_lang=LANG_NAMES.get(cfg.source_lang_code, ""),
                 target_lang=LANG_NAMES.get(cfg.target_lang_code, ""),
             ))
-            self._ws.save_segments(self._ws.translated_json, segments)
-            after = self._ws.translated_json.read_text(encoding="utf-8")
-            if after != before:
+            self._ws.save_segments(self._ws.translated_post, segments)
+            if self._read_text(self._ws.translated_post) != pre_text:
                 self._ws.reset_stages([STAGE_TTS, STAGE_MIX, STAGE_MUX])
             self._ws.mark_done(STAGE_REVIEW_TRANSLATION)
             self._stage_end(STAGE_REVIEW_TRANSLATION)
         self._check()
 
-        # 8. SRT 字幕
+        # 8. SRT 字幕（文件名随字幕形式：单语仅目标语种代号，双语上位语言在前）
         srt_mode = SUBTITLE_MODE_MAP.get(cfg.subtitle_mode, MODE_MONO)
-        srt_path = self._ws.srt_path(cfg.target_lang_code)
+        srt_path = self._ws.srt_path(
+            cfg.target_lang_code, cfg.source_lang_code,
+            source_on_top=(srt_mode == MODE_BILINGUAL_SOURCE_TOP),
+        )
         generate_srt(
             segments, str(srt_path), srt_mode,
             source_lang=cfg.source_lang_code, target_lang=cfg.target_lang_code,
@@ -363,6 +377,7 @@ class PipelineRunner(QThread):
                 self._skip_stage(STAGE_MIX)
             else:
                 from app.pipeline.mix import mix_tracks
+                self._ws.ensure_stage_dir(STAGE_MIX)
                 mix_tracks(
                     segments, no_vocals, str(self._ws.mixed_audio), vocals,
                     progress=self._stage_progress(STAGE_MIX),
@@ -379,16 +394,23 @@ class PipelineRunner(QThread):
                     self._skip_stage(STAGE_MUX)
                 else:
                     from app.pipeline.mux import mux_mkv
+                    mux_dir = self._ws.ensure_stage_dir(STAGE_MUX)
                     mux_mkv(
-                        cfg.media_path, audio_out, str(srt_path), str(self._ws.output_mkv),
+                        cfg.media_path, audio_out, str(srt_path),
+                        str(self._ws.output_mkv),
                         audio_lang=FFMPEG_LANGS.get(cfg.target_lang_code, "und"),
                         subtitle_lang=FFMPEG_LANGS.get(cfg.target_lang_code, "und"),
                         progress=self._stage_progress(STAGE_MUX),
                     )
+                    # 封装输出夹内同时保留处理好的字幕文件副本
+                    shutil.copy2(srt_path, mux_dir / srt_path.name)
                     self._ws.mark_done(STAGE_MUX)
                     self._stage_end(STAGE_MUX)
                 mkv_out = str(self._ws.output_mkv)
             else:
+                # 音频输入无视频流可封装：混音成品复制到工作夹根目录
+                shutil.copy2(self._ws.mixed_audio, self._ws.dubbed_wav)
+                audio_out = str(self._ws.dubbed_wav)
                 self._log(tr("runner.mux_skipped_audio_input"))
 
         self.progress_changed.emit(100)
@@ -444,7 +466,7 @@ class PipelineRunner(QThread):
             raise RuntimeError(tr("runner.voice_none"))
         self._log(tr("runner.voice_picked", count=len(refs)))
 
-        result = self._pause_for_review(ReviewPayload(
+        result = self._request_review(ReviewPayload(
             kind="voice", segments=segments, audio_wav=vocals, ref_map=refs,
         ))
         refs = result.ref_map or refs
@@ -461,8 +483,10 @@ class PipelineRunner(QThread):
     def _run_tts(self, segments: list, refs: dict, vocals: str) -> None:
         """TTS 逐句生成 + 异常复听（在 TTS 步骤内完成）。
 
-        逐句参考克隆：每句优先用其自身的人声切片做参考（继承原句语气），
-        过短/近无声/切割失败的句子回退说话人级参考（保音色稳定）。
+        逐句切片克隆：每句用其自身的人声切片（人工审核/句子切片）做参考，
+        继承原句语气/情绪（短句同样直接用自身切片）；仅近无声/切割失败的
+        句子回退说话人级参考。配音文件以 开始时间-结束时间-说话人ID-译文
+        命名，与源切片一一对应。
         """
         from app.pipeline.tts import (
             STRETCH_REVIEW_HIGH,
@@ -470,7 +494,7 @@ class PipelineRunner(QThread):
             TTSLoadMemoryError,
             TTSEngine,
         )
-        from app.pipeline.voice_pick import cut_segment_references
+        from app.pipeline.voice_pick import cut_sentence_slices, sentence_base_name
 
         cfg = self._cfg
         if not (Path(cfg.tts_codec_dir) / "config.json").is_file():
@@ -479,6 +503,11 @@ class PipelineRunner(QThread):
             )
 
         self._ws.tts_dir.mkdir(parents=True, exist_ok=True)
+        for old in self._ws.tts_dir.glob("*.wav"):
+            try:  # 清空旧配音，文件夹与本次待合成集合一致
+                old.unlink()
+            except OSError:
+                pass
         todo = [
             (i, seg) for i, seg in enumerate(segments)
             if not seg.deleted and str(seg.target_text).strip()
@@ -489,11 +518,27 @@ class PipelineRunner(QThread):
         def _cut_progress(fraction: float, message: str) -> None:
             progress(min(fraction, 1.0) * 0.05, message)
 
-        seg_refs, own_cnt, fb_cnt = cut_segment_references(
-            segments, vocals, refs, self._ws.seg_ref_dir,
+        seg_refs, own_cnt, fb_cnt = cut_sentence_slices(
+            segments, vocals, refs, self._ws.seg_slice_dir,
             progress=_cut_progress,
         )
         self._log(tr("runner.seg_ref_ready", own=own_cnt, fallback=fb_cnt))
+
+        def _tts_out(seg) -> Path:
+            """配音成品路径（命名：开始时间-结束时间-说话人ID-译文）。"""
+            return self._ws.tts_dir / (
+                sentence_base_name(seg.start, seg.end, seg.spk, seg.target_text)
+                + ".wav"
+            )
+
+        def _retire_old(seg, new_out: Path) -> None:
+            """移除与新命名不一致的旧配音文件（复听改文后重生成场景）。"""
+            old = str(seg.tts_audio_path or "")
+            if old and old != str(new_out):
+                try:
+                    Path(old).unlink()
+                except OSError:
+                    pass
 
         engine = TTSEngine()
         device = cfg.device
@@ -507,10 +552,11 @@ class PipelineRunner(QThread):
                 if not ref:
                     self._log(tr("runner.tts_no_ref", spk=seg.spk))
                     continue
-                out = self._ws.tts_dir / f"seg_{i:04d}.wav"
+                out = _tts_out(seg)
                 raw_dur, ratio = engine.synthesize(
                     seg.target_text, ref, seg.duration, str(out),
                 )
+                _retire_old(seg, out)
                 seg.tts_audio_path = str(out)
                 seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
                 done += 1
@@ -539,10 +585,11 @@ class PipelineRunner(QThread):
                 ref = seg_refs.get(i)
                 if not ref:
                     continue
-                out = self._ws.tts_dir / f"seg_{i:04d}.wav"
+                out = _tts_out(seg)
                 raw_dur, ratio = engine.synthesize(
                     seg.target_text, ref, seg.duration, str(out),
                 )
+                _retire_old(seg, out)
                 seg.tts_audio_path = str(out)
                 seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
                 done += 1
@@ -561,7 +608,7 @@ class PipelineRunner(QThread):
         ]
         if review_items:
             self._log(tr("runner.tts_review_needed", count=len(review_items)))
-            result = self._pause_for_review(ReviewPayload(
+            result = self._request_review(ReviewPayload(
                 kind="tts",
                 segments=[seg for _i, seg in review_items],
                 ref_map={"indices": [i for i, _seg in review_items]},
@@ -581,10 +628,11 @@ class PipelineRunner(QThread):
                         ref = seg_refs.get(gi)
                         if not ref:
                             continue
-                        out = self._ws.tts_dir / f"seg_{gi:04d}.wav"
+                        out = _tts_out(seg)
                         _raw, _ratio = engine.synthesize(
                             seg.target_text, ref, seg.duration, str(out),
                         )
+                        _retire_old(seg, out)
                         seg.tts_audio_path = str(out)
                         progress(
                             done / len(regen_local),
@@ -626,6 +674,25 @@ class PipelineRunner(QThread):
         return _session()
 
     # ------------------------------------------------------------------ 暂停/取消
+
+    def _request_review(self, payload: ReviewPayload) -> ReviewResult:
+        """请求人工审核；任务勾选"自动通过"时直接采纳当前结果不暂停。"""
+        if self._cfg.auto_accept_reviews:
+            self._log(tr("runner.auto_review_passed"))
+            if payload.kind == "voice":
+                return ReviewResult(accepted=True, ref_map=payload.ref_map)
+            if payload.kind == "tts":
+                return ReviewResult(accepted=True, regenerate_indices=[])
+            return ReviewResult(accepted=True)
+        return self._pause_for_review(payload)
+
+    @staticmethod
+    def _read_text(path: Path) -> str:
+        """读取文本文件内容；文件不存在或不可读返回空串。"""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
 
     def _pause_for_review(self, payload: ReviewPayload) -> ReviewResult:
         """发射审核请求并阻塞等待 UI 回传；取消时抛 _PipelineCancelled。"""

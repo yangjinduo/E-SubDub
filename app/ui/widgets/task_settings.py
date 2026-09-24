@@ -190,6 +190,22 @@ class TaskSettingsPanel(QFrame):
             self._subtitle_combo.blockSignals(False)
             self._dubbing_check.blockSignals(False)
 
+    def set_selected_codes(
+        self, source: str, target: str, subtitle: str,
+        dubbing: bool, output_dir: str,
+    ) -> None:
+        """按稳定代码恢复设置（任务窗口绑定已有任务时使用）。"""
+        for combo, code in (
+            (self._source_combo, source),
+            (self._target_combo, target),
+            (self._subtitle_combo, subtitle),
+        ):
+            index = combo.findData(code)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        self._dubbing_check.setChecked(dubbing)
+        self._output_edit.setText(output_dir)
+
     # ------------------------------------------------------------------ 交互
 
     def _browse_output_dir(self) -> None:

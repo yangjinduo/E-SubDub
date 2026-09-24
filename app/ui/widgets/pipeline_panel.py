@@ -2,9 +2,11 @@
 
 步骤使用稳定 ID（供流程引擎调用），显示文案按当前界面语言生成；
 配音关闭（仅字幕模式）时置灰的步骤：人声分离 / 配音生成 / 混音 / 封装输出。
+步骤完成后标签可点击（发射 stage_clicked），用于打开对应流程的结果
+查看窗口。
 """
 
-from PySide6.QtCore import QDateTime
+from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -42,11 +44,17 @@ STEP_DISABLED = "disabled"
 
 
 class StepChip(QLabel):
-    """单个流程步骤标签，通过 stepState 动态属性切换样式。"""
+    """单个流程步骤标签，通过 stepState 动态属性切换样式。
+
+    步骤完成后（done 态）可点击，发射 clicked 信号用于打开结果查看窗口。
+    """
+
+    clicked = Signal()
 
     def __init__(self, text: str, parent=None) -> None:
         super().__init__(text, parent)
         self._state = STEP_PENDING
+        self._clickable = False
         self.setProperty("stepState", STEP_PENDING)
 
     def set_state(self, state: str) -> None:
@@ -54,13 +62,30 @@ class StepChip(QLabel):
         if state == self._state:
             return
         self._state = state
+        self._clickable = state == STEP_DONE
         self.setProperty("stepState", state)
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor if self._clickable
+            else Qt.CursorShape.ArrowCursor
+        )
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._clickable
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 class PipelinePanel(QFrame):
     """底部流程进度面板。"""
+
+    # 点击已完成的流程步骤（参数为步骤 ID），用于打开结果查看窗口
+    stage_clicked = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -69,7 +94,7 @@ class PipelinePanel(QFrame):
         title = QLabel(tr("pipeline.title"))
         title.setObjectName("sectionTitle")
 
-        # 步骤链：步骤标签之间以箭头分隔
+        # 步骤链：步骤标签带序号（与流程子夹的 01_～10_ 对应），之间以箭头分隔
         self._chips: dict[str, StepChip] = {}
         steps_row = QHBoxLayout()
         steps_row.setContentsMargins(0, 0, 0, 0)
@@ -79,7 +104,10 @@ class PipelinePanel(QFrame):
                 arrow = QLabel("→")
                 arrow.setObjectName("stepArrow")
                 steps_row.addWidget(arrow, 0)
-            chip = StepChip(tr(key))
+            chip = StepChip(f"{index + 1:02d} {tr(key)}")
+            chip.clicked.connect(
+                lambda sid=step_id: self.stage_clicked.emit(sid)
+            )
             self._chips[step_id] = chip
             steps_row.addWidget(chip)
 

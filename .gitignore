@@ -10,3 +10,9 @@ prompts.txt
 
 # python运行缓存
 __pycache__/
+
+# 输出文件
+output/
+
+# 测试文件
+test/

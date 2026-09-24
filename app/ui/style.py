@@ -209,7 +209,12 @@ QLabel#notReadyBadge {
     font-weight: 600;
 }
 
-/* 推理设备角标 */
+/* 推理设备角标（标题 + 设备值同一带边框组件） */
+QFrame#deviceBadge {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 10px;
+}
 QLabel#deviceLabelTitle {
     font-size: 12px;
     color: #6B7280;
@@ -285,9 +290,92 @@ StepChip[stepState="disabled"] {
     border-color: #E5E7EB;
     color: #9CA3AF;
 }
+/* 已完成的流程步骤：可点击，悬停高亮提示可查看结果 */
+StepChip[stepState="done"]:hover {
+    background: #D1FAE5;
+    border-color: #34D399;
+    color: #065F46;
+}
 QLabel#stepArrow {
     color: #CBD5E1;
     font-size: 12px;
+}
+
+/* ------------------------------ 任务列表（主窗口） ------------------------------ */
+QTableWidget#taskTable {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 10px;
+    gridline-color: #F3F4F6;
+    selection-background-color: #EFF6FF;
+    selection-color: #1D4ED8;
+}
+QTableWidget#taskTable QHeaderView::section {
+    background: #F9FAFB;
+    color: #4B5563;
+    border: none;
+    border-bottom: 1px solid #E5E7EB;
+    padding: 8px 6px;
+    font-weight: 600;
+}
+
+/* 新建任务按钮（任务列表头部） */
+QPushButton#addTaskButton {
+    background: #2563EB;
+    border: 1px solid #2563EB;
+    border-radius: 8px;
+    padding: 6px 18px;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#addTaskButton:hover {
+    background: #1D4ED8;
+    border-color: #1D4ED8;
+}
+QPushButton#addTaskButton:pressed {
+    background: #1E40AF;
+}
+
+/* ------------------------------ 系统监视栏（深色格 + 折线图） ------------------------------ */
+QFrame#monitorCell {
+    background: #111827;
+    border: 1px solid #1F2937;
+    border-radius: 10px;
+}
+QLabel#monitorName {
+    color: #9CA3AF;
+    font-size: 12px;
+}
+QLabel#monitorValue {
+    color: #F9FAFB;
+    font-size: 15px;
+    font-weight: 600;
+}
+QLabel#monitorSub {
+    color: #6B7280;
+    font-size: 11px;
+}
+QFrame#sparkline {
+    background: transparent;
+}
+
+/* ------------------------------ 流程结果查看窗口 ------------------------------ */
+QLabel#viewerPathLabel {
+    color: #6B7280;
+    font-size: 12px;
+}
+QLabel#viewerHint {
+    color: #6B7280;
+}
+QLabel#viewerTrackTitle {
+    font-size: 13px;
+    font-weight: 600;
+    color: #111827;
+}
+QLabel#viewerFallback {
+    color: #6B7280;
+    font-size: 13px;
+    padding: 16px;
 }
 
 /* ------------------------------ 进度条 ------------------------------ */
