@@ -1,8 +1,8 @@
-"""任务设置区：源/目标语言、字幕形式（下拉）、配音开关、输出目录。
+"""任务设置区：源/目标语言、字幕形式（下拉）、配音开关、AI 校对开关、输出目录。
 
 布局：
 - 第一行：源语言 / 目标语言 / 字幕形式（三个同款下拉菜单）
-- 第二行：配音开关 / 输出目录
+- 第二行：配音开关 / AI 校对开关 / 输出目录
 
 语言选项内部携带稳定语言代码（itemData），供后续流水线模块使用；
 界面文案统一走 i18n（tr），语言切换后由主窗口整体重建。
@@ -71,6 +71,8 @@ class TaskSettingsPanel(QFrame):
         self._target_combo = QComboBox()
         for code in TARGET_LANGUAGE_CODES:
             self._target_combo.addItem(tr(f"lang.{code}"), code)
+        # 默认目标语言：英语（最常用）
+        self._target_combo.setCurrentIndex(TARGET_LANGUAGE_CODES.index("en"))
 
         subtitle_label = QLabel(tr("task.subtitle_mode"))
         subtitle_label.setStyleSheet("color: #6B7280;")
@@ -85,14 +87,17 @@ class TaskSettingsPanel(QFrame):
         grid.addWidget(subtitle_label, 0, 4, Qt.AlignmentFlag.AlignRight)
         grid.addWidget(self._subtitle_combo, 0, 5)
 
-        # 第二行：配音开关 / 输出目录
-        dubbing_label = QLabel(tr("task.dubbing"))
-        dubbing_label.setStyleSheet("color: #6B7280;")
+        # 第二行：配音开关 / AI 校对开关 / 输出目录
         self._dubbing_check = QCheckBox(tr("task.dubbing_check"))
         self._dubbing_check.setChecked(True)  # 默认开启
         self._dubbing_check.toggled.connect(self.dubbing_enabled_changed.emit)
-        grid.addWidget(dubbing_label, 1, 0, Qt.AlignmentFlag.AlignRight)
-        grid.addWidget(self._dubbing_check, 1, 1)
+        grid.addWidget(self._dubbing_check, 1, 0)
+
+        # AI 校对（可选）：勾选后文本先经 LLM 校对再进入人工审核，
+        # 未勾选时 ASR 结果直接进入人工审核
+        self._ai_proofread_check = QCheckBox(tr("task.ai_proofread"))
+        self._ai_proofread_check.setChecked(False)  # 默认关闭
+        grid.addWidget(self._ai_proofread_check, 1, 1)
 
         output_label = QLabel(tr("task.output_dir"))
         output_label.setStyleSheet("color: #6B7280;")
@@ -149,6 +154,10 @@ class TaskSettingsPanel(QFrame):
         """配音开关状态。"""
         return self._dubbing_check.isChecked()
 
+    def ai_proofread_enabled(self) -> bool:
+        """AI 校对开关状态（文本先经 LLM 校对再人工审核）。"""
+        return self._ai_proofread_check.isChecked()
+
     def output_dir(self) -> str:
         """输出目录路径文本。"""
         return self._output_edit.text().strip()
@@ -162,6 +171,7 @@ class TaskSettingsPanel(QFrame):
             "target": self._target_combo.currentIndex(),
             "subtitle": self._subtitle_combo.currentIndex(),
             "dubbing": self._dubbing_check.isChecked(),
+            "ai_proofread": self._ai_proofread_check.isChecked(),
             "output": self._output_edit.text(),
         }
 
@@ -173,6 +183,7 @@ class TaskSettingsPanel(QFrame):
         self._target_combo.blockSignals(True)
         self._subtitle_combo.blockSignals(True)
         self._dubbing_check.blockSignals(True)
+        self._ai_proofread_check.blockSignals(True)
         try:
             if "source" in state:
                 self._source_combo.setCurrentIndex(state["source"])
@@ -182,6 +193,8 @@ class TaskSettingsPanel(QFrame):
                 self._subtitle_combo.setCurrentIndex(state["subtitle"])
             if "dubbing" in state:
                 self._dubbing_check.setChecked(state["dubbing"])
+            if "ai_proofread" in state:
+                self._ai_proofread_check.setChecked(state["ai_proofread"])
             if "output" in state:
                 self._output_edit.setText(state["output"])
         finally:
@@ -189,10 +202,11 @@ class TaskSettingsPanel(QFrame):
             self._target_combo.blockSignals(False)
             self._subtitle_combo.blockSignals(False)
             self._dubbing_check.blockSignals(False)
+            self._ai_proofread_check.blockSignals(False)
 
     def set_selected_codes(
         self, source: str, target: str, subtitle: str,
-        dubbing: bool, output_dir: str,
+        dubbing: bool, ai_proofread: bool, output_dir: str,
     ) -> None:
         """按稳定代码恢复设置（任务窗口绑定已有任务时使用）。"""
         for combo, code in (
@@ -204,6 +218,7 @@ class TaskSettingsPanel(QFrame):
             if index >= 0:
                 combo.setCurrentIndex(index)
         self._dubbing_check.setChecked(dubbing)
+        self._ai_proofread_check.setChecked(ai_proofread)
         self._output_edit.setText(output_dir)
 
     # ------------------------------------------------------------------ 交互

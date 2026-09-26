@@ -19,12 +19,13 @@ from PySide6.QtWidgets import (
 from app.core.i18n import tr
 
 # 处理流程步骤（顺序固定）：(步骤 ID, i18n key)
+# "proofread"（文本校对）= AI 校对（可选）+ 人工审核，人工审核动作并入该步骤；
+# 无单独"人工审核"步骤，序号由列表顺序自动生成（01～09）
 PIPELINE_STEPS: list[tuple[str, str]] = [
     ("extract", "step.extract"),
     ("separate", "step.separate"),
     ("asr", "step.asr"),
     ("proofread", "step.proofread"),
-    ("review", "step.review"),
     ("translate", "step.translate"),
     ("review_translation", "step.review_translation"),
     ("tts", "step.tts"),

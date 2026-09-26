@@ -2,9 +2,9 @@
 """流程编排引擎：QThread 中按阶段串行执行流水线，支持人工审核暂停点。
 
 阶段顺序（配音模式全量；仅字幕模式跳过人声分离 / TTS / 混音 / 封装）：
-音频提取 → 人声分离 → ASR → LLM 校对 → [ASR 人工审核] → LLM 翻译 →
-[译文人工审核] → SRT 字幕 → 参考音色挑选/[音色管理] → TTS → [异常复听] →
-混音 → MKV 封装。
+音频提取 → 人声分离 → ASR → 文本校对（AI 校对可选 + 人工审核）→
+LLM 翻译 → [译文人工审核] → SRT 字幕 → 参考音色挑选/[音色管理] →
+TTS → [异常复听] → 混音 → MKV 封装。
 
 暂停机制：runner 在工作线程发射 review_requested 后阻塞在 threading.Event，
 UI 线程弹对话框并调用 submit_review() 回传结果；回传 None / accepted=False
@@ -66,6 +66,41 @@ SUBTITLE_MODE_MAP = {
     "bilingual_source": MODE_BILINGUAL_SOURCE_TOP,
 }
 
+# 文本校对步骤内 AI 校对占整个步骤进度区间的比例（其余为人工审核）
+_AI_PROOFREAD_SPAN = 8.0 / 9.0
+
+
+def detect_language_code(segments: list) -> str:
+    """按字符集启发式检测分段文本的语言代码。
+
+    源语言选择"自动检测"时用于翻译提示词与界面显示：优先级为
+    假名（日语）> 谚文（韩语）> 汉字（中文）> 西里尔（俄语），
+    拉丁字母文本无法细分英/法/德/西，按英语处理。
+    """
+    sample = "".join(s.text for s in segments if not s.deleted)[:4000]
+    has_kana = has_hangul = has_han = has_cyrillic = has_latin = False
+    for ch in sample:
+        cp = ord(ch)
+        if 0x3040 <= cp <= 0x30FF or 0x31F0 <= cp <= 0x31FF:
+            has_kana = True
+        elif 0xAC00 <= cp <= 0xD7A3 or 0x1100 <= cp <= 0x11FF:
+            has_hangul = True
+        elif 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+            has_han = True
+        elif 0x0400 <= cp <= 0x04FF:
+            has_cyrillic = True
+        elif 0x0041 <= cp <= 0x007A or 0x00C0 <= cp <= 0x024F:
+            has_latin = True
+    if has_kana:
+        return "ja"
+    if has_hangul:
+        return "ko"
+    if has_han:
+        return "zh"
+    if has_cyrillic:
+        return "ru"
+    return "en"  # 拉丁字母（英/法/德/西不可细分）与无法识别时按英语
+
 
 class _PipelineCancelled(Exception):
     """用户取消流水线（在各阶段边界与进度回调中抛出）。"""
@@ -84,6 +119,7 @@ class TaskConfig:
     device: str                    # "cuda"/"mps"/"cpu"
     task_category: str = ""        # 任务类别（工作夹名后缀，固定中文）
     auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
+    ai_proofread_enabled: bool = False  # 文本校对前先经 LLM 校对（默认关闭）
     asr_model_dir: str = ""
     tts_model_dir: str = ""
     llm_model_path: str = ""       # GGUF 文件路径
@@ -262,43 +298,54 @@ class PipelineRunner(QThread):
             self._stage_end(STAGE_ASR)
         self._check()
 
-        # 4. LLM 校对
+        # 4. 文本校对 = AI 校对（可选，TaskConfig.ai_proofread_enabled）+ 人工审核。
+        #    两者共用 "proofread" 步骤显示：步骤在人工审核完成后才标记 done；
+        #    manifest 内部仍分记 proofread（AI）与 review（人工）两个完成标记，
+        #    AI 校对结果/审核定稿分存 04_文本校对 的 corrected.json / reviewed.json
         self._stage_begin(STAGE_PROOFREAD)
-        if self._ws.is_done(STAGE_PROOFREAD):
-            segments = self._ws.load_segments(self._ws.corrected_pre)
-            self._skip_stage(STAGE_PROOFREAD)
-        else:
-            with self._llm_session() as client:
-                from app.pipeline.proofread import proofread_segments
-                segments = proofread_segments(
-                    client, segments, progress=self._stage_progress(STAGE_PROOFREAD)
-                )
-            self._ws.save_segments(self._ws.corrected_pre, segments)
-            self._ws.mark_done(STAGE_PROOFREAD)
-            self._stage_end(STAGE_PROOFREAD)
-        self._check()
-
-        # 5. ASR 人工审核
-        self._stage_begin(STAGE_REVIEW)
         if self._ws.is_done(STAGE_REVIEW):
             segments = self._ws.load_segments(self._ws.corrected_post)
-            self._skip_stage(STAGE_REVIEW)
+            self._skip_stage(STAGE_PROOFREAD)
         else:
-            pre_text = self._read_text(self._ws.corrected_pre)
+            if cfg.ai_proofread_enabled:
+                if self._ws.is_done(STAGE_PROOFREAD):
+                    segments = self._ws.load_segments(self._ws.corrected_pre)
+                    self._log(tr("runner.stage_skipped", stage=tr("runner.ai_proofread")))
+                else:
+                    with self._llm_session() as client:
+                        from app.pipeline.proofread import proofread_segments
+                        segments = proofread_segments(
+                            client, segments,
+                            progress=self._partial_progress(
+                                STAGE_PROOFREAD, 0.0, _AI_PROOFREAD_SPAN,
+                            ),
+                        )
+                    self._ws.save_segments(self._ws.corrected_pre, segments)
+                    self._ws.mark_done(STAGE_PROOFREAD)
+            # 未启用 AI 校对：ASR 结果直接进入人工审核
+            pre_state = self._segments_fingerprint(segments)
             self._request_review(ReviewPayload(
                 kind="asr", segments=segments, audio_wav=vocals,
             ))
             self._ws.save_segments(self._ws.corrected_post, segments)
-            if self._read_text(self._ws.corrected_post) != pre_text:
+            if self._segments_fingerprint(segments) != pre_state:
                 # 人工修改过内容：下游翻译及其后全部失效重跑
                 self._ws.reset_stages([
                     STAGE_TRANSLATE, STAGE_REVIEW_TRANSLATION, STAGE_TTS, STAGE_MIX, STAGE_MUX,
                 ])
             self._ws.mark_done(STAGE_REVIEW)
-            self._stage_end(STAGE_REVIEW)
+            self._stage_end(STAGE_PROOFREAD)
         self._check()
 
-        # 6. LLM 翻译（源=目标语言时直接复用原文）
+        # 源语言"自动检测"：从定稿文本推断实际语言（翻译提示词与审核窗口显示用）
+        source_code = cfg.source_lang_code
+        if source_code == "auto":
+            source_code = detect_language_code(segments)
+            self._log(tr("runner.lang_detected",
+                         lang=LANG_NAMES.get(source_code, source_code)))
+        source_name = LANG_NAMES.get(source_code, "原文语言")
+
+        # 5. LLM 翻译（源=目标语言时直接复用原文）
         self._stage_begin(STAGE_TRANSLATE)
         if not translate_needed:
             for seg in segments:
@@ -315,7 +362,7 @@ class PipelineRunner(QThread):
                 from app.pipeline.translate import translate_segments
                 segments = translate_segments(
                     client, segments,
-                    LANG_NAMES.get(cfg.source_lang_code, "原文语言"),
+                    source_name,
                     LANG_NAMES.get(cfg.target_lang_code, "目标语言"),
                     progress=self._stage_progress(STAGE_TRANSLATE),
                 )
@@ -324,7 +371,7 @@ class PipelineRunner(QThread):
             self._stage_end(STAGE_TRANSLATE)
         self._check()
 
-        # 7. 译文人工审核
+        # 6. 译文人工审核
         self._stage_begin(STAGE_REVIEW_TRANSLATION)
         if self._ws.is_done(STAGE_REVIEW_TRANSLATION):
             segments = self._ws.load_segments(self._ws.translated_post)
@@ -333,7 +380,7 @@ class PipelineRunner(QThread):
             pre_text = self._read_text(self._ws.translated_pre)
             self._request_review(ReviewPayload(
                 kind="translation", segments=segments, audio_wav=vocals,
-                source_lang=LANG_NAMES.get(cfg.source_lang_code, ""),
+                source_lang=source_name,
                 target_lang=LANG_NAMES.get(cfg.target_lang_code, ""),
             ))
             self._ws.save_segments(self._ws.translated_post, segments)
@@ -343,7 +390,7 @@ class PipelineRunner(QThread):
             self._stage_end(STAGE_REVIEW_TRANSLATION)
         self._check()
 
-        # 8. SRT 字幕（文件名随字幕形式：单语仅目标语种代号，双语上位语言在前）
+        # 7. SRT 字幕（文件名随字幕形式：单语仅目标语种代号，双语上位语言在前）
         srt_mode = SUBTITLE_MODE_MAP.get(cfg.subtitle_mode, MODE_MONO)
         srt_path = self._ws.srt_path(
             cfg.target_lang_code, cfg.source_lang_code,
@@ -355,14 +402,14 @@ class PipelineRunner(QThread):
         )
         self._log(tr("runner.srt_done", path=srt_path.name, count=len(segments)))
 
-        # 9+. 配音链路
+        # 8+. 配音链路
         audio_out = ""
         mkv_out = ""
         if dub:
-            # 9. 参考音色挑选 + 音色管理审核
+            # 8. 参考音色挑选 + 音色管理审核
             refs = self._pick_and_review_voices(segments, vocals)
 
-            # 10. TTS 逐句生成 + 异常复听
+            # 9. TTS 逐句生成 + 异常复听
             self._stage_begin(STAGE_TTS)
             if self._ws.is_done(STAGE_TTS):
                 segments = self._ws.load_segments(self._ws.tts_json)
@@ -371,7 +418,7 @@ class PipelineRunner(QThread):
                 self._run_tts(segments, refs, vocals)
             self._check()
 
-            # 11. 混音
+            # 10. 混音
             self._stage_begin(STAGE_MIX)
             if self._ws.is_done(STAGE_MIX):
                 self._skip_stage(STAGE_MIX)
@@ -387,7 +434,7 @@ class PipelineRunner(QThread):
             audio_out = str(self._ws.mixed_audio)
             self._check()
 
-            # 12. MKV 封装（音频输入无视频流可封装，跳过）
+            # 11. MKV 封装（音频输入无视频流可封装，跳过）
             if is_video:
                 self._stage_begin(STAGE_MUX)
                 if self._ws.is_done(STAGE_MUX):
@@ -434,7 +481,8 @@ class PipelineRunner(QThread):
             segments = module.transcribe(wav_path, progress=progress)
         except Exception as exc:
             module.unload()
-            if device == "cpu":
+            # 用户取消不按设备故障处理（token 级进度回调内即触发取消检查点）
+            if device == "cpu" or isinstance(exc, _PipelineCancelled):
                 raise
             self._log(tr("runner.device_fallback", stage=tr("step.asr"), error=exc))
             device = "cpu"
@@ -688,6 +736,15 @@ class PipelineRunner(QThread):
         except OSError:
             return ""
 
+    @staticmethod
+    def _segments_fingerprint(segments: list) -> list:
+        """分段内容指纹（人工审核修改检测：影响下游翻译/TTS 的字段）。"""
+        return [
+            (s.spk, round(float(s.start), 3), round(float(s.end), 3),
+             s.text, bool(s.deleted))
+            for s in segments
+        ]
+
     def _pause_for_review(self, payload: ReviewPayload) -> ReviewResult:
         """发射审核请求并阻塞等待 UI 回传；取消时抛 _PipelineCancelled。"""
         self._review_event.clear()
@@ -715,8 +772,8 @@ class PipelineRunner(QThread):
             weights.append((STAGE_SEPARATE, 12.0))
         weights += [
             (STAGE_ASR, 25.0),
-            (STAGE_PROOFREAD, 8.0),
-            (STAGE_REVIEW, 1.0),
+            # 文本校对 = AI 校对（可选）+ 人工审核，合并为一个进度区间
+            (STAGE_PROOFREAD, 9.0),
         ]
         if translate_needed:
             weights += [(STAGE_TRANSLATE, 8.0), (STAGE_REVIEW_TRANSLATION, 1.0)]
@@ -757,13 +814,22 @@ class PipelineRunner(QThread):
 
     def _stage_progress(self, stage: str) -> ProgressCallback:
         """构造阶段进度回调：映射到总进度、去重日志、承担取消检查点。"""
+        return self._partial_progress(stage, 0.0, 1.0)
+
+    def _partial_progress(
+        self, stage: str, begin_frac: float, end_frac: float,
+    ) -> ProgressCallback:
+        """构造阶段内局部进度回调：fraction 映射到阶段进度区间的
+        [begin_frac, end_frac) 段（如文本校对步骤中 AI 校对占前 8/9）。"""
         runner = self
         start, end = self._weight_span(stage)
+        lo = start + (end - start) * begin_frac
+        hi = start + (end - start) * end_frac
 
         def _callback(fraction: float, message: str) -> None:
             runner._check()
             runner.progress_changed.emit(
-                int((start + (end - start) * min(max(fraction, 0.0), 1.0))
+                int((lo + (hi - lo) * min(max(fraction, 0.0), 1.0))
                     / runner._total_weight * 100)
             )
             if message and message != runner._last_log_message:

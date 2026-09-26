@@ -5,7 +5,7 @@
 每个窗口头部有"打开文件夹"按钮（在资源管理器中定位该流程的结果目录），
 各查看器内容按流程类型定制：
 - 提取音频 / 人声分离 / 混音：音轨试听条（可拖进度条）；
-- 语音识别 / 文本校对 / 人工审核：分段表格（选中行试听该句语音 + 文本）；
+- 语音识别 / 文本校对：分段表格（选中行试听该句语音 + 文本）；
 - 翻译 / 译文审核：原文译文对照表（选中行试听原声）；
 - 配音生成：每段原文/译文 + 原声/配音试听按钮；
 - 封装输出：原视频与配音后视频并排播放（不支持视频解码时显示回退提示）。
@@ -43,7 +43,6 @@ from app.core.workspace import (
     STAGE_MIX,
     STAGE_MUX,
     STAGE_PROOFREAD,
-    STAGE_REVIEW,
     STAGE_REVIEW_TRANSLATION,
     STAGE_SEPARATE,
     STAGE_TRANSLATE,
@@ -600,17 +599,16 @@ class AsrViewer(_SegmentsStageViewer):
 
 
 class ProofreadViewer(_SegmentsStageViewer):
-    """文本校对：大模型校对后的每条文本 + 分段语音试听。"""
+    """文本校对：校对定稿文本 + 分段语音试听。
+
+    人工审核定稿（reviewed.json）优先；未启用 AI 校对或尚未审核时
+    回退 AI 校对结果（corrected.json）。
+    """
 
     def _segments_path(self) -> Path:
+        if self._ws.corrected_post.is_file():
+            return self._ws.corrected_post
         return self._ws.corrected_pre
-
-
-class ReviewViewer(_SegmentsStageViewer):
-    """人工审核：审核后的每条文本 + 分段语音试听。"""
-
-    def _segments_path(self) -> Path:
-        return self._ws.corrected_post
 
 
 class _TranslationStageViewer(StageViewerWindow):
@@ -679,7 +677,6 @@ _VIEWER_CLASSES: dict[str, type[StageViewerWindow]] = {
     STAGE_SEPARATE: SeparateViewer,
     STAGE_ASR: AsrViewer,
     STAGE_PROOFREAD: ProofreadViewer,
-    STAGE_REVIEW: ReviewViewer,
     STAGE_TRANSLATE: TranslateViewer,
     STAGE_REVIEW_TRANSLATION: TranslationReviewViewer,
     STAGE_TTS: TtsViewer,

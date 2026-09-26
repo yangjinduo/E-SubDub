@@ -21,6 +21,20 @@ BATCH_OVERLAP = 3
 # 修复"对象提前闭合"损坏时允许的键名（与本模块的输出 schema 一致）
 _REPAIRABLE_KEYS = r'"(?:target_text|spk|start|end|text)"'
 
+# few-shot 示例的源句与各目标语言译文：示例必须与目标语言方向一致，
+# 否则小模型（Qwen3-4B）会把示例的译文语言当成目标语言
+# （如源语言"自动检测"时译文原样输出中文）
+_EXAMPLE_SOURCE = "你要跟我们来吗？"
+_EXAMPLE_TARGETS: dict[str, str] = {
+    "英语": "Are you coming with us?",
+    "日语": "一緒に来ますか？",
+    "韩语": "우리랑 같이 갈래요?",
+    "法语": "Tu viens avec nous ?",
+    "德语": "Kommst du mit uns?",
+    "西班牙语": "¿Vienes con nosotros?",
+    "俄语": "Ты идёшь с нами?",
+}
+
 
 def _extract_json_array_with_repair(text: str) -> Optional[list]:
     """extract_json_array 增强版：解析失败时修复常见损坏后重试。
@@ -52,8 +66,9 @@ def _build_system_prompt(source_lang: str, target_lang: str) -> str:
     return (
         f"你是专业的字幕译制与配音适配引擎。用户给出一个 JSON 数组，"
         f"每个元素含 spk/start/end/text 字段。你的任务：\n"
-        f"1. 为数组中每一项新增 target_text 字段，填入 text 从{source_lang}"
-        f"到{target_lang}的译文；\n"
+        f"1. 为数组中每一项新增 target_text 字段，填入 text 的译文："
+        f"把{source_lang}原文翻译为{target_lang}，"
+        f"target_text 必须是{target_lang}，不得保留原文语言；\n"
         f"2. 译文必须口语化、自然流畅，适合直接用于配音朗读；\n"
         f"3. 每条译文的朗读时长应尽量匹配该条的 end-start 秒：按{target_lang}"
         f"正常语速估算字数，若原文内容明显超出该时长则压缩表达、只保留核心信息；\n"
@@ -83,16 +98,24 @@ def translate_segments(
     windows = list(sliding_windows(len(active_idx), BATCH_SIZE, BATCH_OVERLAP))
 
     system = _build_system_prompt(source_lang, target_lang)
+    # few-shot 示例：给出期望的输出形态（含 target_text 字段），避免 Qwen3-4B
+    # 只按输入结构复述而漏掉 target_text；示例方向与目标语言一致
+    # （目标中文用英→中，其余用中→目标语言）
+    if target_lang == "中文":
+        example_text, example_target = "Are you coming with us?", "你要跟我们来吗？"
+    else:
+        example_text = _EXAMPLE_SOURCE
+        example_target = _EXAMPLE_TARGETS.get(target_lang, "Are you coming with us?")
+    example_in = [{"spk": "S01", "start": 1.0, "end": 2.0, "text": example_text}]
+    example_out = [
+        {"spk": "S01", "start": 1.0, "end": 2.0, "text": example_text, "target_text": example_target}
+    ]
     for wi, (lo, hi) in enumerate(windows):
         idxs = active_idx[lo:hi]
         payload = [
             {"spk": result[i].spk, "start": result[i].start, "end": result[i].end, "text": result[i].text}
             for i in idxs
         ]
-        # few-shot 示例：给出期望的输出形态（含 target_text 字段），
-        # 避免 Qwen3-4B 只按输入结构复述而漏掉 target_text
-        example_in = [{"spk": "S01", "start": 1.0, "end": 2.0, "text": "Are you coming with us?"}]
-        example_out = [{"spk": "S01", "start": 1.0, "end": 2.0, "text": "Are you coming with us?", "target_text": "你要跟我们来吗？"}]
         user = (
             "示例输入：\n" + json.dumps(example_in, ensure_ascii=False) + "\n"
             "示例输出：\n" + json.dumps(example_out, ensure_ascii=False) + "\n\n"

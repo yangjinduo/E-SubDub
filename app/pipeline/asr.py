@@ -18,6 +18,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoProcessor
 from transformers.audio_utils import load_audio
+from transformers.generation.streamers import BaseStreamer
 
 from app.core.ffmpeg import get_ffmpeg_path
 from app.core.segment import Segment
@@ -87,6 +88,35 @@ SEGMENT_RE = re.compile(r"\[(\d+(?:\.\d+)?)\]\[(S\d+)\](.*?)\[(\d+(?:\.\d+)?)\]"
 
 # 块间重叠（秒）：相邻块重叠区用于去重拼接
 CHUNK_OVERLAP = 10.0
+
+# 单块生成的最大新 token 数（转写进度按 生成 token 数/MAX_NEW_TOKENS 估算）
+MAX_NEW_TOKENS = 2048
+
+
+class _CountingStreamer(BaseStreamer):
+    """token 计数流式器：按已生成的新 token 数触发回调（转写进度用）。
+
+    transformers 生成循环先 put 完整提示词，随后每生成一步 put 新 token
+    （shape [batch, n]，n 通常为 1），结束时调用 end()。首次 put 的提示词
+    不计入生成进度。
+    """
+
+    def __init__(self, on_tokens=None) -> None:
+        self._on_tokens = on_tokens
+        self._count = 0
+        self._prompt_done = False  # 首次 put 为提示词，跳过
+
+    def put(self, value) -> None:
+        if not self._prompt_done:
+            self._prompt_done = True
+            return
+        n = int(value.shape[-1]) if hasattr(value, "shape") else 1
+        self._count += n
+        if self._on_tokens is not None:
+            self._on_tokens(self._count)
+
+    def end(self) -> None:
+        return
 
 
 def _normalize_text(text: str) -> str:
@@ -180,8 +210,12 @@ class ASRModule:
     # 单块推理
     # ------------------------------------------------------------------
 
-    def _transcribe_chunk(self, wav_path: str) -> list[dict]:
-        """对单个音频文件推理，返回解析后的分段（时间相对该文件起点）。"""
+    def _transcribe_chunk(self, wav_path: str, on_tokens=None) -> list[dict]:
+        """对单个音频文件推理，返回解析后的分段（时间相对该文件起点）。
+
+        on_tokens：可选回调 on_tokens(count)，转写过程中每生成若干 token
+        调用一次（count 为累计新 token 数），用于进度显示与取消检查。
+        """
         processor = self._processor
         messages = [
             {
@@ -199,6 +233,7 @@ class ASRModule:
             inputs = {k: (v.to(self._device) if hasattr(v, "to") else v) for k, v in inputs.items()}
         prompt_len = int(inputs["attention_mask"][0].sum())
 
+        streamer = _CountingStreamer(on_tokens) if on_tokens is not None else None
         with torch.inference_mode():
             outputs = self._model.generate(
                 input_ids=inputs["input_ids"],
@@ -206,8 +241,9 @@ class ASRModule:
                 input_features=inputs["input_features"],
                 audio_feature_lengths=inputs["audio_feature_lengths"],
                 audio_chunk_mapping=inputs["audio_chunk_mapping"],
-                max_new_tokens=2048,
+                max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=False,
+                streamer=streamer,
             )
         gen_ids = outputs[0][prompt_len:]
         result = processor.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
@@ -263,6 +299,30 @@ class ASRModule:
             if not replaced:
                 merged.append(seg)
 
+    @staticmethod
+    def _token_progress(
+        progress: Optional[ProgressCallback],
+        frac_from: float,
+        frac_to: float,
+        base_msg: str,
+    ):
+        """构造 token 计数 → 进度回调：生成进度映射到 [frac_from, frac_to)。
+
+        消息在 base_msg 基础上按 10% 步进附加百分比（0% 时用 base_msg，
+        与起始消息一致以配合 runner 的去重日志，避免刷屏）。
+        """
+
+        def on_tokens(count: int) -> None:
+            frac = min(count / MAX_NEW_TOKENS, 1.0)
+            pct = min(int(frac * 10), 9) * 10
+            report_progress(
+                progress,
+                frac_from + (frac_to - frac_from) * frac,
+                f"{base_msg}{pct}%" if pct else base_msg,
+            )
+
+        return on_tokens
+
     def transcribe(
         self,
         wav_path: str,
@@ -284,8 +344,11 @@ class ASRModule:
 
         # 单块即可容纳：直接推理
         if duration <= chunk_seconds + CHUNK_OVERLAP:
-            report_progress(progress, 0.1, f"转写中（{duration:.1f} 秒音频）")
-            raw = self._transcribe_chunk(wav_path)
+            base_msg = f"转写中（{duration:.1f} 秒音频）"
+            report_progress(progress, 0.1, base_msg)
+            raw = self._transcribe_chunk(
+                wav_path, self._token_progress(progress, 0.1, 0.9, base_msg)
+            )
             report_progress(progress, 0.95, "转写完成，解析分段")
             segments = [
                 Segment(spk=item["spk"], start=item["start"], end=item["end"], text=item["text"])
@@ -312,7 +375,12 @@ class ASRModule:
                 chunk_len = min(chunk_seconds, duration - chunk_start)
                 chunk_file = tmp_dir / f"chunk_{i:04d}.wav"
                 self._cut_chunk(wav_path, chunk_start, chunk_len, chunk_file)
-                raw = self._transcribe_chunk(str(chunk_file))
+                chunk_msg = f"转写块 {i + 1}/{total}（{chunk_start:.0f}~{chunk_start + chunk_len:.0f} 秒）"
+                # 该块的切块/生成/合并各占块内进度的 0~0.1 / 0.1~0.9 / 0.9~1
+                raw = self._transcribe_chunk(
+                    str(chunk_file),
+                    self._token_progress(progress, (i + 0.1) / total, (i + 0.9) / total, chunk_msg),
+                )
                 chunk_file.unlink(missing_ok=True)
 
                 # 块内局部标签 -> 全局偏移标签
@@ -334,11 +402,7 @@ class ASRModule:
                 spk_offset += local_max
 
                 self._merge_chunk(merged, chunk_segs)
-                report_progress(
-                    progress,
-                    (i + 1) / total,
-                    f"转写块 {i + 1}/{total}（{chunk_start:.0f}~{chunk_start + chunk_len:.0f} 秒）",
-                )
+                report_progress(progress, (i + 1) / total, chunk_msg)
 
         merged.sort(key=lambda s: s.start)
         report_progress(progress, 1.0, f"转写完成，共 {len(merged)} 段")

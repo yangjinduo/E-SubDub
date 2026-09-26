@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from app.core.i18n import get_setting, set_setting, tr
 from app.core.runner import TaskConfig
 from app.core.task_manager import TaskItem, TaskManager, TaskState
+from app.core.workspace import STAGE_REVIEW
 from app.pipeline.llm_engine import resolve_llama_server_exe
 from app.resources.model import get_resource_manager
 from app.ui.widgets.import_area import ImportArea
@@ -90,6 +91,16 @@ class TaskWindow(QDialog):
 
         self._panel = PipelinePanel()
         self._panel.stage_clicked.connect(self._on_stage_clicked)
+        # 配音开关：关闭（仅字幕模式）时流程面板置灰人声分离/配音生成/混音/封装
+        self._task_settings.dubbing_enabled_changed.connect(
+            self._panel.set_dubbing_enabled
+        )
+        self._task_settings.dubbing_enabled_changed.connect(
+            lambda on: self._panel.log(
+                tr("main.log.dubbing_on" if on else "main.log.dubbing_off")
+            )
+        )
+        self._panel.set_dubbing_enabled(self._task_settings.dubbing_enabled())
 
         self._start_button = QPushButton(tr("main.start"))
         self._start_button.setObjectName("primaryButton")
@@ -129,7 +140,7 @@ class TaskWindow(QDialog):
             self._import_area.set_file(cfg.media_path)
         self._task_settings.set_selected_codes(
             cfg.source_lang_code, cfg.target_lang_code, cfg.subtitle_mode,
-            cfg.dubbing_enabled, cfg.output_dir,
+            cfg.dubbing_enabled, cfg.ai_proofread_enabled, cfg.output_dir,
         )
         self._auto_accept_check.setChecked(cfg.auto_accept_reviews)
         self._restore_pipeline(item)
@@ -141,13 +152,22 @@ class TaskWindow(QDialog):
         for step_id, _key in PIPELINE_STEPS:
             if not dub and step_id in DUBBING_STEP_IDS:
                 self._panel.set_step_state(step_id, STEP_DISABLED)
-            elif item.workspace.is_done(step_id):
+            elif item.workspace.is_done(self._done_stage_for(step_id)):
                 self._panel.set_step_state(step_id, STEP_DONE)
             elif item.state == TaskState.RUNNING and step_id == item.current_stage:
                 self._panel.set_step_state(step_id, STEP_ACTIVE)
             else:
                 self._panel.set_step_state(step_id, STEP_PENDING)
         self._panel.set_progress(item.progress)
+
+    @staticmethod
+    def _done_stage_for(step_id: str) -> str:
+        """步骤显示完成所依据的内部阶段。
+
+        "proofread"（文本校对）= AI 校对 + 人工审核：人工审核
+        （内部 STAGE_REVIEW）完成才算步骤完成；其余步骤与自身阶段一致。
+        """
+        return STAGE_REVIEW if step_id == "proofread" else step_id
 
     def _current_item(self) -> TaskItem | None:
         if self._task_id is None:
@@ -213,6 +233,11 @@ class TaskWindow(QDialog):
     def _validate_and_confirm(self) -> bool:
         """启动前校验资源与授权；全部通过返回 True（失败时已记录日志）。"""
         dubbing = self._task_settings.dubbing_enabled()
+        ai_proofread = self._task_settings.ai_proofread_enabled()
+        source = self._task_settings.source_language_code()
+        target = self._task_settings.target_language_code()
+        # 需要调用 LLM 的环节：AI 校对 或 翻译（源≠目标 或 源语言自动检测）
+        need_llm = ai_proofread or source != target or source == "auto"
 
         # 1. 模型资源（ffmpeg 为内置工具，不在此列）
         manager = get_resource_manager()
@@ -234,8 +259,8 @@ class TaskWindow(QDialog):
                 self._panel.log(tr("runner.tts_env_missing", detail=detail))
                 return False
 
-        # 3. llama-server（LLM 校对/翻译的推理服务）
-        if not resolve_llama_server_exe():
+        # 3. llama-server（AI 校对/LLM 翻译的推理服务；两者都不需要时跳过检查）
+        if need_llm and not resolve_llama_server_exe():
             self._panel.log(tr("main.log.llm_server_missing"))
             return False
 
@@ -256,31 +281,42 @@ class TaskWindow(QDialog):
     def _build_task_config(self, media_path: str) -> TaskConfig | None:
         """汇总当前任务设置与资源路径，构造 TaskConfig。"""
         dubbing = self._task_settings.dubbing_enabled()
+        ai_proofread = self._task_settings.ai_proofread_enabled()
+        source = self._task_settings.source_language_code()
+        target = self._task_settings.target_language_code()
+        # 需要调用 LLM 的环节：AI 校对 或 翻译（与 _validate_and_confirm 一致）
+        need_llm = ai_proofread or source != target or source == "auto"
         resource_manager = get_resource_manager()
 
-        # LLM GGUF 权重（translate 资源就绪即保证存在 gguf 文件）
-        llm_dir = Path(resource_manager.get_resource_path("translate") or "")
-        gguf = next(llm_dir.glob("*.gguf"), None)
-        if gguf is None:
-            self._panel.log(tr(
-                "main.log.missing_resources", names=tr("resource.translate.feature")
-            ))
-            return None
+        # LLM GGUF 权重（translate 资源就绪即保证存在 gguf 文件）；
+        # 无需 LLM 时不要求（源=目标语言且未启用 AI 校对）
+        gguf = None
+        llm_server = ""
+        if need_llm:
+            llm_dir = Path(resource_manager.get_resource_path("translate") or "")
+            gguf = next(llm_dir.glob("*.gguf"), None)
+            if gguf is None:
+                self._panel.log(tr(
+                    "main.log.missing_resources", names=tr("resource.translate.feature")
+                ))
+                return None
+            llm_server = resolve_llama_server_exe() or ""
 
         return TaskConfig(
             media_path=media_path,
             output_dir=self._task_settings.output_dir(),
-            source_lang_code=self._task_settings.source_language_code(),
-            target_lang_code=self._task_settings.target_language_code(),
+            source_lang_code=source,
+            target_lang_code=target,
             subtitle_mode=self._task_settings.subtitle_mode(),
             dubbing_enabled=dubbing,
             device=self._manager.device,
             task_category=task_category_text(dubbing, self._task_settings.subtitle_mode()),
             auto_accept_reviews=self._auto_accept_check.isChecked(),
+            ai_proofread_enabled=ai_proofread,
             asr_model_dir=resource_manager.get_resource_path("transcribe") or "",
             tts_model_dir=resource_manager.get_resource_path("tts") or "",
-            llm_model_path=str(gguf),
-            llm_server_exe=resolve_llama_server_exe(),
+            llm_model_path=str(gguf) if gguf else "",
+            llm_server_exe=llm_server,
         )
 
     # ------------------------------------------------------------------ 队列事件
