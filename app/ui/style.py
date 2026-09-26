@@ -209,22 +209,6 @@ QLabel#notReadyBadge {
     font-weight: 600;
 }
 
-/* 推理设备角标（标题 + 设备值同一带边框组件） */
-QFrame#deviceBadge {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
-    border-radius: 10px;
-}
-QLabel#deviceLabelTitle {
-    font-size: 12px;
-    color: #6B7280;
-}
-QLabel#deviceLabelValue {
-    font-size: 13px;
-    font-weight: 600;
-    color: #374151;
-}
-
 /* ------------------------------ 导入区 ------------------------------ */
 QFrame#importDropArea {
     background: #F8FAFC;

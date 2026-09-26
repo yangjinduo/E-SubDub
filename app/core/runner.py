@@ -86,7 +86,6 @@ class TaskConfig:
     auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
     asr_model_dir: str = ""
     tts_model_dir: str = ""
-    tts_codec_dir: str = ""
     llm_model_path: str = ""       # GGUF 文件路径
     llm_server_exe: str = ""       # llama-server 可执行文件路径
 
@@ -493,14 +492,14 @@ class PipelineRunner(QThread):
             STRETCH_REVIEW_LOW,
             TTSLoadMemoryError,
             TTSEngine,
+            tts_runtime_ready,
         )
         from app.pipeline.voice_pick import cut_sentence_slices, sentence_base_name
 
         cfg = self._cfg
-        if not (Path(cfg.tts_codec_dir) / "config.json").is_file():
-            raise FileNotFoundError(
-                tr("runner.codec_missing", path=cfg.tts_codec_dir)
-            )
+        ok, detail = tts_runtime_ready()
+        if not ok:
+            raise RuntimeError(tr("runner.tts_env_missing", detail=detail))
 
         self._ws.tts_dir.mkdir(parents=True, exist_ok=True)
         for old in self._ws.tts_dir.glob("*.wav"):
@@ -544,7 +543,7 @@ class PipelineRunner(QThread):
         device = cfg.device
         device_used = device  # 首轮实际跑通的设备，复听重生成时复用
         try:
-            engine.load(cfg.tts_model_dir, cfg.tts_codec_dir, device=device, progress=progress)
+            engine.load(cfg.tts_model_dir, device=device, progress=progress)
             done = 0
             for i, seg in todo:
                 self._check()
@@ -555,6 +554,7 @@ class PipelineRunner(QThread):
                 out = _tts_out(seg)
                 raw_dur, ratio = engine.synthesize(
                     seg.target_text, ref, seg.duration, str(out),
+                    lang=cfg.target_lang_code,
                 )
                 _retire_old(seg, out)
                 seg.tts_audio_path = str(out)
@@ -568,6 +568,10 @@ class PipelineRunner(QThread):
             # 内存/页面文件不足：换 CPU 重载只会同时驻留更多内存，直接失败
             engine.unload()
             raise
+        except _PipelineCancelled:
+            # 加载中用户取消：不触发 CPU 回退重载，直接终止
+            engine.unload()
+            raise
         except Exception as exc:
             engine.unload()
             if device == "cpu":
@@ -575,7 +579,7 @@ class PipelineRunner(QThread):
             self._log(tr("runner.device_fallback", stage=tr("step.tts"), error=exc))
             device_used = "cpu"
             engine = TTSEngine()
-            engine.load(cfg.tts_model_dir, cfg.tts_codec_dir, device="cpu", progress=progress)
+            engine.load(cfg.tts_model_dir, device="cpu", progress=progress)
             done = 0
             for i, seg in todo:
                 self._check()
@@ -588,6 +592,7 @@ class PipelineRunner(QThread):
                 out = _tts_out(seg)
                 raw_dur, ratio = engine.synthesize(
                     seg.target_text, ref, seg.duration, str(out),
+                    lang=cfg.target_lang_code,
                 )
                 _retire_old(seg, out)
                 seg.tts_audio_path = str(out)
@@ -619,7 +624,7 @@ class PipelineRunner(QThread):
                 engine = TTSEngine()
                 try:
                     engine.load(
-                        cfg.tts_model_dir, cfg.tts_codec_dir,
+                        cfg.tts_model_dir,
                         device=device_used, progress=progress,
                     )
                     for done, local_idx in enumerate(regen_local, 1):
@@ -631,6 +636,7 @@ class PipelineRunner(QThread):
                         out = _tts_out(seg)
                         _raw, _ratio = engine.synthesize(
                             seg.target_text, ref, seg.duration, str(out),
+                            lang=cfg.target_lang_code,
                         )
                         _retire_old(seg, out)
                         seg.tts_audio_path = str(out)

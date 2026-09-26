@@ -23,7 +23,7 @@ from app.core.i18n import get_setting, set_setting, tr
 from app.core.runner import TaskConfig
 from app.core.task_manager import TaskItem, TaskManager, TaskState
 from app.pipeline.llm_engine import resolve_llama_server_exe
-from app.resources.model import get_models_root, get_resource_manager
+from app.resources.model import get_resource_manager
 from app.ui.widgets.import_area import ImportArea
 from app.ui.widgets.pipeline_panel import (
     DUBBING_STEP_IDS,
@@ -226,11 +226,13 @@ class TaskWindow(QDialog):
             self._panel.log(tr("main.log.missing_resources", names="、".join(missing)))
             return False
 
-        # 2. TTS 音频编解码器（独立仓库，不在 tts 资源体积内）
-        codec_dir = get_models_root() / "tts" / "MOSS-Audio-Tokenizer"
-        if dubbing and not (codec_dir / "config.json").is_file():
-            self._panel.log(tr("runner.codec_missing", path=str(codec_dir)))
-            return False
+        # 2. TTS 独立运行环境（IndexTTS-2.5 子进程：.venv-tts + third_party/index-tts）
+        if dubbing:
+            from app.pipeline.tts import tts_runtime_ready
+            ok, detail = tts_runtime_ready()
+            if not ok:
+                self._panel.log(tr("runner.tts_env_missing", detail=detail))
+                return False
 
         # 3. llama-server（LLM 校对/翻译的推理服务）
         if not resolve_llama_server_exe():
@@ -277,7 +279,6 @@ class TaskWindow(QDialog):
             auto_accept_reviews=self._auto_accept_check.isChecked(),
             asr_model_dir=resource_manager.get_resource_path("transcribe") or "",
             tts_model_dir=resource_manager.get_resource_path("tts") or "",
-            tts_codec_dir=str(get_models_root() / "tts" / "MOSS-Audio-Tokenizer"),
             llm_model_path=str(gguf),
             llm_server_exe=resolve_llama_server_exe(),
         )

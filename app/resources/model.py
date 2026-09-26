@@ -1,7 +1,7 @@
 """资源（模型 / 工具）数据模型与单例管理器。
 
 资源分五项：音频提取（FFmpeg）、人声分离（Demucs htdemucs）、音频转文字
-（MOSS-Transcribe-Diarize）、文本校对与翻译（Qwen3 GGUF）、声音克隆（MOSS-TTS-Local-1.7B）。
+（MOSS-Transcribe-Diarize）、文本校对与翻译（Qwen3 GGUF）、声音克隆（IndexTTS-2.5）。
 
 真实检测规则：
 - FFmpeg：内置工具，get_ffmpeg_path() 非 None 即就绪；
@@ -146,7 +146,7 @@ _RESOURCE_DEFINITIONS: list[dict] = [
     {"key": "demucs", "feature_name": "人声分离", "model_name": "Demucs htdemucs"},
     {"key": "transcribe", "feature_name": "音频转文字", "model_name": "MOSS-Transcribe-Diarize"},
     {"key": "translate", "feature_name": "文本校对与翻译", "model_name": "Qwen3-4B"},
-    {"key": "tts", "feature_name": "声音克隆", "model_name": "MOSS-TTS-Local-1.7B"},
+    {"key": "tts", "feature_name": "声音克隆", "model_name": "IndexTTS-2.5"},
 ]
 
 # 五项资源的下载元数据表（translate 条目随 set_llm_variant() 重建）
@@ -175,27 +175,21 @@ RESOURCE_META: dict[str, ResourceMeta] = {
         default_subdir="asr/MOSS-Transcribe-Diarize",
     ),
     "translate": _llm_meta(DEFAULT_LLM_VARIANT),
-    # MOSS-TTS-Local-1.7B：与主环境共用 transformers 5.17（官方推荐 5.0.0），
-    # trust_remote_code 加载（Qwen3-1.7B 骨干，零样本克隆仅需参考音频无需转写）。
-    # 注意：audio tokenizer 为独立仓库 OpenMOSS-Team/MOSS-Audio-Tokenizer，
-    # 不含在本仓库 6.1GB 内，TTS 模块实现时需预下载（详见 spec 待 POC 项）。
+    # IndexTTS-2.5：零样本声音克隆（GPT 骨干 + flow-matching 解码 + BigVGAN）。
+    # 官方依赖 transformers 4.52，与主环境（ASR 所需 5.x）冲突 → 运行于
+    # .venv-tts 子进程（见 app/pipeline/tts.py）；源码 third_party/index-tts
+    # 免安装直接导入。辅助模型（w2v-bert-2.0 / BigVGAN / CAMPPlus / 语义
+    # 编码器）不在本仓库内，首次推理时自动下载到模型目录 hf_cache/
+    # （约 3GB，国内网络自动走魔搭镜像）。
     "tts": ResourceMeta(
         key="tts",
-        repo_id="openmoss/MOSS-TTS-Local-Transformer",
-        allow_patterns=None,  # 整仓下载（safetensors 合计约 6.1GB）
-        download_size_gb=6.1,
-        homepage_url="https://modelscope.cn/models/openmoss/MOSS-TTS-Local-Transformer",
-        default_subdir="tts/MOSS-TTS-Local-1.7B",
+        repo_id="IndexTeam/IndexTTS-2.5",
+        allow_patterns=None,  # 整仓下载（config.yaml + gpt.pth + s2mel 等，约 5.1GB）
+        download_size_gb=5.1,
+        homepage_url="https://modelscope.cn/models/IndexTeam/IndexTTS-2.5",
+        default_subdir="tts/IndexTTS-2.5",
     ),
 }
-
-# TTS 附属 audio tokenizer（processor 加载必需）：独立仓库、独立目录。
-# 声音克隆资源就绪 = 主模型 + audio tokenizer 两者齐备；
-# 下载由设置窗口在主模型完成后自动串联（见 resource_dialog）。
-TTS_CODEC_REPO_ID = "openmoss/MOSS-Audio-Tokenizer"
-TTS_CODEC_SUBDIR = "tts/MOSS-Audio-Tokenizer"
-TTS_CODEC_SIZE_GB = 7.1
-TTS_CODEC_MIN_BYTES = 5 * _GB  # 实际约 7.1GB，过小视为不完整
 
 
 # ---------------------------------------------------------------- 通用工具
@@ -284,26 +278,17 @@ def _detect_translate() -> Path | None:
 
 
 def _detect_tts() -> Path | None:
-    """TTS：主模型与 audio tokenizer 两个目录均齐备才算就绪。
+    """TTS：模型目录存在 config.yaml 且总大小 > 1GB，且无下载半成品文件。
 
-    - 主模型：config 类文件存在、总大小 > 1GB、无 *.incomplete 半成品；
-    - audio tokenizer：config.json 存在、总大小 > 5GB、无半成品
-      （缺 tokenizer 时 TTS 阶段会直接失败，故一并纳入就绪判定）。
+    仅判定模型权重；独立运行环境（.venv-tts / third_party/index-tts）由
+    app.pipeline.tts.tts_runtime_ready() 在任务启动时校验。
     """
     d = get_models_root() / RESOURCE_META["tts"].default_subdir
     if not d.is_dir():
         return None
-    if not any(
-        (d / name).is_file()
-        for name in ("config.yaml", "config.json", "configuration.json")
-    ):
+    if not (d / "config.yaml").is_file():
         return None
     if dir_size_bytes(d) <= _GB or _has_incomplete_files(d):
-        return None
-    codec = get_models_root() / TTS_CODEC_SUBDIR
-    if not (codec / "config.json").is_file():
-        return None
-    if dir_size_bytes(codec) <= TTS_CODEC_MIN_BYTES or _has_incomplete_files(codec):
         return None
     return d
 

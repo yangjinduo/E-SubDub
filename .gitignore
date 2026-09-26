@@ -1,6 +1,7 @@
 # 虚拟环境（推荐）
 .venv/
 .venv-x64/
+.venv-tts
 
 # 大模型
 models/

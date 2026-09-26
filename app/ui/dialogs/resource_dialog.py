@@ -1,7 +1,11 @@
-"""统一设置窗口：界面语言切换 + 全部资源管理。
+"""统一设置窗口：界面语言切换 + 运行环境搭建 + 全部资源管理。
 
 替代旧的"单资源设置对话框"：一个入口查看五项资源的准备状态与本地路径，
 并直接执行删除（移入 .trash）与下载（魔搭 snapshot_download，含进度与取消）。
+
+"运行环境"行位于资源列表最上方（音频提取之上）：检测 TTS 独立虚拟环境
+（.venv-tts）与 llama-server 是否就绪，未就绪时一键搭建（后台 QThread，
+含步骤进度与取消；完成后资源栏的推理设备卡同步刷新）。
 
 下载使用全局 ModelDownloader 单例，关闭本窗口后下载仍可在后台继续，
 完成后资源状态栏卡片自动刷新。
@@ -28,26 +32,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.hardware import DeviceInfo, detect_device_standalone
 from app.core.i18n import SUPPORTED_LANGUAGES, get_language, set_language, tr
 from app.resources.downloader import get_model_downloader
+from app.resources.env_setup import environment_status, get_env_setup_manager
 from app.resources.model import (
     RESOURCE_META,
-    TTS_CODEC_REPO_ID,
-    TTS_CODEC_SIZE_GB,
-    TTS_CODEC_SUBDIR,
     ResourceInfo,
     ResourceManager,
     ResourceStatus,
     get_models_root,
 )
 
-# audio tokenizer 下载线程的 key（无独立资源行，进度/结果映射回 "tts" 行展示）
-_CODEC_KEY = "tts_codec"
-_CODEC_NAME = "MOSS-Audio-Tokenizer"
-
 
 class SettingsDialog(QDialog):
-    """统一设置窗口（资源管理 + 界面语言）。
+    """统一设置窗口（运行环境 + 资源管理 + 界面语言）。
 
     信号：
         log_requested(str): 请求主窗口日志区追加一行
@@ -57,12 +56,21 @@ class SettingsDialog(QDialog):
     log_requested = Signal(str)
     language_changed = Signal(str)
 
-    def __init__(self, manager: ResourceManager, parent=None) -> None:
+    def __init__(
+        self,
+        manager: ResourceManager,
+        device: DeviceInfo | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._manager = manager
+        self._device = device or detect_device_standalone()
         self._downloader = get_model_downloader()
+        self._env_mgr = get_env_setup_manager()
         # 每行需要动态更新的控件引用：key -> {"progress": QLabel}
         self._row_refs: dict[str, dict] = {}
+        # 运行环境行的进度控件引用（搭建进行中时存在）
+        self._env_refs: dict[str, QLabel] = {}
         self._rows_host: QWidget | None = None
 
         self._build_ui()
@@ -74,6 +82,11 @@ class SettingsDialog(QDialog):
         self._downloader.download_finished.connect(self._on_download_finished)
         self._downloader.download_failed.connect(self._on_download_failed)
         self._downloader.download_cancelled.connect(self._on_download_cancelled)
+        # 环境搭建进度 / 结果
+        self._env_mgr.setup_started.connect(self._on_env_started)
+        self._env_mgr.setup_progress.connect(self._on_env_progress)
+        self._env_mgr.setup_finished.connect(self._on_env_finished)
+        self._env_mgr.setup_cancelled.connect(self._on_env_cancelled)
 
     # ------------------------------------------------------------------ 构建
 
@@ -150,12 +163,13 @@ class SettingsDialog(QDialog):
         self._rebuild_resource_rows()
 
     def _rebuild_resource_rows(self) -> None:
-        """按管理器当前状态重建全部资源行。"""
+        """按管理器当前状态重建全部资源行（运行环境行置顶）。"""
         if self._rows_host is not None:
             self._rows_layout.removeWidget(self._rows_host)
             self._rows_host.deleteLater()
             self._rows_host = None
         self._row_refs.clear()
+        self._env_refs.clear()
 
         host = QWidget()
         grid = QGridLayout(host)
@@ -164,7 +178,10 @@ class SettingsDialog(QDialog):
         grid.setVerticalSpacing(8)
         grid.setColumnStretch(2, 1)
 
-        for row, info in enumerate(self._manager.resources()):
+        # 第 0 行：运行环境（TTS 虚拟环境 + LLAMA 服务），位于音频提取之上
+        self._build_env_row(grid)
+
+        for row, info in enumerate(self._manager.resources(), start=1):
             # 列 0：功能名 + 模型名
             name_column = QWidget()
             name_layout = QVBoxLayout(name_column)
@@ -193,15 +210,100 @@ class SettingsDialog(QDialog):
         self._rows_host = host
         self._rows_layout.addWidget(host)
 
-    def _is_downloading(self, key: str) -> bool:
-        """资源行是否处于下载中（tts 行包含附属 codec 的串联下载）。"""
-        if self._downloader.is_downloading(key):
-            return True
-        return key == "tts" and self._downloader.is_downloading(_CODEC_KEY)
+    def _build_env_row(self, grid: QGridLayout) -> None:
+        """运行环境行：检测状态 + 搭建按钮 / 搭建进度 + 取消。"""
+        env = environment_status()
+        running = self._env_mgr.is_running()
+        both_ready = env["tts_ready"] and env["llama_ready"]
 
-    def _display_key(self, key: str) -> str:
-        """下载信号 key → 资源行 key（codec 下载映射回 tts 行）。"""
-        return "tts" if key == _CODEC_KEY else key
+        # 列 0：名称 + 副标题
+        name_column = QWidget()
+        name_layout = QVBoxLayout(name_column)
+        name_layout.setContentsMargins(0, 0, 0, 0)
+        name_layout.setSpacing(1)
+        feature = QLabel(tr("settings.env_feature"))
+        feature.setStyleSheet("font-size: 13px; font-weight: 600; color: #111827;")
+        sub = QLabel(tr("settings.env_sub"))
+        sub.setStyleSheet("font-size: 12px; color: #6B7280;")
+        name_layout.addWidget(feature)
+        name_layout.addWidget(sub)
+        grid.addWidget(name_column, 0, 0)
+
+        # 列 1：状态徽标（tooltip 列出分项明细）
+        badge = QLabel()
+        badge.setObjectName("readyBadge" if both_ready else "notReadyBadge")
+        badge.setText(tr("common.ready") if both_ready else tr("common.not_ready"))
+        badge.setToolTip(
+            f"{tr('bar.env_tts')}：{tr('common.ready' if env['tts_ready'] else 'common.not_ready')}\n"
+            f"{tr('bar.env_llama')}：{tr('common.ready' if env['llama_ready'] else 'common.not_ready')}"
+        )
+        grid.addWidget(badge, 0, 1)
+
+        # 列 2：状态明细 / 搭建进度
+        cell = QWidget()
+        layout = QVBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        if running:
+            progress = QLabel(tr("env.step.check_tts"))
+            progress.setStyleSheet("color: #2563EB;")
+            self._env_refs["progress"] = progress
+            layout.addWidget(progress)
+        elif both_ready:
+            ready = QLabel(tr("settings.env_ready_detail"))
+            ready.setStyleSheet("color: #6B7280; font-size: 12px;")
+            layout.addWidget(ready)
+        else:
+            missing = QLabel(tr("settings.env_missing_detail"))
+            missing.setStyleSheet("color: #374151;")
+            layout.addWidget(missing)
+        grid.addWidget(cell, 0, 2)
+
+        # 列 3：操作（搭建 / 取消）
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        if running:
+            cancel_button = QPushButton(tr("common.cancel"))
+            cancel_button.clicked.connect(self._env_mgr.cancel)
+            actions_layout.addWidget(cancel_button)
+        elif not both_ready:
+            setup_button = QPushButton(tr("settings.env_setup"))
+            setup_button.clicked.connect(self._on_env_setup_clicked)
+            actions_layout.addWidget(setup_button)
+        actions_layout.addStretch(1)
+        grid.addWidget(actions, 0, 3)
+
+    def _on_env_setup_clicked(self) -> None:
+        """点击"开始搭建"：后台补齐缺失的 TTS 虚拟环境 / llama-server。"""
+        self._env_mgr.start_setup(self._device)
+
+    def _on_env_started(self) -> None:
+        """环境搭建开始：记录日志并刷新运行环境行（按钮 → 进度 + 取消）。"""
+        self.log_requested.emit(tr("env.setup_started"))
+        self._rebuild_resource_rows()
+
+    def _on_env_progress(self, text: str) -> None:
+        """环境搭建进度文案更新。"""
+        progress = self._env_refs.get("progress")
+        if progress is not None:
+            progress.setText(text)
+
+    def _on_env_finished(self, ok: bool, detail: str) -> None:
+        """环境搭建结束：日志 + 失败弹窗 + 刷新运行环境行。"""
+        self.log_requested.emit(detail)
+        if not ok:
+            QMessageBox.warning(self, tr("settings.title"), detail)
+        self._rebuild_resource_rows()
+
+    def _on_env_cancelled(self) -> None:
+        """环境搭建被取消：记录日志并刷新运行环境行。"""
+        self.log_requested.emit(tr("env.setup_cancelled"))
+        self._rebuild_resource_rows()
+
+    def _is_downloading(self, key: str) -> bool:
+        """资源行是否处于下载中。"""
+        return self._downloader.is_downloading(key)
 
     def _build_location_cell(self, info: ResourceInfo) -> QWidget:
         """位置列：下载进度 / 就绪路径 / 需下载体积 / 内置提示。"""
@@ -333,13 +435,11 @@ class SettingsDialog(QDialog):
     def _on_cancel_clicked(self, key: str) -> None:
         """取消正在进行的下载（等待当前文件写完后清理，见 downloader 说明）。"""
         self._downloader.cancel(key)
-        if key == "tts":
-            self._downloader.cancel(_CODEC_KEY)
         self._rebuild_resource_rows()
 
     def _on_download_progress(self, key: str, percent: float, speed: str) -> None:
         """更新对应行的下载进度文案。"""
-        refs = self._row_refs.get(self._display_key(key))
+        refs = self._row_refs.get(key)
         if refs is not None:
             refs["progress"].setText(
                 tr("settings.downloading", pct=f"{percent * 100:.0f}", speed=speed)
@@ -347,13 +447,6 @@ class SettingsDialog(QDialog):
 
     def _on_download_finished(self, key: str, local_path: str) -> None:
         """下载完成：默认路径按检测结果刷新；自定义位置直接标记就绪。"""
-        if key == _CODEC_KEY:
-            # codec 是 tts 资源的附属：完成后刷新 tts 行的就绪判定
-            self._manager.refresh("tts")
-            self.log_requested.emit(tr("settings.download_done", name=_CODEC_NAME))
-            self._rebuild_resource_rows()
-            return
-
         info = self._manager.get(key)
         meta = RESOURCE_META.get(key)
         default_target = (
@@ -366,38 +459,19 @@ class SettingsDialog(QDialog):
         self.log_requested.emit(tr("settings.download_done", name=info.model_name))
         self._rebuild_resource_rows()
 
-        # 声音克隆主模型就绪后，自动串联下载附属 audio tokenizer（TTS 必需，
-        # 缺失时 _detect_tts 判定不就绪）；codec 固定放默认目录（运行期按
-        # 默认路径读取）
-        if key == "tts":
-            codec_dir = get_models_root() / TTS_CODEC_SUBDIR
-            if not (codec_dir / "config.json").is_file():
-                self._downloader.start_download(
-                    key=_CODEC_KEY,
-                    repo_id=TTS_CODEC_REPO_ID,
-                    target_dir=str(codec_dir),
-                    total_size_gb=TTS_CODEC_SIZE_GB,
-                )
-                self.log_requested.emit(
-                    tr("settings.download_started", name=_CODEC_NAME)
-                )
-                self._rebuild_resource_rows()
-
     def _on_download_failed(self, key: str, error: str) -> None:
         """下载失败：弹窗提示并恢复行的初始状态。"""
-        info = self._manager.get(self._display_key(key))
-        name = _CODEC_NAME if key == _CODEC_KEY else info.model_name
-        self.log_requested.emit(tr("settings.download_failed", name=name, error=error))
+        info = self._manager.get(key)
+        self.log_requested.emit(tr("settings.download_failed", name=info.model_name, error=error))
         QMessageBox.warning(
-            self, tr("settings.title"), tr("settings.download_failed", name=name, error=error)
+            self, tr("settings.title"), tr("settings.download_failed", name=info.model_name, error=error)
         )
         self._rebuild_resource_rows()
 
     def _on_download_cancelled(self, key: str) -> None:
         """下载被用户取消：记录日志并恢复行的初始状态。"""
-        info = self._manager.get(self._display_key(key))
-        name = _CODEC_NAME if key == _CODEC_KEY else info.model_name
-        self.log_requested.emit(tr("settings.download_cancelled", name=name))
+        info = self._manager.get(key)
+        self.log_requested.emit(tr("settings.download_cancelled", name=info.model_name))
         self._rebuild_resource_rows()
 
     # ------------------------------------------------------------------ 删除

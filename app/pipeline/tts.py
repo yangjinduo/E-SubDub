@@ -1,334 +1,103 @@
 # -*- coding: utf-8 -*-
-"""声音克隆 TTS：MOSS-TTS-Local-1.7B 进程内推理引擎。
+"""声音克隆 TTS：IndexTTS-2.5 子进程推理引擎。
 
-与主流水线共用 transformers 5.17（trust_remote_code），无独立 venv / 子进程：
-- 零样本克隆：仅需参考音频（无需转写文本），build_user_message(reference=[wav])；
-- 时长控制：原生 token 级（1s ≈ 12.5 tokens），消息内 tokens 提示 + generate
-  max_new_tokens 上限双重约束；偏差仍超限时用 time-stretch 兜底对齐；
-- audio tokenizer 为独立仓库（openmoss/MOSS-Audio-Tokenizer，约 7.1GB），
-  processor 构造时通过 codec_path 指定本地目录。
+IndexTTS-2.5（github.com/index-tts/index-tts，魔搭 IndexTeam/IndexTTS-2.5）
+依赖 transformers 4.52，与主环境（ASR 所需 transformers 5.x）冲突，故运行
+于独立 venv（.venv-tts，--system-site-packages 共享主环境 torch）的常驻
+子进程中：
+
+- 父进程（本模块）：管理 worker（app/pipeline/tts_worker.py）生命周期，
+  经 stdin/stdout JSON Lines 协议逐句请求合成；worker 落盘成品 wav，
+  静音裁剪与时长对齐（time-stretch）在父进程完成（soundfile/librosa）；
+- 子进程：加载一次 IndexTTS2 常驻服务，进程退出即释放显存；加载期间
+  库日志（">> GPT weights restored..." 等）经 stderr 回流到界面日志。
+
+时长控制：IndexTTS 原生 duration_factor 仅粗粒度语速缩放（0.5-2.0），
+沿用既有方案——生成后按目标时长 time-stretch 兜底，伸缩比超出
+[STRETCH_REVIEW_LOW, STRETCH_REVIEW_HIGH] 由调用方标记 needs_review。
+
+支持语言：中 / 英 / 日 / 西 / 阿（lang 代码 zh/en/ja/es/ar），其余语言
+由 IndexTTS 内部回退到 common 语言 token。
 """
 
 from __future__ import annotations
 
-import gc
+import json
 import logging
+import os
+import queue
+import subprocess
+import threading
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
 import soundfile as sf
-import torch
-import transformers
 
-from app.pipeline.base import ProgressCallback, report_progress, weights_loading_progress
+from app.core.config import AppConfig
+from app.pipeline.base import ProgressCallback, report_progress
 from app.pipeline.mix import stretch_to_duration
 
 logger = logging.getLogger(__name__)
 
-# transformers 主版本：4.x 用 torch_dtype 参数，5.x 用 dtype 参数
-_TF_MAJOR = int(transformers.__version__.split(".")[0])
-
-# 音频 token 速率：1 秒 ≈ 12.5 tokens（官方 README）
-TOKENS_PER_SECOND = 12.5
 # 伸缩比超过该区间（需 >1.3x 压缩 / >1.43x 拉长）时标记 needs_review
 STRETCH_REVIEW_HIGH = 1.3   # 生成时长 / 目标时长 上限
 STRETCH_REVIEW_LOW = 0.7    # 下限
 # 生成时长与目标偏差在该比例内直接使用，不做 time-stretch
 STRETCH_TOLERANCE = 0.10
-# max_new_tokens 相对目标 tokens 的富余（防止轻微超出被截断）
-_TOKEN_MARGIN = 64
 
-# 官方推荐解码参数（MOSS-TTSLocal-1.7B）
-_GEN_KWARGS = dict(
-    audio_temperature=1.0,
-    audio_top_p=0.95,
-    audio_top_k=50,
-    audio_repetition_penalty=1.1,
-)
+# 独立运行环境布局（项目根相对路径）
+TTS_VENV_DIR = AppConfig.APP_ROOT / ".venv-tts"
+INDEX_REPO_DIR = AppConfig.APP_ROOT / "third_party" / "index-tts"
+_WORKER_PATH = Path(__file__).with_name("tts_worker.py")
+
+# 子进程单句合成最长等待（秒）：IndexTTS 长句低显存分片可能较慢
+_SYNTH_TIMEOUT_SEC = 1800.0
 
 
 class TTSLoadMemoryError(RuntimeError):
-    """内存/页面文件不足导致 TTS 加载失败（换 CPU 重试只会更糟，直接失败）。"""
+    """内存/显存不足导致 TTS 加载或合成失败（换 CPU 重试只会更糟，直接失败）。"""
 
 
-def _apply_tf5_compat_patches(model) -> None:
-    """transformers 5.x 运行时兼容补丁（模型按 4.x 行为编写，不改模型文件）。
+# ---------------------------------------------------------------- 环境检测
 
-    1. 5.x 的 DynamicCache 初始化读取主 config 的 ``num_hidden_layers`` /
-       ``layer_types``，而 MOSS-TTS 把它们放在 ``language_config`` 子字典内，
-       缺失时 ``generate()`` 抛 AttributeError → 从子字典补齐；
-    2. 4.x 的 KV cache 由模型 forward 内部管理（attention 层断言
-       ``past_key_value is None``），5.x 改为 generate 预创建 DynamicCache
-       并传入 → 跳过预创建，保持 4.x 的 cache 路径；
-    3. 5.x 删除了 ``GenerationMixin._get_initial_cache_position``，而 remote
-       code 的 ``_sample`` 启动时仍按 (cur_len, device, model_kwargs) 签名
-       调用（缺失时 AttributeError，即本次崩溃点）→ 按 4.x 语义重建：
-       cache_position = arange(past_len, cur_len)；
-    4. 4.x ``prepare_inputs_for_generation`` 会依据 past_key_values 把
-       input_ids 裁剪为未处理的 token，5.x 改由内置 _sample 传
-       next_sequence_length 控制切片；remote 的 _sample 每步传全量
-       input_ids → 已有 KV cache 时手动裁剪到最后一个 token，否则整段
-       序列会重复写入 cache 且位置编号错乱（生成乱码音频）；
-    5. remote code 以 4.x 签名调用 ``create_causal_mask``（
-       ``input_embeds`` + ``cache_position``），5.x 参数改名为
-       ``inputs_embeds`` 且已移除 ``cache_position`` → 在 remote
-       模块命名空间内包一层参数翻译（local_transformer.forward 内部
-       按模块名直接调用，无法在实例上打补丁）。
-    """
-    import sys
-    import types
+def get_tts_venv_python() -> Path:
+    """返回 .venv-tts 的 Python 可执行文件路径。"""
+    if os.name == "nt":
+        return TTS_VENV_DIR / "Scripts" / "python.exe"
+    return TTS_VENV_DIR / "bin" / "python"
 
-    cfg = model.config
-    if getattr(cfg, "num_hidden_layers", None) is None:
-        lc = getattr(cfg, "language_config", None)
-        if lc is not None and getattr(lc, "num_hidden_layers", None) is not None:
-            cfg.num_hidden_layers = lc.num_hidden_layers
-            if getattr(cfg, "layer_types", None) is None and getattr(lc, "layer_types", None):
-                cfg.layer_types = list(lc.layer_types)
-    model._prepare_cache_for_generation = lambda *args, **kwargs: None
 
-    if not hasattr(model, "_get_initial_cache_position"):
-        def _get_initial_cache_position(_self, cur_len, device, model_kwargs):
-            past_length = 0
-            pkv = model_kwargs.get("past_key_values")
-            if pkv is not None:
-                if hasattr(pkv, "get_seq_length") and pkv.get_seq_length() is not None:
-                    past_length = int(pkv.get_seq_length())
-                elif isinstance(pkv, (list, tuple)) and pkv and pkv[0] is not None:
-                    past_length = int(pkv[0][0].shape[2])
-            model_kwargs["cache_position"] = torch.arange(
-                past_length, cur_len, device=device,
-            )
-            return model_kwargs
-
-        model._get_initial_cache_position = types.MethodType(
-            _get_initial_cache_position, model,
+def tts_runtime_ready() -> tuple[bool, str]:
+    """检查 TTS 独立运行环境是否齐备，返回 (就绪, 缺失说明中文)。"""
+    py = get_tts_venv_python()
+    if not py.is_file():
+        return False, "缺少独立运行环境 .venv-tts（未创建或未完成依赖安装）"
+    if not (INDEX_REPO_DIR / "indextts").is_dir():
+        return False, "缺少 IndexTTS 源码 third_party/index-tts（需 git clone 官方仓库）"
+    if os.name == "nt":
+        site_packages = TTS_VENV_DIR / "Lib" / "site-packages"
+    else:
+        site_packages = TTS_VENV_DIR / "lib"
+        site_packages = next(
+            (p for p in site_packages.glob("python*/site-packages") if p.is_dir()),
+            site_packages,
         )
-
-    orig_prepare = type(model).prepare_inputs_for_generation
-
-    def _prepare_inputs_compat(model_self, input_ids, *args, **kwargs):
-        past = kwargs.get("past_key_values")
-        if (
-            past is not None
-            and getattr(past, "get_seq_length", None) is not None
-            and past.get_seq_length() > 0
-        ):
-            input_ids = input_ids[:, -1:]
-        return orig_prepare(model_self, input_ids, *args, **kwargs)
-
-    model.prepare_inputs_for_generation = types.MethodType(
-        _prepare_inputs_compat, model,
-    )
-
-    # create_causal_mask 参数翻译：input_embeds → inputs_embeds，丢弃 cache_position
-    local_tf = getattr(model, "local_transformer", None)
-    if local_tf is not None:
-        remote_mod = sys.modules.get(type(local_tf).__module__)
-        if (
-            remote_mod is not None
-            and hasattr(remote_mod, "create_causal_mask")
-            and not getattr(remote_mod, "_subdub_ccm_patched", False)
-        ):
-            orig_ccm = remote_mod.create_causal_mask
-
-            def _create_causal_mask_compat(*args, **kwargs):
-                if "input_embeds" in kwargs:
-                    kwargs["inputs_embeds"] = kwargs.pop("input_embeds")
-                kwargs.pop("cache_position", None)
-                return orig_ccm(*args, **kwargs)
-
-            remote_mod.create_causal_mask = _create_causal_mask_compat
-            remote_mod._subdub_ccm_patched = True
-
-
-class TTSEngine:
-    """MOSS-TTS-Local-1.7B 推理引擎：加载 / 合成 / 释放。"""
-
-    def __init__(self) -> None:
-        self._model = None
-        self._processor = None
-        self._device = "cpu"
-
-    @property
-    def loaded(self) -> bool:
-        return self._model is not None
-
-    def load(
-        self,
-        model_dir: str,
-        codec_dir: str,
-        device: str = "cpu",
-        progress: Optional[ProgressCallback] = None,
-    ) -> None:
-        """加载 TTS 模型与 audio tokenizer（顺序与 dtype 针对低内存机器优化）。
-
-        codec_dir 为 MOSS-Audio-Tokenizer 本地目录（processor 必需）。
-
-        内存策略（16GB 内存 + 6GB 显存机器实测约束，os error 1455 复盘）：
-        - 先加载主模型（bf16 约 3.1GB）并移入计算设备、释放内存，
-          再加载 audio tokenizer（fp32 约 6.6GB）。若先加载 codec，
-          16GB 内存机器加载主模型时 mmap 提交失败（页面文件太小 1455）；
-        - CPU 路径主模型同样用 bf16：fp32 主模型(6.1GB)+codec(6.6GB)
-          合计 12.7GB 会压爆 16GB 内存，bf16 后合计约 9.7GB；
-        - codec 仅在 GPU 剩余显存 > 1.15 倍体积时上 GPU，移入失败留 CPU
-          ——processor 按 codec 自身设备独立编解码（_get_audio_tokenizer_device），
-          跨设备安全；大显存机器 codec 自动上 GPU 提速。
-        """
-        self.unload()
-        self._device = device
-        # mps 的 bf16 路径未验证，保持 fp32；cuda/cpu 用 bf16（精度足够且内存减半）
-        dtype = torch.float32 if device == "mps" else torch.bfloat16
-        dtype_kwargs = {"dtype": dtype} if _TF_MAJOR >= 5 else {"torch_dtype": dtype}
-        attn = "sdpa" if device in ("cuda", "mps") else "eager"
-
-        from transformers import AutoModel, AutoProcessor
-
-        def _is_memory_error(exc: BaseException) -> bool:
-            # Windows 页面文件不足：OSError errno/winerror 1455；
-            # Rust safetensors 抛的 OSError 里 errno 只在消息文本 "(os error 1455)" 中
-            return (
-                isinstance(exc, MemoryError)
-                or getattr(exc, "winerror", None) == 1455
-                or getattr(exc, "errno", None) == 1455
-                or "1455" in str(exc)
+    if not (site_packages / "transformers").is_dir():
+        return False, ".venv-tts 内依赖未安装（transformers 4.52 等）"
+    ta_dir = site_packages / "torchaudio"
+    if not ta_dir.is_dir():
+        return False, (
+            ".venv-tts 内缺少 torchaudio 2.8"
+            "（pip install --no-deps torchaudio==2.8.0 后删除 torchaudio/lib 下的 C 扩展）"
+        )
+    for ext in ("_torchaudio.pyd", "_torchaudio.so"):
+        if (ta_dir / "lib" / ext).is_file():
+            return False, (
+                "torchaudio 的 C 扩展与共享的 torch 2.14 二进制不兼容，"
+                "请删除 .venv-tts 内 torchaudio/lib 下的 _torchaudio.* 与 libtorchaudio.*"
             )
-
-        # 1. 主模型：先加载并移入计算设备，尽早释放内存（GPU 3.1GB / CPU 同为 3.1GB）
-        report_progress(progress, 0.05, f"加载声音克隆模型 MOSS-TTS（{device}）")
-        try:
-            with weights_loading_progress(progress, 0.05, 0.45, "加载声音克隆模型权重"):
-                self._model = AutoModel.from_pretrained(
-                    model_dir,
-                    trust_remote_code=True,
-                    attn_implementation=attn,
-                    **dtype_kwargs,
-                ).to(device)
-        except (MemoryError, OSError) as exc:
-            if _is_memory_error(exc):
-                raise TTSLoadMemoryError(
-                    "内存不足：加载 TTS 主模型失败（约需 4GB 可用内存）。"
-                    "请关闭其他程序后重试；若仍失败，请增大虚拟内存"
-                    "（页面文件）或清理系统盘空间。"
-                ) from exc
-            raise
-        self._model.eval()
-        _apply_tf5_compat_patches(self._model)
-
-        # 2. 处理器 + audio tokenizer（fp32 约 6.6GB，本阶段为内存峰值）
-        report_progress(progress, 0.5, f"加载 TTS 处理器（含 audio tokenizer）: {Path(codec_dir).name}")
-        try:
-            with weights_loading_progress(progress, 0.5, 0.95, "加载音频编解码器权重"):
-                self._processor = AutoProcessor.from_pretrained(
-                    model_dir,
-                    trust_remote_code=True,
-                    codec_path=codec_dir,
-                )
-        except (MemoryError, OSError) as exc:
-            if _is_memory_error(exc):
-                raise TTSLoadMemoryError(
-                    "内存不足：加载 audio tokenizer（约 6.6GB）失败。"
-                    "请关闭其他程序后重试；若仍失败，请增大虚拟内存"
-                    "（页面文件）或清理系统盘空间。"
-                ) from exc
-            raise
-
-        # 3. codec 安置：GPU 剩余显存足够才上 GPU；移入失败降级留 CPU
-        tokenizer = self._processor.audio_tokenizer
-        codec_on_gpu = False
-        need_gb = free_gb = 0.0
-        try:
-            if device == "cuda":
-                need = sum(p.numel() * p.element_size() for p in tokenizer.parameters())
-                free, _total = torch.cuda.mem_get_info()
-                need_gb, free_gb = need / 2**30, free / 2**30
-                if free > need * 1.15:
-                    self._processor.audio_tokenizer = tokenizer.to(device)
-                    codec_on_gpu = True
-                    logger.info("audio tokenizer 已移入 GPU（剩余显存 %.1fGB）", free_gb)
-            elif device == "mps":
-                self._processor.audio_tokenizer = tokenizer.to(device)
-                codec_on_gpu = True
-        except RuntimeError as exc:
-            logger.warning("audio tokenizer 移入 %s 失败，保留在 CPU（跨设备安全）: %r", device, exc)
-        if device != "cpu":
-            # 界面可见 codec 安置：codec 留 CPU 时生成阶段 CPU 占用会明显偏高
-            report_progress(
-                progress, 0.97,
-                "音频编解码器已上 GPU" if codec_on_gpu
-                else f"音频编解码器留在 CPU（剩余显存 {free_gb:.1f}GB，需约 {need_gb:.1f}GB）",
-            )
-
-        report_progress(progress, 1.0, "TTS 模型加载完成")
-
-    def unload(self) -> None:
-        """释放模型与处理器。"""
-        self._model = None
-        self._processor = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # ------------------------------------------------------------------ 合成
-
-    def synthesize(
-        self,
-        text: str,
-        ref_wav: str,
-        target_duration: float,
-        out_path: str,
-    ) -> tuple[float, float]:
-        """克隆参考音色合成一句语音，返回 (实际时长, 伸缩比)。
-
-        - token 级时长控制：目标 tokens = target_duration × 12.5，写入消息提示
-          并作为 max_new_tokens 上限（含少量富余）；
-        - 生成后偏差仍在 STRETCH_TOLERANCE 外时用 time-stretch 对齐到目标时长；
-        - stretch_ratio = 原始生成时长 / 目标时长，超出 [0.7, 1.3] 由调用方
-          标记 needs_review。
-        """
-        if not self.loaded:
-            raise RuntimeError("TTS 模型未加载，请先调用 load()")
-        if not Path(ref_wav).is_file():
-            raise FileNotFoundError(f"参考音频不存在: {ref_wav}")
-
-        target_tokens = max(int(round(target_duration * TOKENS_PER_SECOND)), 8)
-        conv = [[
-            self._processor.build_user_message(
-                text=text, reference=[str(ref_wav)], tokens=target_tokens,
-            )
-        ]]
-        batch = self._processor(conv, mode="generation")
-        input_ids = batch["input_ids"].to(self._device)
-        attention_mask = batch["attention_mask"].to(self._device)
-
-        with torch.inference_mode():
-            outputs = self._model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=target_tokens + _TOKEN_MARGIN,
-                **_GEN_KWARGS,
-            )
-
-        message = self._processor.decode(outputs)[0]
-        audio = message.audio_codes_list[0]
-        sr = int(self._processor.model_config.sampling_rate)
-        wav = audio.detach().cpu().to(torch.float32).numpy()
-
-        # 去掉首尾静音，避免拉伸判断与混音排布被静音干扰
-        trimmed = _trim_silence(wav)
-
-        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        sf.write(str(out_path), trimmed, sr, subtype="PCM_16")
-        raw_duration = len(trimmed) / sr
-
-        ratio = raw_duration / target_duration if target_duration > 0 else 1.0
-        if abs(raw_duration - target_duration) / max(target_duration, 1e-6) > STRETCH_TOLERANCE:
-            stretched = stretch_to_duration(str(out_path), target_duration, str(out_path))
-            logger.info(
-                "TTS 时长对齐: 原始 %.2fs → 目标 %.2fs（伸缩比 %.2f，拉伸后 %.2fs）",
-                raw_duration, target_duration, ratio, stretched,
-            )
-        return raw_duration, ratio
+    return True, ""
 
 
 def _trim_silence(wav, threshold_db: float = -45.0) -> "object":
@@ -356,3 +125,256 @@ def _trim_silence(wav, threshold_db: float = -45.0) -> "object":
     start = max(0, (nonzero[0] - pad_frames) * frame)
     end = min(len(data), (nonzero[-1] + 1 + pad_frames) * frame)
     return data[start:end]
+
+
+class TTSEngine:
+    """IndexTTS-2.5 推理引擎：启动 / 请求 / 释放 worker 子进程。"""
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None
+        self._stdout_queue: queue.Queue = queue.Queue()
+        self._stderr_lines: deque = deque()
+        self._stderr_tail: deque = deque(maxlen=30)  # 报错时取末尾若干行
+        self._next_id = 1
+
+    @property
+    def loaded(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    # ------------------------------------------------------------------ 加载
+
+    def load(
+        self,
+        model_dir: str,
+        device: str = "cpu",
+        progress: Optional[ProgressCallback] = None,
+    ) -> None:
+        """启动 worker 子进程并等待模型加载完成（ready 消息）。
+
+        加载期间的库日志经 stderr 回流为进度消息（界面日志可见各组件
+        加载次序）；kind=memory 的致命错误抛 TTSLoadMemoryError。
+        """
+        self.unload()
+
+        ok, detail = tts_runtime_ready()
+        if not ok:
+            raise RuntimeError(f"TTS 运行环境未就绪：{detail}")
+        if not (Path(model_dir) / "config.yaml").is_file():
+            raise FileNotFoundError(f"IndexTTS-2.5 模型目录无效（缺 config.yaml）: {model_dir}")
+
+        cmd = [
+            str(get_tts_venv_python()), str(_WORKER_PATH),
+            "--model-dir", str(model_dir),
+            "--device", device,
+        ]
+        if device.startswith("cuda"):
+            cmd.append("--bf16")
+
+        report_progress(progress, 0.05, f"启动 TTS 推理子进程（{device}）")
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            # 强制 IndexTTS 辅助模型（w2v-bert/campplus/bigvgan 等）走魔搭下载：
+            # 国内网络对 huggingface.co 常见 TCP 可通但 TLS 证书校验失败，
+            # IndexTTS 的 need_proxy() 会误判为可直连；此开关使其改走
+            # ModelScope（映射见 indextts/utils/model_download.py，失败兜底 hf-mirror）
+            "USE_MODELSCOPE": "true",
+        }
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            cwd=str(AppConfig.APP_ROOT),
+            env=env,
+        )
+        self._stdout_queue = queue.Queue()
+        self._stderr_lines.clear()
+        threading.Thread(target=self._drain_stdout, daemon=True).start()
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+        report_progress(
+            progress, 0.1,
+            "加载 IndexTTS-2.5 权重（首次运行会自动下载辅助模型，请耐心等待）",
+        )
+        while True:
+            msg = self._wait_message(timeout=0.25)
+            if msg is None:
+                # 心跳：泵出库日志并承担取消检查点（消息固定，避免日志刷屏）
+                self._pump_stderr_logs(progress, frac=0.5)
+                report_progress(progress, 0.5, "正在加载 IndexTTS-2.5（各组件进度见日志）")
+                continue
+            event = msg.get("event")
+            if event == "ready":
+                break
+            if event == "fatal":
+                error = str(msg.get("error") or "未知错误")
+                if msg.get("kind") == "memory":
+                    raise TTSLoadMemoryError(
+                        f"内存/显存不足：加载 IndexTTS-2.5 失败（约需 6GB 显存）。{error}"
+                    )
+                raise RuntimeError(f"加载 IndexTTS-2.5 失败：{error}")
+            # 其余消息（理论上不会有）忽略继续等
+        self._pump_stderr_logs(progress, frac=0.98)
+        report_progress(progress, 1.0, "IndexTTS-2.5 加载完成")
+
+    def unload(self) -> None:
+        """结束 worker 子进程（先礼后兵），释放显存。"""
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                try:
+                    proc.stdin.write('{"cmd": "shutdown"}\n')  # type: ignore[union-attr]
+                    proc.stdin.flush()  # type: ignore[union-attr]
+                    proc.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    proc.kill()
+                    proc.wait(timeout=5)
+        finally:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except OSError:
+                    pass
+
+    # ------------------------------------------------------------------ 合成
+
+    def synthesize(
+        self,
+        text: str,
+        ref_wav: str,
+        target_duration: float,
+        out_path: str,
+        lang: str = "zh",
+    ) -> tuple[float, float]:
+        """克隆参考音色合成一句语音，返回 (实际时长, 伸缩比)。
+
+        - worker 完成推理并落盘；父进程裁首尾静音后按目标时长判断：
+          偏差在 STRETCH_TOLERANCE 外用 time-stretch 对齐；
+        - stretch_ratio = 裁剪后时长 / 目标时长，超出 [0.7, 1.3] 由调用方
+          标记 needs_review。
+        """
+        if not self.loaded:
+            raise RuntimeError("TTS 模型未加载，请先调用 load()")
+        if not Path(ref_wav).is_file():
+            raise FileNotFoundError(f"参考音频不存在: {ref_wav}")
+
+        rid = self._next_id
+        self._next_id += 1
+        request = {
+            "id": rid, "text": text, "ref": str(ref_wav),
+            "out": str(out_path), "lang": lang,
+        }
+        self._proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")  # type: ignore[union-attr]
+        self._proc.stdin.flush()  # type: ignore[union-attr]
+
+        waited = 0.0
+        while True:
+            msg = self._wait_message(timeout=0.5)
+            if msg is None:
+                waited += 0.5
+                self._pump_stderr_logs(None)
+                if waited > _SYNTH_TIMEOUT_SEC:
+                    raise RuntimeError(f"TTS 合成超时（>{_SYNTH_TIMEOUT_SEC:.0f} 秒）")
+                continue
+            if msg.get("id") != rid:
+                continue  # 迟到的其他响应（如上句失败后的残留），忽略
+            if not msg.get("ok"):
+                error = str(msg.get("error") or "未知错误")
+                if msg.get("kind") == "memory":
+                    raise TTSLoadMemoryError(f"内存/显存不足：TTS 合成失败。{error}")
+                raise RuntimeError(f"TTS 合成失败：{error}")
+            break
+
+        # 后处理（父进程）：裁静音 + 时长对齐
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        wav, sr = sf.read(str(out_path), dtype="float32", always_2d=True)
+        trimmed = _trim_silence(wav[:, 0])
+        sf.write(str(out_path), trimmed, sr, subtype="PCM_16")
+        raw_duration = len(trimmed) / sr
+
+        ratio = raw_duration / target_duration if target_duration > 0 else 1.0
+        if abs(raw_duration - target_duration) / max(target_duration, 1e-6) > STRETCH_TOLERANCE:
+            stretched = stretch_to_duration(str(out_path), target_duration, str(out_path))
+            logger.info(
+                "TTS 时长对齐: 原始 %.2fs → 目标 %.2fs（伸缩比 %.2f，拉伸后 %.2fs）",
+                raw_duration, target_duration, ratio, stretched,
+            )
+        return raw_duration, ratio
+
+    # ------------------------------------------------------------------ 子进程 IO
+
+    def _drain_stdout(self) -> None:
+        """后台线程：stdout → 消息队列；EOF 放入空串哨兵。"""
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        for line in iter(proc.stdout.readline, ""):
+            line = line.strip()
+            if line:
+                self._stdout_queue.put(line)
+        self._stdout_queue.put("")  # EOF 哨兵（协议消息均为非空行）
+
+    def _drain_stderr(self) -> None:
+        """后台线程：stderr → 日志行缓冲（供泵出到界面/日志）。"""
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        for line in iter(proc.stderr.readline, ""):
+            self._stderr_lines.append(line)
+
+    def _wait_message(self, timeout: float) -> Optional[dict]:
+        """取下一条协议消息；超时返回 None；子进程退出抛 RuntimeError。"""
+        try:
+            line = self._stdout_queue.get(timeout=timeout)
+        except queue.Empty:
+            proc = self._proc
+            if proc is not None and proc.poll() is not None:
+                raise RuntimeError(
+                    f"TTS 子进程意外退出（code={proc.poll()}）：{self._stderr_text()}"
+                )
+            return None
+        if line == "":
+            raise RuntimeError(f"TTS 子进程已退出：{self._stderr_text()}")
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("TTS worker 非协议消息: %s", line[:200])
+            return None
+
+    def _pump_stderr_logs(
+        self,
+        progress: Optional[ProgressCallback],
+        frac: float = 0.5,
+    ) -> None:
+        """把 worker 的 stderr 日志行泵出到进度回调（或本地日志）。
+
+        加载期传 progress → 界面日志可见各组件加载次序；合成期传 None →
+        仅记入本地日志。IndexTTS 用 ">>" 前缀打印关键节点，过滤保留。
+        """
+        while True:
+            try:
+                line = self._stderr_lines.popleft()
+            except IndexError:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            self._stderr_tail.append(line)
+            if progress is not None:
+                report_progress(progress, frac, line)
+            else:
+                logger.info("[tts-worker] %s", line)
+
+    def _stderr_text(self) -> str:
+        """报错用的 stderr 末尾若干行（截断到单行 200 字符）。"""
+        lines = [ln[:200] for ln in self._stderr_tail]
+        return " | ".join(lines[-8:]) or "（无输出）"

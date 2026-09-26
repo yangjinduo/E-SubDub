@@ -1,7 +1,12 @@
-"""顶部资源状态栏：五张资源卡片 + 统一设置按钮 + 推理设备角标。
+"""顶部资源状态栏：推理设备卡 + 五张资源卡片 + 统一设置按钮。
+
+最左侧的推理设备卡与其他资源卡同尺寸同风格：上行"推理设备" + 环境
+就绪徽标（TTS 虚拟环境与 LLAMA 服务均就绪才显示已就绪，徽标 tooltip
+给出分项明细），下行设备描述（CUDA/MPS 绿色，CPU 红色并带慢速提示）。
 
 设置按钮不再分散在各卡片上，而是位于所有卡片右侧，点击后打开统一设置
-窗口（查看全部资源路径 / 状态，并执行删除与下载）。
+窗口（查看全部资源路径 / 状态，并执行删除与下载；运行环境搭建入口也在
+该窗口的"运行环境"行）。
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -15,6 +20,10 @@ from app.resources.model import ResourceInfo, ResourceManager, ResourceStatus
 def _feature_label(info: ResourceInfo) -> str:
     """功能名按资源 key 取当前界面语言文案（模型名等专有名词不翻译）。"""
     return tr(f"resource.{info.key}.feature")
+
+
+def _badge_text(ready: bool) -> str:
+    return tr("common.ready") if ready else tr("common.not_ready")
 
 
 class ResourceCard(QFrame):
@@ -56,21 +65,78 @@ class ResourceCard(QFrame):
         """按最新资源信息刷新卡片内容与徽标。"""
         self._feature_label.setText(_feature_label(info))
         self._model_label.setText(info.model_name)
+        self._set_badge(info.status is ResourceStatus.READY, tooltip="")
 
-        if info.status is ResourceStatus.READY:
-            self._badge.setText(tr("common.ready"))
-            self._badge.setObjectName("readyBadge")
+    def _set_badge(self, ready: bool, tooltip: str) -> None:
+        """刷新徽标文案 / 样式 / 提示（objectName 变化后需重新应用样式）。"""
+        self._badge.setText(_badge_text(ready))
+        self._badge.setObjectName("readyBadge" if ready else "notReadyBadge")
+        if tooltip:
+            self._badge.setToolTip(tooltip)
         else:
-            self._badge.setText(tr("common.not_ready"))
-            self._badge.setObjectName("notReadyBadge")
-        # objectName 变化后需重新应用样式
+            self._badge.setToolTip("")
+        self._badge.style().unpolish(self._badge)
+        self._badge.style().polish(self._badge)
+        self._badge.adjustSize()
+
+
+class DeviceCard(QFrame):
+    """推理设备卡（最左侧，与其他资源卡同尺寸同风格）。
+
+    上行："推理设备" + 运行环境就绪徽标（TTS 虚拟环境与 LLAMA 服务
+    均就绪才为已就绪；徽标 tooltip 列出分项状态）；
+    下行：设备描述（CUDA/MPS 绿色，CPU 红色且描述自带慢速提示）。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("resourceCard")
+
+        self._feature_label = QLabel(tr("bar.device_title"))
+        self._feature_label.setObjectName("resourceFeatureName")
+
+        self._badge = QLabel()
+        self._badge.setObjectName("notReadyBadge")
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_row.addWidget(self._feature_label)
+        title_row.addStretch(1)
+        title_row.addWidget(self._badge)
+
+        self._device_label = QLabel()
+        self._device_label.setObjectName("resourceModelName")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+        layout.addLayout(title_row)
+        layout.addWidget(self._device_label)
+
+        self.setFixedHeight(64)
+
+    def set_device(self, device: DeviceInfo) -> None:
+        """更新设备描述与快慢提示色（快绿慢红）。"""
+        self._device_label.setText(device.description)
+        color = "#DC2626" if device.is_slow else "#059669"
+        self._device_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+
+    def set_env_state(self, tts_ready: bool, llama_ready: bool) -> None:
+        """更新运行环境徽标：TTS 虚拟环境与 LLAMA 服务均就绪才显示已就绪。"""
+        self._badge.setText(_badge_text(tts_ready and llama_ready))
+        self._badge.setObjectName("readyBadge" if (tts_ready and llama_ready) else "notReadyBadge")
+        self._badge.setToolTip(
+            f"{tr('bar.env_tts')}：{_badge_text(tts_ready)}\n"
+            f"{tr('bar.env_llama')}：{_badge_text(llama_ready)}"
+        )
         self._badge.style().unpolish(self._badge)
         self._badge.style().polish(self._badge)
         self._badge.adjustSize()
 
 
 class ResourceStatusBar(QFrame):
-    """顶部资源状态栏：横向五张卡片 + 统一设置按钮 + 当前推理设备角标。"""
+    """顶部资源状态栏：最左推理设备卡 + 横向五张资源卡片 + 统一设置按钮。"""
 
     # 右侧统一设置按钮被点击（无参数，打开统一设置窗口）
     settings_requested = Signal()
@@ -83,6 +149,10 @@ class ResourceStatusBar(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
+
+        # 最左侧：推理设备卡
+        self._device_card = DeviceCard()
+        layout.addWidget(self._device_card, 1)
 
         # 五张资源卡片
         for info in manager.resources():
@@ -99,23 +169,6 @@ class ResourceStatusBar(QFrame):
         self._settings_button.setFixedHeight(32)
         self._settings_button.clicked.connect(self.settings_requested.emit)
         layout.addWidget(self._settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addSpacing(8)
-
-        # 角落：当前推理设备（标题 + 设备值包进同一带边框组件，视觉上成一体）
-        device_badge = QFrame()
-        device_badge.setObjectName("deviceBadge")
-        device_column = QVBoxLayout(device_badge)
-        device_column.setContentsMargins(12, 6, 12, 6)
-        device_column.setSpacing(2)
-        self._device_title = QLabel(tr("bar.device_title"))
-        self._device_title.setObjectName("deviceLabelTitle")
-        self._device_title.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self._device_value = QLabel()
-        self._device_value.setObjectName("deviceLabelValue")
-        self._device_value.setAlignment(Qt.AlignmentFlag.AlignRight)
-        device_column.addWidget(self._device_title)
-        device_column.addWidget(self._device_value)
-        layout.addWidget(device_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # 订阅管理器状态变化
         self._manager.resource_status_changed.connect(self._on_status_changed)
@@ -127,8 +180,9 @@ class ResourceStatusBar(QFrame):
             card.update_info(self._manager.get(key))
 
     def set_device(self, device: DeviceInfo) -> None:
-        """更新角落的推理设备显示。"""
-        self._device_value.setText(tr("bar.device_value", value=device.description))
-        # 慢速设备提示色（红），快速设备为常规色
-        slow_color = "#DC2626" if device.is_slow else "#059669"
-        self._device_value.setStyleSheet(f"color: {slow_color};")
+        """更新推理设备显示。"""
+        self._device_card.set_device(device)
+
+    def set_env_state(self, tts_ready: bool, llama_ready: bool) -> None:
+        """更新运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态显示。"""
+        self._device_card.set_env_state(tts_ready, llama_ready)

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout
 from app.core.hardware import DeviceInfo, detect_device, detect_device_standalone
 from app.core.i18n import tr
 from app.core.task_manager import TaskManager
+from app.resources.env_setup import environment_status, get_env_setup_manager
 from app.resources.model import get_resource_manager
 from app.ui.dialogs.resource_dialog import SettingsDialog
 from app.ui.dialogs.task_dialog import TaskWindow
@@ -34,9 +35,13 @@ class MainWindow(QMainWindow):
         # 最新设备检测结果（语言切换重建界面时复用，不重复检测）
         self._device: DeviceInfo = device_info or detect_device_standalone()
         self._device_refreshed = False
+        # 运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态，设备卡徽标用
+        self._env_state: tuple[bool, bool] = (False, False)
         # 任务队列（挂在主窗口本体上：语言切换重建 central widget 不受影响）
         self._task_manager = TaskManager(parent=self)
         self._task_manager.device = self._device.device
+        # 环境搭建完成后刷新设备卡徽标（设置窗口触发，窗口关闭后仍生效）
+        get_env_setup_manager().environment_changed.connect(self._on_env_changed)
         # 打开中的任务窗口（含未开始的空窗口；应用退出时统一销毁）
         self._task_windows: list[TaskWindow] = []
         self._build_ui()
@@ -55,6 +60,7 @@ class MainWindow(QMainWindow):
         # ------------------------------ 顶部：资源状态栏 ------------------------------
         self._resource_bar = ResourceStatusBar(self._manager)
         self._resource_bar.set_device(self._device)
+        self._refresh_env_state()
         self._resource_bar.settings_requested.connect(self._open_settings_dialog)
 
         # ------------------------------ 中部：任务列表 ------------------------------
@@ -82,11 +88,23 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 设备
 
     def _refresh_device(self) -> None:
-        """基于 torch 的精确设备检测，刷新角标显示与队列推理设备。"""
+        """基于 torch 的精确设备检测，刷新设备卡显示与队列推理设备。"""
         self._device = detect_device()
         self._resource_bar.set_device(self._device)
         self._task_manager.device = self._device.device
         self._device_refreshed = True
+
+    # ------------------------------------------------------------------ 运行环境
+
+    def _refresh_env_state(self) -> None:
+        """检测运行环境（TTS 虚拟环境 / LLAMA 服务）并刷新设备卡徽标。"""
+        env = environment_status()
+        self._env_state = (env["tts_ready"], env["llama_ready"])
+        self._resource_bar.set_env_state(*self._env_state)
+
+    def _on_env_changed(self) -> None:
+        """环境搭建结束（含取消/失败）：重新检测并刷新设备卡徽标。"""
+        self._refresh_env_state()
 
     # ------------------------------------------------------------------ 任务窗口
 
@@ -135,8 +153,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 设置窗口
 
     def _open_settings_dialog(self) -> None:
-        """打开统一设置窗口（资源管理 + 界面语言）。"""
-        dialog = SettingsDialog(self._manager, self)
+        """打开统一设置窗口（运行环境 + 资源管理 + 界面语言）。"""
+        dialog = SettingsDialog(self._manager, device=self._device, parent=self)
         dialog.language_changed.connect(self._on_language_changed)
         dialog.exec()
 
