@@ -168,9 +168,16 @@ def mix_tracks(
 def stretch_to_duration(wav_path: str, target_dur: float, out_path: str) -> float:
     """把音频变调不变速地拉伸/压缩到目标时长，返回实际输出时长（秒）。
 
-    librosa.effects.time_stretch，rate = 原时长 / 目标时长
-    （rate < 1 减速拉长，rate > 1 加速缩短）。供 TTS 模块超长时兜底。
+    优先 ffmpeg atempo（时域 WSOLA 变速，语音听感自然）；librosa 的
+    phase_vocoder 变速会在语音上留下"轻微回声/发闷"的相位拖尾痕迹
+    （魔搭 demo 不做时长对齐所以听感干净），仅在内置 ffmpeg 不可用时
+    兜底使用。
     """
+    import os
+    import subprocess
+
+    from app.core.ffmpeg import get_ffmpeg_path
+
     y, sr = sf.read(wav_path, dtype="float32", always_2d=True)
     orig_dur = len(y) / sr
     if target_dur <= 0 or orig_dur <= 0:
@@ -178,19 +185,44 @@ def stretch_to_duration(wav_path: str, target_dur: float, out_path: str) -> floa
         return orig_dur
     rate = orig_dur / target_dur
     if abs(rate - 1.0) < 1e-6:
-        stretched = y
-    else:
-        import warnings
+        if os.path.abspath(out_path) != os.path.abspath(wav_path):
+            sf.write(out_path, y, sr, subtype="PCM_16")
+        return orig_dur
 
-        import librosa
+    ffmpeg = get_ffmpeg_path()
+    if ffmpeg:
+        # ffmpeg 不能原地读写同一文件：先写同目录临时文件，成功后原子替换
+        tmp = out_path + ".atempo.tmp.wav"
+        cmd = [
+            ffmpeg, "-y", "-nostdin", "-i", wav_path,
+            "-filter:a", f"atempo={rate:.6f}",
+            "-ar", str(int(sr)), "-ac", str(int(y.shape[1])),
+            "-acodec", "pcm_s16le", tmp,
+        ]
+        ret = subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        ).returncode
+        if ret == 0 and Path(tmp).is_file():
+            info = sf.info(tmp)
+            dur = float(info.frames) / float(info.samplerate)
+            os.replace(tmp, out_path)
+            return dur
+        try:  # atempo 失败（理论不会发生）：清理后走 librosa 兜底
+            Path(tmp).unlink()
+        except OSError:
+            pass
 
-        # time_stretch 期望时间在最后一维：(n, ch) → (ch, n) → 拉伸 → 转回。
-        # librosa 1.0 的 effects→phase_vocoder 链会自行触发 FutureWarning；
-        # 近静音帧的相位计算可能产生 NaN（numba 转换告警），此处静音并清洗输出。
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            stretched = librosa.effects.time_stretch(y.T, rate=rate).T.astype(np.float32)
-        stretched = np.nan_to_num(stretched, nan=0.0, posinf=0.0, neginf=0.0)
-    out_dur = len(stretched) / sr
+    # 兜底：librosa phase_vocoder（可能有轻微相位痕迹，仅在无 ffmpeg 时使用）
+    import warnings
+
+    import librosa
+
+    # time_stretch 期望时间在最后一维：(n, ch) → (ch, n) → 拉伸 → 转回。
+    # 近静音帧的相位计算可能产生 NaN（numba 转换告警），静音并清洗输出。
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        stretched = librosa.effects.time_stretch(y.T, rate=rate).T.astype(np.float32)
+    stretched = np.nan_to_num(stretched, nan=0.0, posinf=0.0, neginf=0.0)
     sf.write(out_path, stretched, sr, subtype="PCM_16")
-    return out_dur
+    return len(stretched) / sr
