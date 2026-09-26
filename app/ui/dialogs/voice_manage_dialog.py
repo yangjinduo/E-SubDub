@@ -31,11 +31,13 @@ _SAMPLE_MAX_CHARS = 80
 class VoiceManageDialog(QDialog):
     """说话人音色管理：确认后通过 get_ref_map() 返回可能被更换的映射。"""
 
-    def __init__(self, segments: list, ref_map: dict, parent=None) -> None:
+    def __init__(self, segments: list, ref_map: dict, sample_map: dict | None = None, parent=None) -> None:
         super().__init__(parent)
         self._segments = segments
         # 拷贝一份：用户取消时不影响外部原映射
         self._ref_map: "dict[str, str]" = dict(ref_map)
+        # 参考音频对应分段的原文（挑选阶段记录；用于例句与试听音频严格对照）
+        self._sample_map: "dict[str, str]" = dict(sample_map or {})
         # 卡片控件索引：spk -> {"name_label", "path_label", "listen_button"}
         self._cards: "dict[str, dict]" = {}
 
@@ -93,6 +95,11 @@ class VoiceManageDialog(QDialog):
         """更新某说话人的参考音频路径（“更换”按钮选中文件后调用）。"""
         self._ref_map[spk] = path
         self._refresh_card(spk)
+
+    def done(self, result: int) -> None:
+        """关闭前释放播放器持有的参考音频句柄（确认后会覆盖写 refs 目录）。"""
+        self._player.release()
+        super().done(result)
 
     # -------------------------------------------------------------- 内部构建
 
@@ -163,15 +170,20 @@ class VoiceManageDialog(QDialog):
         )
 
     def _sample_text(self, spk: str) -> str:
-        """该说话人未删除句子中最长的一句作为例句展示。"""
-        candidates = [
-            seg for seg in self._segments
-            if seg.spk == spk and not seg.deleted and str(seg.text)
-        ]
-        if not candidates:
-            return tr("voice.no_sample")
-        sample = max(candidates, key=lambda seg: len(str(seg.text)))
-        text = str(sample.text)
+        """例句 = 参考音频对应分段的原文（与试听音频严格对照）。
+
+        无记录时（如外部更换了参考音频）回退显示该说话人最长的一句，
+        此时例句仅代表说话人内容，不保证与试听音频对应。
+        """
+        text = str(self._sample_map.get(spk, "") or "").strip()
+        if not text:
+            candidates = [
+                seg for seg in self._segments
+                if seg.spk == spk and not seg.deleted and str(seg.text)
+            ]
+            if not candidates:
+                return tr("voice.no_sample")
+            text = str(max(candidates, key=lambda seg: len(str(seg.text))).text)
         if len(text) > _SAMPLE_MAX_CHARS:
             return text[:_SAMPLE_MAX_CHARS] + "…"
         return text

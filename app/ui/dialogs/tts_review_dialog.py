@@ -158,6 +158,11 @@ class TtsReviewDialog(QDialog):
         """返回包含译文修改的分段列表（即传入的原列表，已就地更新）。"""
         return self._segments
 
+    def done(self, result: int) -> None:
+        """关闭前释放播放器持有的配音文件句柄（重生成会覆盖同名 wav）。"""
+        self._player.release()
+        super().done(result)
+
     # -------------------------------------------------------------- 内部构建
 
     def _fill_rows(self) -> None:

@@ -156,6 +156,24 @@ class AudioPlayerBar(QWidget):
                 pass
         self._reset_playing_ui()
 
+    def release(self) -> None:
+        """停止播放并释放音源文件句柄。
+
+        QMediaPlayer 停止后仍持有音源文件（Windows 上导致同路径文件无法被
+        覆盖写入）；对话框关闭前调用，避免复听后重生成同名 wav 报
+        PermissionError (WinError 32)。
+        """
+        self.stop()
+        self._source = ""
+        if self._player is not None:
+            try:
+                self._player.setSource(QUrl())  # 清空音源，释放文件句柄
+            except Exception:
+                pass
+        self._play_button.setEnabled(False)
+        self._slider.setEnabled(False)
+        self._time_label.setText(tr("player.no_audio"))
+
     # -------------------------------------------------------------- 内部槽
 
     def _on_button_clicked(self) -> None:

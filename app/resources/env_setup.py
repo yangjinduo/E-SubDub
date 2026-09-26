@@ -10,7 +10,9 @@
   不兼容，纯 Python 层完整可用）。
 - LLAMA 服务：llama.cpp 预编译版只在 GitHub Releases 发布，经 gh-proxy.com
   加速下载（直连兜底），按平台/设备选包（Windows：有 N 卡选 CUDA 构建，
-  否则 CPU 构建；macOS：arm64 / x64），解压到 tools/llama.cpp/。
+  否则 CPU 构建；macOS：arm64 / x64），解压到 tools/llama.cpp/。CUDA 构建
+  需一并下载 cudart 伴随包（cublas/cudart 运行库，ggml-cuda.dll 动态链接
+  它们；缺失时 llama-server 静默回退 CPU）。
 
 所有步骤幂等：已完成部分（venv 齐备、源码在位、llama-server 在位）自动
 跳过，失败或取消后重跑只补缺失部分。
@@ -21,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import subprocess
 import sys
 import sysconfig
@@ -140,8 +143,28 @@ def environment_status() -> dict:
     return {
         "tts_ready": tts_ok,
         "tts_detail": tts_detail,
-        "llama_ready": bool(resolve_llama_server_exe()),
+        "llama_ready": _llama_runtime_ready(),
     }
+
+
+def _llama_runtime_ready() -> bool:
+    """llama-server 就绪 = 可执行存在 + CUDA 构建的运行库（cublas）齐全。
+
+    ggml-cuda.dll 动态链接 cublas64_XX.dll / cudart64_XX.dll（官方 cudart
+    伴随包提供）；缺失时 llama-server 能启动但 GPU offload 不生效、全程
+    CPU，视为未就绪，以便环境搭建自动补齐伴随包。
+    """
+    exe = resolve_llama_server_exe()
+    if not exe:
+        return False
+    if os.name == "nt":
+        dll_dir = Path(exe).parent
+        if (dll_dir / "ggml-cuda.dll").is_file():
+            for name in os.listdir(dll_dir):
+                if re.fullmatch(r"cublas64_\d+\.dll", name):
+                    return True
+            return False
+    return True
 
 
 def _main_site_packages() -> Path:
@@ -212,9 +235,9 @@ class _EnvSetupThread(QThread):
             results["tts_ready"] = tts_ok
 
             # ---- llama-server ----
-            if not resolve_llama_server_exe():
+            if not _llama_runtime_ready():
                 self._setup_llama()
-            results["llama_ready"] = bool(resolve_llama_server_exe())
+            results["llama_ready"] = _llama_runtime_ready()
 
             self.done.emit(results)
         except _Cancelled:
@@ -286,7 +309,13 @@ class _EnvSetupThread(QThread):
     # ------------------------------------------------------------------ LLAMA
 
     def _setup_llama(self) -> None:
-        """下载并解压 llama.cpp 预编译 llama-server 到 tools/llama.cpp/。"""
+        """下载并解压 llama.cpp 预编译 llama-server 到 tools/llama.cpp/。
+
+        Windows CUDA 构建的 ggml-cuda.dll 动态链接 cublas/cudart 运行库
+        （官方 cudart 伴随包提供，主包不含）；缺失时 llama-server 能启动
+        但 -ngl 不生效、静默回退 CPU。因此 CUDA 设备额外下载伴随包；
+        已有 llama-server 而仅缺运行库时只补伴随包，不重下主包。
+        """
         patterns = self._llama_asset_patterns()
         if not patterns:
             raise RuntimeError(
@@ -296,9 +325,25 @@ class _EnvSetupThread(QThread):
         self.step_changed.emit(tr("env.step.llama_api"))
         release, asset = self._fetch_release(patterns)
 
-        # 下载（gh-proxy 优先，直连兜底）；临时文件放 tools/ 下
         tools_dir = LLAMA_TOOLS_DIR.parent
         tools_dir.mkdir(parents=True, exist_ok=True)
+
+        if not resolve_llama_server_exe():
+            self._download_and_extract_asset(asset, tools_dir)
+            self._flatten_llama_dir()
+
+        # CUDA 构建：补齐 cublas/cudart 运行库（cudart 伴随包）
+        cuda_major = self._installed_cuda_major() or self._asset_cuda_major(asset)
+        if cuda_major and not _llama_runtime_ready():
+            cudart = self._cudart_asset_for(release, cuda_major)
+            if cudart is not None:
+                self._download_and_extract_asset(cudart, tools_dir)
+
+        if not resolve_llama_server_exe():
+            raise RuntimeError("llama-server 已解压但未被识别，请检查 tools/llama.cpp 目录")
+
+    def _download_and_extract_asset(self, asset: dict, tools_dir: Path) -> None:
+        """下载发布资产（gh-proxy 优先，直连兜底）并解压到 tools/llama.cpp/。"""
         tmp = tools_dir / asset["name"]
         try:
             self._download_file(asset["browser_download_url"], tmp)
@@ -306,7 +351,6 @@ class _EnvSetupThread(QThread):
             tmp.unlink(missing_ok=True)
             raise
 
-        # 解压
         self.step_changed.emit(tr("env.step.llama_extract"))
         LLAMA_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
         if tmp.name.endswith(".zip"):
@@ -317,21 +361,64 @@ class _EnvSetupThread(QThread):
                 tf.extractall(LLAMA_TOOLS_DIR, filter="data")
         tmp.unlink(missing_ok=True)
 
-        # 部分平台的压缩包带子目录：定位 llama-server 并把同目录文件摊平到根
+    def _flatten_llama_dir(self) -> None:
+        """部分平台的压缩包带子目录：定位 llama-server 并把同目录文件摊平到根。"""
         exe_name = "llama-server.exe" if os.name == "nt" else "llama-server"
-        if not (LLAMA_TOOLS_DIR / exe_name).is_file():
-            found = list(LLAMA_TOOLS_DIR.rglob(exe_name))
-            if not found:
-                raise RuntimeError("llama-server 解压后未找到可执行文件")
-            src_dir = found[0].parent
-            for f in src_dir.iterdir():
-                if f.is_file():
-                    dest = LLAMA_TOOLS_DIR / f.name
-                    if not dest.exists():
-                        dest.write_bytes(f.read_bytes())
+        if (LLAMA_TOOLS_DIR / exe_name).is_file():
+            return
+        found = list(LLAMA_TOOLS_DIR.rglob(exe_name))
+        if not found:
+            raise RuntimeError("llama-server 解压后未找到可执行文件")
+        src_dir = found[0].parent
+        for f in src_dir.iterdir():
+            if f.is_file():
+                dest = LLAMA_TOOLS_DIR / f.name
+                if not dest.exists():
+                    dest.write_bytes(f.read_bytes())
 
-        if not resolve_llama_server_exe():
-            raise RuntimeError("llama-server 已解压但未被识别，请检查 tools/llama.cpp 目录")
+    @staticmethod
+    def _asset_cuda_major(asset: dict) -> "str | None":
+        """主资产名中的 CUDA 大版本（llama-*-bin-win-cuda-12.4-x64.zip → "12"）。"""
+        m = re.search(r"-bin-win-cuda-(\d+)\.", str(asset.get("name", "")))
+        return m.group(1) if m else None
+
+    @staticmethod
+    def _installed_cuda_major() -> "str | None":
+        """已安装 ggml-cuda.dll 依赖的 cublas 大版本（mmap 扫描导入的 DLL 名）。
+
+        导入表字符串位于 .rdata 段（该 DLL 的 .text 段占 500MB+，字符串
+        离文件头很远），需全文件扫描；仅在环境搭建时执行一次。
+        """
+        exe = resolve_llama_server_exe()
+        if not exe:
+            return None
+        dll = Path(exe).with_name("ggml-cuda.dll")
+        if not dll.is_file():
+            return None
+        import mmap
+
+        pattern = re.compile(rb"cublas64_(\d+)\.dll")
+        try:
+            with open(dll, "rb") as f:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    m = pattern.search(mm)
+                    return m.group(1).decode() if m else None
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _cudart_asset_for(release: dict, cuda_major: str) -> "dict | None":
+        """同发布中匹配 CUDA 大版本的 cudart 伴随包（cudart-llama-*-win-cuda-12.4-x64.zip）。"""
+        for asset in release.get("assets", []):
+            name = str(asset.get("name", ""))
+            if (
+                name.startswith("cudart-llama")
+                and "-win-" in name
+                and f"-cuda-{cuda_major}." in name
+                and name.endswith(".zip")
+            ):
+                return asset
+        return None
 
     def _llama_asset_patterns(self) -> list[str]:
         """按平台/设备给出发布资产文件名后缀的优先级列表。"""
@@ -355,7 +442,7 @@ class _EnvSetupThread(QThread):
 
         资产名形如 llama-b11182-bin-win-cuda-12.4-x64.zip：必须以
         llama-{tag}-bin- 开头匹配，避免误选 cudart-llama-* 等 CUDA 运行时
-        伴随包（本程序所用构建已静态链接 CUDA 运行时，无需额外包）。
+        伴随包（CUDA 构建随后按需单独下载伴随包）。
         """
         headers = {
             "User-Agent": "SubtitleDubbingStudio",

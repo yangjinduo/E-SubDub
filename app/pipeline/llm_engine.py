@@ -62,6 +62,31 @@ def has_cuda_backend(server_exe: str) -> bool:
     return bool(server_exe) and Path(server_exe).with_name("ggml-cuda.dll").is_file()
 
 
+def cuda_backend_loadable(server_exe: str) -> bool:
+    """探测 ggml-cuda.dll 是否可加载（依赖缺失时 llama.cpp 会静默回退 CPU）。
+
+    ggml-cuda.dll 动态链接 cublas64_12.dll / cudart64_12.dll（官方 cudart
+    伴随包提供）；缺失时 llama-server 照常启动、-ngl 不生效、全程 CPU，
+    且不报任何错误。这里显式加载一次验证依赖完整（探测完立即卸载）。
+    """
+    if os.name != "nt":
+        return True  # 非 Windows 构建后端内嵌，无需探测
+    dll = Path(server_exe).with_name("ggml-cuda.dll")
+    if not dll.is_file():
+        return False
+    import ctypes
+
+    try:
+        handle = ctypes.WinDLL(str(dll))
+    except OSError:
+        return False
+    try:
+        ctypes.windll.kernel32.FreeLibrary(handle._handle)
+    except Exception:
+        pass
+    return True
+
+
 def _build_server_cmd(
     exe: str, model_path: str, port: int, threads: int, use_gpu: bool
 ) -> list:
@@ -144,7 +169,14 @@ class LlamaServerManager:
         self._port = port
 
         use_gpu = device == "cuda" and has_cuda_backend(self._exe)
-        if device == "cuda":
+        if use_gpu and not cuda_backend_loadable(self._exe):
+            use_gpu = False
+            report_progress(
+                progress, 0.0,
+                "ggml-cuda.dll 依赖缺失（缺 cublas/cudart 运行库，可重新运行"
+                "环境搭建补齐），llama-server 回退 CPU 推理",
+            )
+        elif device == "cuda":
             report_progress(
                 progress, 0.0,
                 "llama-server 启用 GPU 加速（-ngl 999）" if use_gpu

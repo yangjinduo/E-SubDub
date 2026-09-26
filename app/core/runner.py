@@ -105,6 +105,7 @@ class ReviewPayload:
     segments: list = field(default_factory=list)
     audio_wav: str = ""
     ref_map: dict = field(default_factory=dict)
+    sample_map: dict = field(default_factory=dict)  # voice：{spk: 参考句文本}
     source_lang: str = ""
     target_lang: str = ""
 
@@ -457,7 +458,7 @@ class PipelineRunner(QThread):
                 self._log(tr("runner.voice_reused"))
                 return refs
 
-        refs = pick_reference_segments(
+        refs, samples = pick_reference_segments(
             segments, vocals, self._ws.ref_dir,
             progress=self._null_progress(),
         )
@@ -467,6 +468,7 @@ class PipelineRunner(QThread):
 
         result = self._request_review(ReviewPayload(
             kind="voice", segments=segments, audio_wav=vocals, ref_map=refs,
+            sample_map=samples,
         ))
         refs = result.ref_map or refs
         # 把确认后的映射固化到 refs 目录（外部更换的文件复制进来）
@@ -541,118 +543,104 @@ class PipelineRunner(QThread):
 
         engine = TTSEngine()
         device = cfg.device
-        device_used = device  # 首轮实际跑通的设备，复听重生成时复用
         try:
-            engine.load(cfg.tts_model_dir, device=device, progress=progress)
-            done = 0
-            for i, seg in todo:
-                self._check()
-                ref = seg_refs.get(i)
-                if not ref:
-                    self._log(tr("runner.tts_no_ref", spk=seg.spk))
-                    continue
-                out = _tts_out(seg)
-                raw_dur, ratio = engine.synthesize(
-                    seg.target_text, ref, seg.duration, str(out),
-                    lang=cfg.target_lang_code,
-                )
-                _retire_old(seg, out)
-                seg.tts_audio_path = str(out)
-                seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
-                done += 1
-                self._stage_progress(STAGE_TTS)(
-                    done / len(todo),
-                    tr("runner.tts_progress", done=done, total=len(todo)),
-                )
-        except TTSLoadMemoryError:
-            # 内存/页面文件不足：换 CPU 重载只会同时驻留更多内存，直接失败
-            engine.unload()
-            raise
-        except _PipelineCancelled:
-            # 加载中用户取消：不触发 CPU 回退重载，直接终止
-            engine.unload()
-            raise
-        except Exception as exc:
-            engine.unload()
-            if device == "cpu":
-                raise
-            self._log(tr("runner.device_fallback", stage=tr("step.tts"), error=exc))
-            device_used = "cpu"
-            engine = TTSEngine()
-            engine.load(cfg.tts_model_dir, device="cpu", progress=progress)
-            done = 0
-            for i, seg in todo:
-                self._check()
-                if seg.tts_audio_path and Path(seg.tts_audio_path).is_file():
-                    done += 1
-                    continue  # 已在失败前生成
-                ref = seg_refs.get(i)
-                if not ref:
-                    continue
-                out = _tts_out(seg)
-                raw_dur, ratio = engine.synthesize(
-                    seg.target_text, ref, seg.duration, str(out),
-                    lang=cfg.target_lang_code,
-                )
-                _retire_old(seg, out)
-                seg.tts_audio_path = str(out)
-                seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
-                done += 1
-                self._stage_progress(STAGE_TTS)(
-                    done / len(todo),
-                    tr("runner.tts_progress", done=done, total=len(todo)),
-                )
-        finally:
-            engine.unload()
-
-        self._ws.save_segments(self._ws.tts_json, segments)
-
-        # 异常复听（存在伸缩超限句时暂停；对话框就地修改译文）
-        review_items = [
-            (i, seg) for i, seg in enumerate(segments) if seg.needs_review
-        ]
-        if review_items:
-            self._log(tr("runner.tts_review_needed", count=len(review_items)))
-            result = self._request_review(ReviewPayload(
-                kind="tts",
-                segments=[seg for _i, seg in review_items],
-                ref_map={"indices": [i for i, _seg in review_items]},
-            ))
-            # 勾选重生成的句子用（可能已修改的）译文重新合成
-            regen_local = list(result.regenerate_indices or [])
-            if regen_local:
-                engine = TTSEngine()
-                try:
-                    engine.load(
-                        cfg.tts_model_dir,
-                        device=device_used, progress=progress,
+            try:
+                engine.load(cfg.tts_model_dir, device=device, progress=progress)
+                done = 0
+                for i, seg in todo:
+                    self._check()
+                    ref = seg_refs.get(i)
+                    if not ref:
+                        self._log(tr("runner.tts_no_ref", spk=seg.spk))
+                        continue
+                    out = _tts_out(seg)
+                    raw_dur, ratio = engine.synthesize(
+                        seg.target_text, ref, seg.duration, str(out),
+                        lang=cfg.target_lang_code,
                     )
-                    for done, local_idx in enumerate(regen_local, 1):
-                        self._check()
-                        gi, seg = review_items[local_idx]
-                        ref = seg_refs.get(gi)
-                        if not ref:
-                            continue
-                        out = _tts_out(seg)
-                        _raw, _ratio = engine.synthesize(
-                            seg.target_text, ref, seg.duration, str(out),
-                            lang=cfg.target_lang_code,
-                        )
-                        _retire_old(seg, out)
-                        seg.tts_audio_path = str(out)
-                        progress(
-                            done / len(regen_local),
-                            tr("runner.tts_regen_progress", done=done, total=len(regen_local)),
-                        )
-                finally:
-                    engine.unload()
-            # 复听确认后清除全部待复核标记并保存
-            for _i, seg in review_items:
-                seg.needs_review = False
+                    _retire_old(seg, out)
+                    seg.tts_audio_path = str(out)
+                    seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
+                    done += 1
+                    self._stage_progress(STAGE_TTS)(
+                        done / len(todo),
+                        tr("runner.tts_progress", done=done, total=len(todo)),
+                    )
+            except Exception as exc:
+                # GPU 失败换 CPU 重试；内存不足与用户取消不重试（直接上抛）
+                if device == "cpu" or isinstance(
+                    exc, (TTSLoadMemoryError, _PipelineCancelled)
+                ):
+                    raise
+                self._log(tr("runner.device_fallback", stage=tr("step.tts"), error=exc))
+                engine.unload()
+                engine.load(cfg.tts_model_dir, device="cpu", progress=progress)
+                done = 0
+                for i, seg in todo:
+                    self._check()
+                    if seg.tts_audio_path and Path(seg.tts_audio_path).is_file():
+                        done += 1
+                        continue  # 已在失败前生成
+                    ref = seg_refs.get(i)
+                    if not ref:
+                        continue
+                    out = _tts_out(seg)
+                    raw_dur, ratio = engine.synthesize(
+                        seg.target_text, ref, seg.duration, str(out),
+                        lang=cfg.target_lang_code,
+                    )
+                    _retire_old(seg, out)
+                    seg.tts_audio_path = str(out)
+                    seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
+                    done += 1
+                    self._stage_progress(STAGE_TTS)(
+                        done / len(todo),
+                        tr("runner.tts_progress", done=done, total=len(todo)),
+                    )
+
             self._ws.save_segments(self._ws.tts_json, segments)
 
-        self._ws.mark_done(STAGE_TTS)
-        self._stage_end(STAGE_TTS)
+            # 异常复听（存在伸缩超限句时暂停；对话框就地修改译文）。
+            # 复听未决期间 engine 保持加载：勾选重生成时直接复用，避免重载；
+            # 用户不选重生成或取消时，由最外层 finally 统一释放。
+            review_items = [
+                (i, seg) for i, seg in enumerate(segments) if seg.needs_review
+            ]
+            if review_items:
+                self._log(tr("runner.tts_review_needed", count=len(review_items)))
+                result = self._request_review(ReviewPayload(
+                    kind="tts",
+                    segments=[seg for _i, seg in review_items],
+                    ref_map={"indices": [i for i, _seg in review_items]},
+                ))
+                # 勾选重生成的句子用（可能已修改的）译文重新合成
+                regen_local = list(result.regenerate_indices or [])
+                for done, local_idx in enumerate(regen_local, 1):
+                    self._check()
+                    gi, seg = review_items[local_idx]
+                    ref = seg_refs.get(gi)
+                    if not ref:
+                        continue
+                    out = _tts_out(seg)
+                    _raw, _ratio = engine.synthesize(
+                        seg.target_text, ref, seg.duration, str(out),
+                        lang=cfg.target_lang_code,
+                    )
+                    _retire_old(seg, out)
+                    seg.tts_audio_path = str(out)
+                    progress(
+                        done / len(regen_local),
+                        tr("runner.tts_regen_progress", done=done, total=len(regen_local)),
+                    )
+                # 复听确认后清除全部待复核标记并保存
+                for _i, seg in review_items:
+                    seg.needs_review = False
+                self._ws.save_segments(self._ws.tts_json, segments)
+
+            self._ws.mark_done(STAGE_TTS)
+            self._stage_end(STAGE_TTS)
+        finally:
+            engine.unload()
 
     # ------------------------------------------------------------------ LLM
 

@@ -302,7 +302,10 @@ class TaskManager(QObject):
                 payload.audio_wav, parent=parent,
             )
         elif payload.kind == "voice":
-            dialog = VoiceManageDialog(payload.segments, payload.ref_map, parent=parent)
+            dialog = VoiceManageDialog(
+                payload.segments, payload.ref_map,
+                sample_map=payload.sample_map, parent=parent,
+            )
         elif payload.kind == "tts":
             dialog = TtsReviewDialog(payload.segments, parent=parent)
         else:

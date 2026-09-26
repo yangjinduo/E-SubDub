@@ -118,14 +118,16 @@ def pick_reference_segments(
     min_dur: float = 3.0,
     max_dur: float = 12.0,
     progress: Optional[ProgressCallback] = None,
-) -> dict[str, str]:
-    """为每个说话人挑参考音色片段，返回 {spk: ref_wav_path}。
+) -> tuple[dict[str, str], dict[str, str]]:
+    """为每个说话人挑参考音色片段，返回 ({spk: ref_wav_path}, {spk: 参考句文本})。
 
     - 候选 = 未删除、时长在 [min_dur, max_dur] 的分段，取文本最长的前 3 条；
     - 无窗口内候选的说话人逐级放宽：>=1.5 秒 → 任意非零时长（宁短勿缺）；
     - 从候选中选音频质量最好的一条（RMS 适中且波动小），
       全部得分无效（片段过短）时取时长最长的一条；
     - 用 ffmpeg 切出 work_dir/ref_{spk}.wav（16kHz 单声道）。
+    - 参考句文本 = 实际选中分段的原文，供音色管理窗口与试听音频对照
+      （不能由界面自行按"最长句"猜测，两者挑选标准不同会导致对不上）。
     - 仅当说话人所有分段均被删除或时长为 0 时才不出现在返回值中。
     """
     work_dir = Path(work_dir)
@@ -141,6 +143,7 @@ def pick_reference_segments(
             by_spk.setdefault(seg.spk, []).append(seg)
 
     refs: dict[str, str] = {}
+    samples: dict[str, str] = {}
     spk_list = sorted(all_spk.keys())
     for i, spk in enumerate(spk_list):
         pool = by_spk.get(spk) or [
@@ -160,12 +163,13 @@ def pick_reference_segments(
         out_path = work_dir / f"ref_{spk}.wav"
         _cut_reference(vocals_wav, best.start, best.duration, out_path)
         refs[spk] = str(out_path)
+        samples[spk] = str(best.text)
         report_progress(
             progress,
             (i + 1) / len(spk_list),
             f"已生成 {spk} 参考音色（{best.start:.1f}~{best.end:.1f} 秒）",
         )
-    return refs
+    return refs, samples
 
 
 def cut_sentence_slices(
