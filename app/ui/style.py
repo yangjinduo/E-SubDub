@@ -229,6 +229,12 @@ QLabel#importHintSub {
     font-size: 13px;
     color: #64748B;
 }
+/* 有文件时的顶部计数文案（与"删除所选"按钮同行） */
+QLabel#importCountLabel {
+    font-size: 13px;
+    font-weight: 600;
+    color: #334155;
+}
 
 QFrame#fileInfoCard {
     background: #FFFFFF;
@@ -285,8 +291,9 @@ QLabel#stepArrow {
     font-size: 12px;
 }
 
-/* ------------------------------ 任务列表（主窗口） ------------------------------ */
-QTableWidget#taskTable {
+/* ------------------------------ 任务列表 / 导入文件表 ------------------------------ */
+QTableWidget#taskTable,
+QTableWidget#importFileTable {
     background: #FFFFFF;
     border: 1px solid #E5E7EB;
     border-radius: 10px;
@@ -294,13 +301,23 @@ QTableWidget#taskTable {
     selection-background-color: #EFF6FF;
     selection-color: #1D4ED8;
 }
-QTableWidget#taskTable QHeaderView::section {
+QTableWidget#taskTable QHeaderView::section,
+QTableWidget#importFileTable QHeaderView::section {
     background: #F9FAFB;
     color: #4B5563;
     border: none;
     border-bottom: 1px solid #E5E7EB;
     padding: 8px 6px;
     font-weight: 600;
+}
+QTableWidget#taskTable QLineEdit,
+QTableWidget#importFileTable QLineEdit {
+    border: none;
+    background: transparent;
+}
+/* 交替行底色（表格 setAlternatingRowColors） */
+QTableWidget#importFileTable:item:alternate {
+    background: #FAFBFC;
 }
 
 /* 新建任务按钮（任务列表头部） */
@@ -318,6 +335,28 @@ QPushButton#addTaskButton:hover {
 }
 QPushButton#addTaskButton:pressed {
     background: #1E40AF;
+}
+
+/* 行内删除按钮（表格删除列） */
+QPushButton#rowDeleteButton {
+    background: #FFFFFF;
+    border: 1px solid #FCA5A5;
+    border-radius: 6px;
+    padding: 2px 12px;
+    font-size: 12px;
+    color: #DC2626;
+}
+QPushButton#rowDeleteButton:hover {
+    background: #FEF2F2;
+    border-color: #F87171;
+}
+QPushButton#rowDeleteButton:pressed {
+    background: #FEE2E2;
+}
+QPushButton#rowDeleteButton:disabled {
+    background: #F9FAFB;
+    border-color: #E5E7EB;
+    color: #9CA3AF;
 }
 
 /* ------------------------------ 系统监视栏（深色格 + 折线图） ------------------------------ */

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""主窗口任务列表：四列表格（序号/任务名称/状态/进度）+ 新建任务按钮。
+"""主窗口任务列表：五列表格（序号/任务名称/状态/进度/删除）+ 新建/删除任务按钮。
 
 - 行数据与 TaskManager 队列同步（入列/移除整表重建，状态/进度单行刷新）；
 - 任务名称格底层绘制进度条（不遮挡文字），进度列显示百分比文本；
+- 支持多选（Shift 连选 / Ctrl 多选 / 鼠标框选），多选任务可经头部
+  "删除任务"按钮批量删除；每行删除列有独立删除按钮；删除前均弹确认；
 - 双击行发射 task_activated（打开/聚焦该任务的任务窗口）；
 - 右键菜单按任务状态提供：取消排队 / 重试 / 清理中间文件 / 打开输出文件夹 /
   移除记录。
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -119,37 +122,49 @@ class TaskListPanel(QFrame):
         self.setProperty("card", True)
         self._manager = manager
         self._row_by_id: dict[str, int] = {}
+        # 行删除按钮（task_id → 按钮，随整表重建刷新）
+        self._delete_buttons: dict[str, QPushButton] = {}
 
         title = QLabel(tr("queue.title"))
         title.setObjectName("sectionTitle")
         self._add_button = QPushButton(tr("queue.add"))
         self._add_button.setObjectName("addTaskButton")
         self._add_button.clicked.connect(self.add_requested.emit)
+        self._delete_button = QPushButton(tr("queue.delete"))
+        self._delete_button.setObjectName("dangerButton")
+        self._delete_button.setEnabled(False)
+        self._delete_button.clicked.connect(self._delete_selected_tasks)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self._add_button)
+        header.addWidget(self._delete_button)
 
-        self._table = QTableWidget(0, 4)
+        self._table = QTableWidget(0, 5)
         self._table.setObjectName("taskTable")
         self._table.setHorizontalHeaderLabels([
             tr("queue.col.index"), tr("queue.col.name"),
             tr("queue.col.status"), tr("queue.col.progress"),
+            tr("queue.col.delete"),
         ])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # 扩展选择：支持 Shift 连选、Ctrl 多选、鼠标拖拽框选
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_menu)
         self._table.cellDoubleClicked.connect(self._on_double_clicked)
+        self._table.itemSelectionChanged.connect(self._on_selection_changed)
         header_view = self._table.horizontalHeader()
         header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header_view.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header_view.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.verticalHeader().setDefaultSectionSize(38)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -173,6 +188,7 @@ class TaskListPanel(QFrame):
         tasks = self._manager.tasks()
         self._table.setRowCount(0)
         self._row_by_id.clear()
+        self._delete_buttons.clear()
         for row, item in enumerate(tasks):
             self._table.insertRow(row)
             self._row_by_id[item.id] = row
@@ -186,19 +202,42 @@ class TaskListPanel(QFrame):
             progress = QTableWidgetItem(f"{item.progress}%")
             progress.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
+            delete = self._build_row_delete_button(item)
+
             self._table.setItem(row, 0, index)
             self._table.setCellWidget(row, 1, name)
             self._table.setItem(row, 2, status)
             self._table.setItem(row, 3, progress)
+            self._table.setCellWidget(row, 4, delete)
+        self._on_selection_changed()
+
+    def _build_row_delete_button(self, item: TaskItem) -> QPushButton:
+        """构造行删除按钮（运行中/取消中禁用）。"""
+        button = QPushButton(tr("common.delete"))
+        button.setObjectName("rowDeleteButton")
+        button.setFixedHeight(28)
+        button.setEnabled(item.state not in (
+            TaskState.RUNNING, TaskState.CANCELLING,
+        ))
+        button.clicked.connect(
+            lambda _checked=False, tid=item.id: self._delete_task_by_id(tid)
+        )
+        self._delete_buttons[item.id] = button
+        return button
 
     def _update_row(self, item: TaskItem) -> None:
-        """刷新单行的状态与进度。"""
+        """刷新单行的状态、进度与删除按钮可用性。"""
         row = self._row_by_id.get(item.id)
         if row is None:
             return
         status = self._table.item(row, 2)
         if status is not None:
             status.setText(_status_text(item))
+        button = self._delete_buttons.get(item.id)
+        if button is not None:
+            button.setEnabled(item.state not in (
+                TaskState.RUNNING, TaskState.CANCELLING,
+            ))
         self._set_row_progress(row, item.progress)
 
     def _set_row_progress(self, row: int, value: int) -> None:
@@ -225,6 +264,78 @@ class TaskListPanel(QFrame):
         row = self._row_by_id.get(task_id)
         if row is not None:
             self._set_row_progress(row, value)
+
+    # ------------------------------------------------------------------ 删除
+
+    def _selected_items(self) -> list[TaskItem]:
+        """当前选中的任务（按行序）。"""
+        rows = sorted({
+            index.row() for index in self._table.selectionModel().selectedRows()
+        })
+        items = []
+        for row in rows:
+            item = self._task_at(row)
+            if item is not None:
+                items.append(item)
+        return items
+
+    def _on_selection_changed(self) -> None:
+        """头部"删除任务"按钮随选中状态启用/禁用。"""
+        self._delete_button.setEnabled(
+            any(
+                item.state not in (TaskState.RUNNING, TaskState.CANCELLING)
+                for item in self._selected_items()
+            )
+        )
+
+    def _delete_task_by_id(self, task_id: str) -> None:
+        """删除单个任务（行删除按钮入口，删除前确认）。"""
+        item = self._manager.get_task(task_id)
+        if item is None:
+            return
+        if item.state in (TaskState.RUNNING, TaskState.CANCELLING):
+            QMessageBox.information(self, tr("queue.delete"), tr("queue.delete_running"))
+            return
+        if not self._confirm_delete([item]):
+            return
+        self._manager.delete_task(task_id)
+
+    def _delete_selected_tasks(self) -> None:
+        """批量删除选中任务（头部按钮入口，删除前确认）。"""
+        items = self._selected_items()
+        if not items:
+            return
+        deletable = [
+            item for item in items
+            if item.state not in (TaskState.RUNNING, TaskState.CANCELLING)
+        ]
+        running = [item for item in items if item not in deletable]
+        if not deletable:
+            QMessageBox.information(self, tr("queue.delete"), tr("queue.delete_running"))
+            return
+        if not self._confirm_delete(deletable):
+            return
+        for item in deletable:
+            self._manager.delete_task(item.id)
+        if running:
+            QMessageBox.information(
+                self, tr("queue.delete"),
+                tr("queue.delete_running_skipped", count=len(running)),
+            )
+
+    def _confirm_delete(self, items: list[TaskItem]) -> bool:
+        """删除确认对话框，确认返回 True。"""
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("queue.confirm_delete_title"))
+        box.setText(tr(
+            "queue.confirm_delete_tasks",
+            count=len(items),
+            names="\n".join(f"· {item.display_name}" for item in items),
+        ))
+        delete_button = box.addButton(tr("common.delete"), QMessageBox.DestructiveRole)
+        box.addButton(tr("common.cancel"), QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is delete_button
 
     # ------------------------------------------------------------------ 交互
 

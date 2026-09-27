@@ -57,6 +57,9 @@ class TaskWindow(QDialog):
         super().__init__(parent)
         self._manager = manager
         self._task_id: str | None = None
+        # 批量模式下本窗口创建的全部任务 id（按入列顺序；窗口随完成
+        # 情况自动切换到下一个未终结的批量任务）
+        self._batch_ids: list[str] = []
         self._build_ui()
 
         # 队列事件（按 task_id 过滤）
@@ -75,9 +78,8 @@ class TaskWindow(QDialog):
         self.resize(1180, 860)
 
         self._import_area = ImportArea()
-        self._import_area.file_imported.connect(
-            lambda path: self._panel.log(tr("main.log.imported", name=Path(path).name))
-        )
+        self._import_area.files_added.connect(self._on_files_added)
+        self._import_area.files_changed.connect(self._on_files_changed)
 
         self._task_settings = TaskSettingsPanel()
 
@@ -136,7 +138,7 @@ class TaskWindow(QDialog):
         self.setWindowTitle(item.display_name)
 
         cfg = item.config
-        if self._import_area.current_file != cfg.media_path:
+        if self._import_area.files() != [cfg.media_path]:
             self._import_area.set_file(cfg.media_path)
         self._task_settings.set_selected_codes(
             cfg.source_lang_code, cfg.target_lang_code, cfg.subtitle_mode,
@@ -194,13 +196,13 @@ class TaskWindow(QDialog):
         self._start_new_task()
 
     def _start_new_task(self) -> None:
-        media_path = self._import_area.current_file
-        if media_path is None:
+        files = self._import_area.files()
+        if not files:
             self._panel.log(tr("main.log.no_file"))
             return
         if not self._validate_and_confirm():
             return
-        config = self._build_task_config(media_path)
+        config = self._build_task_config(files[0])
         if config is None:
             return
 
@@ -218,6 +220,26 @@ class TaskWindow(QDialog):
         self._task_id = item.id
         self._manager.register_window(item.id, self)
         self.setWindowTitle(item.display_name)
+        self._batch_ids = [item.id]
+
+        # 批量（多文件）：其余文件按相同设置入列主窗口任务队列；
+        # 导入区与流程进度区仅显示当前执行的文件
+        if len(files) > 1:
+            self._panel.log(tr("main.log.batch_started", count=len(files)))
+            for path in files[1:]:
+                batch_config = self._build_task_config(path)
+                if batch_config is None:
+                    continue
+                try:
+                    batch_item = self._manager.enqueue(batch_config)
+                except ValueError as exc:
+                    self._panel.log(str(exc))
+                    continue
+                self._batch_ids.append(batch_item.id)
+            self._panel.log(tr(
+                "main.log.batch_queued", count=len(self._batch_ids) - 1,
+            ))
+            self._import_area.set_file(files[0])
         self._sync_controls()
 
     def _reset_pipeline_steps(self, dubbing: bool) -> None:
@@ -319,6 +341,18 @@ class TaskWindow(QDialog):
             llm_server_exe=llm_server,
         )
 
+    # ------------------------------------------------------------------ 导入区事件
+
+    def _on_files_added(self, paths: list) -> None:
+        """新文件加入导入区：逐个记录日志。"""
+        for path in paths:
+            self._panel.log(tr("main.log.imported", name=Path(path).name))
+
+    def _on_files_changed(self) -> None:
+        """导入区文件列表变化：未绑定任务时按文件数量刷新开始按钮文案。"""
+        if self._current_item() is None:
+            self._sync_controls()
+
     # ------------------------------------------------------------------ 队列事件
 
     def _on_task_state(self, task_id: str) -> None:
@@ -331,6 +365,11 @@ class TaskWindow(QDialog):
             self._panel.log(tr("main.log.failed", error=item.last_error))
         elif item.state == TaskState.CANCELLED:
             self._panel.log(tr("main.log.cancelled"))
+        # 批量：当前文件失败/取消后切换到下一个未终结的批量任务
+        if item.state in (TaskState.FAILED, TaskState.CANCELLED):
+            self._advance_batch()
+            if task_id != self._task_id:
+                return
         self._sync_controls()
 
     def _on_task_progress(self, task_id: str, value: int) -> None:
@@ -352,7 +391,30 @@ class TaskWindow(QDialog):
         self._panel.log(tr("main.log.finished", outputs="、".join(
             Path(p).name for p in kept
         )))
+        # 批量：当前文件完成后切换到下一个未终结的批量任务
+        self._advance_batch()
+        if task_id != self._task_id:
+            return
         self._sync_controls()
+
+    def _advance_batch(self) -> None:
+        """批量任务终结后，把窗口切换到下一个未终结的批量任务。
+
+        切换即重新绑定（导入区/流程区只显示当前执行文件）；
+        全部批量任务都已终结时保持现状。
+        """
+        if not self._batch_ids:
+            return
+        current_id = self._task_id
+        for task_id in self._batch_ids:
+            if task_id == current_id:
+                continue
+            item = self._manager.get_task(task_id)
+            if item is not None and not TaskState.is_terminal(item.state):
+                if current_id is not None:
+                    self._manager.unregister_window(current_id)
+                self.bind_task(task_id)
+                return
 
     # ------------------------------------------------------------------ 控件状态
 
@@ -362,7 +424,11 @@ class TaskWindow(QDialog):
         inputs = [self._import_area, self._task_settings, self._auto_accept_check]
 
         if item is None:
-            self._start_button.setText(tr("main.start"))
+            # 多文件 → "开始批量处理"，单文件/未导入 → "开始处理"
+            if len(self._import_area.files()) > 1:
+                self._start_button.setText(tr("main.start_batch"))
+            else:
+                self._start_button.setText(tr("main.start"))
             self._start_button.setEnabled(True)
             self._cleanup_button.hide()
             for w in inputs:

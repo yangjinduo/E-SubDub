@@ -177,6 +177,19 @@ class TaskManager(QObject):
         self._tasks.remove(item)
         self.task_removed.emit(item.id)
 
+    def delete_task(self, task_id: str) -> bool:
+        """删除任务：排队任务直接移出队列，终态任务移出列表
+        （产物文件不受影响）；运行中/取消中不可删，返回 False。"""
+        item = self.get_task(task_id)
+        if item is None or item.state in (
+            TaskState.RUNNING, TaskState.CANCELLING,
+        ):
+            return False
+        self._tasks.remove(item)
+        self._windows.pop(task_id, None)
+        self.task_removed.emit(item.id)
+        return True
+
     def cleanup(self, task_id: str) -> None:
         """清理任务工作夹的中间文件（保留根目录成品）。"""
         item = self.get_task(task_id)
