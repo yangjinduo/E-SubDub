@@ -235,6 +235,20 @@ class LlamaServerManager:
         except OSError:
             return ""
 
+    def kill(self) -> None:
+        """立即杀死 llama-server 进程（不等待、不回收句柄）。
+
+        供用户取消流水线时从 UI 线程调用：让 runner 线程中阻塞的 LLM
+        HTTP 请求（单批次 CPU 推理可达数分钟）立刻失败，使取消即时
+        生效。进程句柄与日志文件仍由 stop() 负责回收。
+        """
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
     def stop(self) -> None:
         """优雅终止 llama-server：terminate -> wait -> kill。"""
         proc, self._proc = self._proc, None

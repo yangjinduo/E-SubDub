@@ -1,5 +1,6 @@
 """应用入口：创建 QApplication、应用全局样式并显示主窗口。"""
 
+import os
 import sys
 from pathlib import Path
 
@@ -27,4 +28,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # 直接退出进程：极端情况下（退出时仍有流程线程卡在长耗时操作中）
+    # 解释器收尾回收会销毁运行中的 QThread 导致崩溃；跳过收尾直接退出
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

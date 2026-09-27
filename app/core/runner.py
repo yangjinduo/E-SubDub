@@ -198,6 +198,9 @@ class PipelineRunner(QThread):
         self._cancel = threading.Event()
         self._review_event = threading.Event()
         self._review_result: ReviewResult | None = None
+        # 当前 llama-server 进程管理器（cancel() 需从 UI 线程杀掉进程让
+        # 阻塞中的 LLM 请求立刻失败；None = 未处于 LLM 阶段）
+        self._llm_server = None
         # 进度权重（按激活阶段动态求和）
         self._weights: list[tuple[str, float]] = []
         self._progress_base = 0.0
@@ -212,9 +215,17 @@ class PipelineRunner(QThread):
         self._review_event.set()
 
     def cancel(self) -> None:
-        """请求取消（在下一个检查点生效）。"""
+        """请求取消（在下一个检查点生效）。
+
+        LLM 阶段额外立刻杀死 llama-server：阻塞中的 HTTP 请求（单批次
+        CPU 推理可达数分钟）随之快速失败，取消不必等当前批次生成完；
+        由此引发的异常由 run() 统一按取消收场。
+        """
         self._cancel.set()
         self._review_event.set()  # 唤醒可能正在等待的审核暂停
+        server = self._llm_server
+        if server is not None:
+            server.kill()
 
     @property
     def workspace(self) -> Workspace:
@@ -229,8 +240,13 @@ class PipelineRunner(QThread):
         except _PipelineCancelled:
             self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001 - 统一上报 UI
-            logger.exception("流水线执行失败")
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            if self._cancel.is_set():
+                # 取消窗口内终止外部资源（如杀掉 llama-server）引发的异常
+                # 按"已取消"而非"失败"收场
+                self.cancelled.emit()
+            else:
+                logger.exception("流水线执行失败")
+                self.failed.emit(f"{type(exc).__name__}: {exc}")
 
     # ------------------------------------------------------------------ 主流程
 
@@ -727,6 +743,7 @@ class PipelineRunner(QThread):
         @contextlib.contextmanager
         def _session():
             server = LlamaServerManager(cfg.llm_server_exe)
+            runner._llm_server = server  # 供 cancel() 立即终止进程
             server.start(
                 cfg.llm_model_path, device=cfg.device,
                 progress=runner._log_progress(),
@@ -734,6 +751,7 @@ class PipelineRunner(QThread):
             try:
                 yield LLMClient(server.base_url)
             finally:
+                runner._llm_server = None
                 server.stop()
 
         return _session()

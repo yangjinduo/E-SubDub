@@ -77,6 +77,9 @@ class TaskManager(QObject):
         self._tasks: list[TaskItem] = []
         self._runner: PipelineRunner | None = None
         self._current: TaskItem | None = None
+        # 终态信号已发但线程尚未完全退出的 runner：保留引用，
+        # 待内置 finished 信号送达、线程退出后移除（_finalize_retired）
+        self._retired: list[PipelineRunner] = []
         self._id_counter = itertools.count(1)
         # task_id → TaskWindow（窗口生命周期注册表）
         self._windows: dict[str, object] = {}
@@ -199,11 +202,17 @@ class TaskManager(QObject):
     def shutdown(self) -> None:
         """应用退出前停止当前 runner（排队任务保留在列表中不再执行）。"""
         runner = self._runner
-        if runner is not None and runner.isRunning():
-            runner.cancel()
-            runner.wait(10000)
         self._runner = None
         self._current = None
+        if runner is None or not runner.isRunning():
+            return
+        runner.cancel()
+        if runner.wait(10000):
+            return
+        # 仍卡在不可中断的长耗时操作（如 LLM HTTP 请求）：保留引用直到
+        # 线程退出，避免 GC 销毁运行中的 QThread 导致进程崩溃
+        self._retired.append(runner)
+        runner.finished.connect(lambda r=runner: self._finalize_retired(r))
 
     # ------------------------------------------------------------------ 执行
 
@@ -287,8 +296,32 @@ class TaskManager(QObject):
     def _release_runner(self, item: TaskItem) -> None:
         """当前 runner 结束后清理引用（C++ 对象由 deleteLater 释放）。"""
         if self._current is item:
+            runner = self._runner
             self._runner = None
             self._current = None
+            if runner is not None:
+                self._retire_runner(runner)
+
+    def _retire_runner(self, runner: PipelineRunner) -> None:
+        """确保 OS 线程完全退出后才允许 runner 的 Python 包装被回收。
+
+        实测 PySide6 6.9.3：终态信号（cancelled/failed/finished_ok）是
+        run() 的最后一条语句，queued 送达主线程时线程往往尚未退完；无父
+        QThread 的最后一个 Python 引用归零会立即销毁底层 C++ 对象，触发
+        "QThread: Destroyed while thread '' is still running" 并导致进程
+        崩溃。正常路径 wait() 瞬间返回；超时兜底：保留引用，待内置
+        finished 信号送达、线程真正退出后再移除。
+        """
+        if runner.wait(2000):
+            return
+        self._retired.append(runner)
+        runner.finished.connect(lambda r=runner: self._finalize_retired(r))
+
+    def _finalize_retired(self, runner: PipelineRunner) -> None:
+        """内置 finished 信号送达后：等线程真正退出，再释放兜底引用。"""
+        runner.wait(2000)
+        if runner in self._retired:
+            self._retired.remove(runner)
 
     # ------------------------------------------------------------------ 人工审核
 
