@@ -20,6 +20,7 @@ class Segment:
         deleted: 标记删除（无意义内容或用户手动删除，后续阶段跳过）
         needs_review: 需人工复核标记（如 TTS 生成异常时置位）
         tts_audio_path: 该段 TTS 配音文件路径
+        stretch_ratio: TTS 配音伸缩比（语音时长/目标时长，补齐静音不计入；未合成为 None）
     """
 
     spk: str = "S01"
@@ -30,6 +31,7 @@ class Segment:
     deleted: bool = False
     needs_review: bool = False
     tts_audio_path: str = ""
+    stretch_ratio: float | None = None
 
     @property
     def duration(self) -> float:
@@ -43,7 +45,7 @@ class Segment:
 
 def segments_to_json(segments: list[Segment]) -> str:
     """将 Segment 列表序列化为 JSON 字符串（UTF-8，字段名：
-    spk/start/end/text/target_text/deleted/needs_review/tts_audio_path）。"""
+    spk/start/end/text/target_text/deleted/needs_review/tts_audio_path/stretch_ratio）。"""
     return json.dumps(
         [
             {
@@ -55,6 +57,7 @@ def segments_to_json(segments: list[Segment]) -> str:
                 "deleted": seg.deleted,
                 "needs_review": seg.needs_review,
                 "tts_audio_path": seg.tts_audio_path,
+                "stretch_ratio": seg.stretch_ratio,
             }
             for seg in segments
         ],
@@ -71,6 +74,7 @@ def segments_from_json(data: str) -> list[Segment]:
     for item in items:
         if not isinstance(item, dict):
             continue
+        ratio = item.get("stretch_ratio")
         segments.append(
             Segment(
                 spk=str(item.get("spk", "S01")),
@@ -81,6 +85,7 @@ def segments_from_json(data: str) -> list[Segment]:
                 deleted=bool(item.get("deleted", False)),
                 needs_review=bool(item.get("needs_review", False)),
                 tts_audio_path=str(item.get("tts_audio_path", "")),
+                stretch_ratio=None if ratio is None else float(ratio),
             )
         )
     return segments

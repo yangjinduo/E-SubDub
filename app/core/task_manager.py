@@ -307,7 +307,10 @@ class TaskManager(QObject):
                 sample_map=payload.sample_map, parent=parent,
             )
         elif payload.kind == "tts":
-            dialog = TtsReviewDialog(payload.segments, parent=parent)
+            # regen_hook：对话框内即时重生成回调（runner 线程阻塞等待，engine 空闲可安全调用）
+            dialog = TtsReviewDialog(
+                payload.segments, parent=parent, regen_hook=payload.regen_hook,
+            )
         else:
             runner.submit_review(None)
             return

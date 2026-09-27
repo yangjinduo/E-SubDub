@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +20,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit  # noqa: E402
+import app.core.i18n as i18n  # noqa: E402
+
+i18n._current_language = "zh-CN"  # 断言基于中文文案：仅改内存语言，不写用户设置
+
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton  # noqa: E402
 
 from app.core.ffmpeg import get_ffmpeg_path  # noqa: E402
 from app.ui.style import APPLICATION_QSS  # noqa: E402
@@ -94,6 +99,8 @@ def main() -> int:
 
     clip_a = make_tts_clip(0.0, 2.5, "subdub_test_tts_a.wav")
     clip_b = make_tts_clip(2.6, 5.1, "subdub_test_tts_b.wav")
+    # 重生成后的新文件（模拟译文改变 → _tts_out 命名变化）
+    clip_regen = make_tts_clip(0.0, 2.5, "subdub_test_tts_regen.wav")
     segs = build_segments(clip_a, clip_b)
 
     checks = []
@@ -118,9 +125,11 @@ def main() -> int:
     check("Player 清空源后重新禁用", not bar._play_button.isEnabled())
 
     # ---------------------------------------------------------------- 2. AsrReviewDialog
+    # 表格/试听条已抽取为共用控件 SegmentsTableWidget（dlg._table_widget）
     dlg = AsrReviewDialog(segs, str(TEST_AUDIO))
-    check("Asr 表格行数=8", dlg._table.rowCount() == 8)
-    combo = dlg._table.cellWidget(0, 3)
+    tbl = dlg._table_widget._table
+    check("Asr 表格行数=8", tbl.rowCount() == 8)
+    combo = tbl.cellWidget(0, 3)
     check("Asr cellWidget(0,3) 为 QComboBox", isinstance(combo, QComboBox))
     check(
         "Asr 说话人下拉选项=[S01,S02]",
@@ -132,28 +141,29 @@ def main() -> int:
         dlg._stats_label.text() == "共 8 句 / 已标记删除 1 句 / 说话人 2 人",
     )
     # 删除 → 置灰 → 恢复（直接调用内部槽）
-    dlg._toggle_delete_state(2)
+    dlg._table_widget._toggle_delete_state(2)
     check("Asr 删除槽置 deleted=True", segs[2].deleted is True)
-    check("Asr 状态列文本=已标记删除", dlg._table.item(2, 5).text() == "已标记删除")
-    check("Asr 操作按钮变“恢复”", dlg._action_buttons[2].text() == "恢复")
-    check("Asr 置灰后说话人下拉禁用", not dlg._table.cellWidget(2, 3).isEnabled())
+    check("Asr 状态列文本=已标记删除", tbl.item(2, 5).text() == "已标记删除")
+    check("Asr 操作按钮变“恢复”", dlg._table_widget._action_buttons[2].text() == "恢复")
+    check("Asr 置灰后说话人下拉禁用", not tbl.cellWidget(2, 3).isEnabled())
     check("Asr 统计更新为已删除 2 句", "已标记删除 2 句" in dlg._stats_label.text())
-    dlg._toggle_delete_state(2)
+    dlg._table_widget._toggle_delete_state(2)
     check("Asr 再次调用恢复 deleted=False", segs[2].deleted is False)
-    check("Asr 恢复后状态列文本=正常", dlg._table.item(2, 5).text() == "正常")
-    check("Asr 恢复后按钮变“删除”", dlg._action_buttons[2].text() == "删除")
-    check("Asr 初始 deleted 行(4)按钮为“恢复”", dlg._action_buttons[4].text() == "恢复")
-    check("Asr 初始 deleted 行状态文本", dlg._table.item(4, 5).text() == "已标记删除")
+    check("Asr 恢复后状态列文本=正常", tbl.item(2, 5).text() == "正常")
+    check("Asr 恢复后按钮变“删除”", dlg._table_widget._action_buttons[2].text() == "删除")
+    check("Asr 初始 deleted 行(4)按钮为“恢复”", dlg._table_widget._action_buttons[4].text() == "恢复")
+    check("Asr 初始 deleted 行状态文本", tbl.item(4, 5).text() == "已标记删除")
     # 修改说话人 / 文本 → get_result 反映变更
-    dlg._table.cellWidget(3, 3).setCurrentText("S02")
+    tbl.cellWidget(3, 3).setCurrentText("S02")
     check("Asr 修改说话人回写 spk=S02", segs[3].spk == "S02")
-    dlg._table.cellWidget(0, 4).setText("Hello everyone, welcome back.")
+    tbl.cellWidget(0, 4).setText("Hello everyone, welcome back.")
     check("Asr 修改文本回写", segs[0].text == "Hello everyone, welcome back.")
     check("Asr get_result 返回同一列表", dlg.get_result() is segs)
     # 选中行 → ffmpeg 切片段 → 底部加载试听
-    dlg._table.selectRow(1)
+    tbl.selectRow(1)
+    player = dlg._table_widget._player
     check("Asr 选中行后切片段加载试听",
-          dlg._player._source != "" and Path(dlg._player._source).is_file())
+          player._source != "" and Path(player._source).is_file())
 
     # ---------------------------------------------------------------- 3. TranslationReviewDialog
     tdlg = TranslationReviewDialog(segs, "英语", "中文", str(TEST_AUDIO))
@@ -199,24 +209,66 @@ def main() -> int:
         check(f"Voice 试听点击不抛异常（{exc!r}）", False)
 
     # ---------------------------------------------------------------- 5. TtsReviewDialog
-    review = [segs[0], segs[1]]  # needs_review 的 2 句
-    rdlg = TtsReviewDialog(review)
+    review = [segs[0], segs[1]]  # needs_review 的 2 句（伸缩比 1.45 / 0.85）
+    regen_rows: list = []
+    progress_seen: list = []
+
+    def fake_regen_hook(row: int, progress=None) -> float:
+        """模拟 regen_hook：重置伸缩比、换成新文件名（译文改变 → 文件名
+        变化），记录行号与收到的进度回调。"""
+        regen_rows.append(row)
+        if progress is not None:
+            progress_seen.append(progress)
+            progress(0.5, "speech synthesis 1/1...")
+        seg = review[row]
+        seg.stretch_ratio = 1.2
+        seg.needs_review = False
+        seg.tts_audio_path = clip_regen  # 新命名文件，试听按钮须重链接
+        return 1.2
+
+    def wait_regen_done(dlg, timeout: float = 5.0) -> None:
+        """processEvents 循环等待重生成队列排空（排队信号在主线程送达）。"""
+        deadline = time.time() + timeout
+        while dlg._regen_active and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+
+    rdlg = TtsReviewDialog(review, regen_hook=fake_regen_hook)
     check("Tts 表格行数=2", rdlg._table.rowCount() == 2)
     check("Tts 伸缩比显示 1.45x/0.85x",
           rdlg._table.item(0, 4).text() == "1.45x" and rdlg._table.item(1, 4).text() == "0.85x")
-    cb0 = rdlg._table.cellWidget(0, 6)
-    cb1 = rdlg._table.cellWidget(1, 6)
-    check("Tts cellWidget 为 QCheckBox", isinstance(cb0, QCheckBox) and isinstance(cb1, QCheckBox))
-    if isinstance(cb0, QCheckBox):
-        cb0.setChecked(True)
-    if isinstance(cb1, QCheckBox):
-        cb1.setChecked(True)
-    check("Tts 勾选两条 indices=[0,1]", rdlg.get_regenerate_indices() == [0, 1])
-    check("Tts 统计标签", "已勾选重生成 2 句" in rdlg._stats_label.text())
-    rdlg._select_all_button.click()  # 已全选 → 切换为全不选
-    check("Tts 全部重生成切换为全不选", rdlg.get_regenerate_indices() == [])
-    rdlg._select_all_button.click()  # 再点 → 全选
-    check("Tts 全部重生成再次全选", rdlg.get_regenerate_indices() == [0, 1])
+    btn0 = rdlg._table.cellWidget(0, 6)
+    btn1 = rdlg._table.cellWidget(1, 6)
+    check("Tts 第6列为重生成按钮",
+          isinstance(btn0, QPushButton) and isinstance(btn1, QPushButton))
+    check("Tts 兼容接口恒返回空列表", rdlg.get_regenerate_indices() == [])
+    check("Tts 初始统计异常 2 句", "异常 2 句" in rdlg._stats_label.text())
+
+    # 单句即时重生成：点击按钮 → 排队 → 后台执行 → 完成后按钮恢复
+    btn0.click()
+    check("Tts 单句点击后待重生成 1 句", "待重生成 1 句" in rdlg._stats_label.text())
+    wait_regen_done(rdlg)
+    check("Tts 单句重生成执行完成", not rdlg._regen_active and regen_rows == [0])
+    check("Tts 重生成进度回调可用", len(progress_seen) == 1)
+    check("Tts 重生成后伸缩比 1.20x", rdlg._table.item(0, 4).text() == "1.20x")
+    check("Tts 重生成后按钮恢复", btn0.text() == "重新生成此句" and btn0.isEnabled())
+    check("Tts 重生成后确认按钮恢复", rdlg._ok_button.isEnabled())
+    rdlg._listen_buttons[0].click()
+    check("Tts 试听按钮重链接新文件", rdlg._player._source == clip_regen)
+
+    # 批量按钮 1：重生成所有异常句（第 1 句已正常，仅第 2 句入队）
+    rdlg._regen_abnormal_button.click()
+    check("Tts 批量异常句待重生成 1 句", "待重生成 1 句" in rdlg._stats_label.text())
+    wait_regen_done(rdlg)
+    check("Tts 批量异常句执行完成", regen_rows == [0, 1])
+
+    # 批量按钮 2：重生成所选句（选中第 2 行）
+    rdlg._table.selectRow(1)
+    rdlg._regen_selected_button.click()
+    wait_regen_done(rdlg)
+    check("Tts 批量所选句执行完成", regen_rows == [0, 1, 1])
+    check("Tts 全部正常后统计异常 0 句", "异常 0 句" in rdlg._stats_label.text())
     rdlg._table.cellWidget(0, 3).setText("重新生成用的修改译文")
     check("Tts 译文编辑回写", review[0].target_text == "重新生成用的修改译文")
     check("Tts get_edited_segments 返回同一列表", rdlg.get_edited_segments() is review)

@@ -13,6 +13,7 @@ IndexTTS-2.5 官方依赖 transformers 4.52，与主环境（ASR 所需 5.x）�
 - 请求：{"id": int, "text": str, "ref": str, "out": str, "lang": str}
   响应：{"id": int, "ok": true, "duration": float}
         {"id": int, "ok": false, "error": str, "kind": ...}
+  进度：{"id": int, "event": "progress", "frac": 0~1, "desc": str}（合成期间）
 - {"cmd": "shutdown"} 或 stdin 关闭即退出；合成结果即时落盘，进程被 kill
   也不丢已完成句子。
 
@@ -107,6 +108,21 @@ def main() -> int:
 
     send({"event": "ready"})
 
+    # IndexTTS2 内置 gr_progress 阶段锚点（0 起步 / 0.1 文本处理 /
+    # 0.2+0.7·i/n 逐段生成 / 0.9 落盘）→ 转发为协议进度事件（父进程
+    # 在锚点间插值后供复核窗口显示百分比）
+    _current = {"rid": None}
+
+    def _progress(frac, desc=""):
+        rid = _current["rid"]
+        if rid is not None:
+            send({
+                "id": rid, "event": "progress",
+                "frac": float(frac), "desc": str(desc or ""),
+            })
+
+    tts.gr_progress = _progress
+
     # ---- 请求循环 ----
     import soundfile as sf
 
@@ -121,6 +137,7 @@ def main() -> int:
         if req.get("cmd") == "shutdown":
             break
         rid = req.get("id")
+        _current["rid"] = rid  # gr_progress 锚点归入当前请求
         try:
             tts.infer(
                 spk_audio_prompt=req["ref"],
@@ -139,6 +156,8 @@ def main() -> int:
                 "error": f"{type(exc).__name__}: {exc}",
                 "kind": _classify(exc),
             })
+        finally:
+            _current["rid"] = None
     return 0
 
 

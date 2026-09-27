@@ -13,7 +13,9 @@ IndexTTS-2.5（github.com/index-tts/index-tts，魔搭 IndexTeam/IndexTTS-2.5）
   库日志（">> GPT weights restored..." 等）经 stderr 回流到界面日志。
 
 时长控制：IndexTTS 原生 duration_factor 仅粗粒度语速缩放（0.5-2.0），
-沿用既有方案——生成后按目标时长 time-stretch 兜底，伸缩比超出
+沿用既有方案——生成后按目标时长兜底：过长 time-stretch 压缩对齐；
+过短不动语速，前后各补 (目标-实际)/2 静音对齐（慢放拉长会不自然）。
+伸缩比 = 语音时长/目标时长（补齐静音不计入），超出
 [STRETCH_REVIEW_LOW, STRETCH_REVIEW_HIGH] 由调用方标记 needs_review。
 
 支持语言：中 / 英 / 日 / 西 / 阿（lang 代码 zh/en/ja/es/ar），其余语言
@@ -28,6 +30,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -136,6 +139,9 @@ class TTSEngine:
         self._stderr_lines: deque = deque()
         self._stderr_tail: deque = deque(maxlen=30)  # 报错时取末尾若干行
         self._next_id = 1
+        # 最近单句合成的 (目标时长, 墙钟耗时)：供后续合成按历史耗时
+        # 插值单句进度百分比（复核窗口即时重生成时显示）
+        self._synth_stats: "list[tuple[float, float]]" = []
 
     @property
     def loaded(self) -> bool:
@@ -254,13 +260,18 @@ class TTSEngine:
         target_duration: float,
         out_path: str,
         lang: str = "zh",
+        progress: Optional[ProgressCallback] = None,
     ) -> tuple[float, float]:
         """克隆参考音色合成一句语音，返回 (实际时长, 伸缩比)。
 
         - worker 完成推理并落盘；父进程裁首尾静音后按目标时长判断：
-          偏差在 STRETCH_TOLERANCE 外用 time-stretch 对齐；
-        - stretch_ratio = 裁剪后时长 / 目标时长，超出 [0.7, 1.3] 由调用方
-          标记 needs_review。
+          偏差在 STRETCH_TOLERANCE 外——过长 time-stretch 压缩对齐，
+          过短前后各补 (目标-实际)/2 静音对齐（不做慢速拉长）；
+        - stretch_ratio = 裁剪后语音时长 / 目标时长（不含补齐的静音），
+          超出 [0.7, 1.3] 由调用方标记 needs_review；
+        - progress：单句合成进度回调。worker 转发 IndexTTS 的阶段锚点
+          （0 起步 / 0.1 文本处理 / 0.2+0.7·i/n 逐段生成 / 0.9 落盘），
+          锚点之间按最近历史合成耗时线性插值（0.2→0.9 主段平滑推进）。
         """
         if not self.loaded:
             raise RuntimeError("TTS 模型未加载，请先调用 load()")
@@ -276,6 +287,19 @@ class TTSEngine:
         self._proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")  # type: ignore[union-attr]
         self._proc.stdin.flush()  # type: ignore[union-attr]
 
+        t_start = time.perf_counter()
+        expected = self._estimate_synth_seconds(target_duration)
+        gen_started_at: float | None = None  # 收到 ≥0.2 锚点（进入 AR 生成主段）的时刻
+        last_frac = 0.0
+
+        def _report(frac: float) -> None:
+            """单调上报单句进度（完成前夹在 [0, 0.95]，避免假满格）。"""
+            nonlocal last_frac
+            frac = min(max(frac, 0.0), 0.95)
+            if frac > last_frac:
+                last_frac = frac
+                report_progress(progress, frac, "TTS 合成")
+
         waited = 0.0
         while True:
             msg = self._wait_message(timeout=0.5)
@@ -284,6 +308,20 @@ class TTSEngine:
                 self._pump_stderr_logs(None)
                 if waited > _SYNTH_TIMEOUT_SEC:
                     raise RuntimeError(f"TTS 合成超时（>{_SYNTH_TIMEOUT_SEC:.0f} 秒）")
+                if progress is not None:
+                    if gen_started_at is not None:
+                        # 生成主段（约占总耗时 70%）：按历史耗时线性插值
+                        run = (time.perf_counter() - gen_started_at) / expected
+                        _report(0.2 + 0.7 * min(run, 1.0))
+                    else:
+                        _report(0.05)  # 尚未收到首个锚点
+                continue
+            if msg.get("event") == "progress":
+                # worker 转发的 IndexTTS 阶段锚点
+                frac = float(msg.get("frac") or 0.0)
+                if gen_started_at is None and frac >= 0.2:
+                    gen_started_at = time.perf_counter()
+                _report(frac)
                 continue
             if msg.get("id") != rid:
                 continue  # 迟到的其他响应（如上句失败后的残留），忽略
@@ -294,6 +332,11 @@ class TTSEngine:
                 raise RuntimeError(f"TTS 合成失败：{error}")
             break
 
+        # 记录本句耗时（目标时长, 墙钟秒）供后续进度插值估时
+        self._synth_stats.append((target_duration, time.perf_counter() - t_start))
+        if len(self._synth_stats) > 30:
+            del self._synth_stats[:-30]
+
         # 后处理（父进程）：裁静音 + 时长对齐
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         wav, sr = sf.read(str(out_path), dtype="float32", always_2d=True)
@@ -301,14 +344,40 @@ class TTSEngine:
         sf.write(str(out_path), trimmed, sr, subtype="PCM_16")
         raw_duration = len(trimmed) / sr
 
+        # 伸缩比只计语音本身的时长；补齐的静音不计入
         ratio = raw_duration / target_duration if target_duration > 0 else 1.0
         if abs(raw_duration - target_duration) / max(target_duration, 1e-6) > STRETCH_TOLERANCE:
-            stretched = stretch_to_duration(str(out_path), target_duration, str(out_path))
-            logger.info(
-                "TTS 时长对齐: 原始 %.2fs → 目标 %.2fs（伸缩比 %.2f，拉伸后 %.2fs）",
-                raw_duration, target_duration, ratio, stretched,
-            )
+            if raw_duration > target_duration:
+                # 过长：time-stretch 压缩到目标时长（保持与原句对齐）
+                stretched = stretch_to_duration(str(out_path), target_duration, str(out_path))
+                logger.info(
+                    "TTS 时长对齐: 原始 %.2fs → 目标 %.2fs（伸缩比 %.2f，压缩后 %.2fs）",
+                    raw_duration, target_duration, ratio, stretched,
+                )
+            else:
+                # 过短：前后各补 (目标-实际)/2 静音到目标时长；
+                # 不做慢速拉长（time-stretch 放慢语速会导致说话不自然）
+                import numpy as np
+
+                pad = int(round((target_duration - raw_duration) / 2 * sr))
+                sf.write(str(out_path), np.pad(trimmed, (pad, pad)), sr, subtype="PCM_16")
+                logger.info(
+                    "TTS 时长补齐: 原始 %.2fs → 目标 %.2fs（伸缩比 %.2f，前后各补 %.2fs 静音）",
+                    raw_duration, target_duration, ratio, pad / sr,
+                )
         return raw_duration, ratio
+
+    def _estimate_synth_seconds(self, target_duration: float) -> float:
+        """按最近合成耗时估算单句墙钟耗时（进度插值用）。
+
+        用最近 30 句中最大的 墙钟/目标时长 比再放宽 25%，保证进度条
+        宁慢勿快（过早到 90% 后停在落盘等待比慢慢涨更糟）；
+        无历史（首轮第一句）时按 2 倍目标时长 + 10 秒兜底。
+        """
+        if self._synth_stats:
+            ratio = max(w / max(d, 0.1) for d, w in self._synth_stats)
+            return max(target_duration * ratio * 1.25, 1.0)
+        return max(target_duration * 2.0, 10.0)
 
     # ------------------------------------------------------------------ 子进程 IO
 

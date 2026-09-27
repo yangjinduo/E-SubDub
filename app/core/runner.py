@@ -144,6 +144,7 @@ class ReviewPayload:
     sample_map: dict = field(default_factory=dict)  # voice：{spk: 参考句文本}
     source_lang: str = ""
     target_lang: str = ""
+    regen_hook: object = None  # tts：即时重生成回调（局部行索引, progress=None → 伸缩比）
 
 
 @dataclass
@@ -337,10 +338,12 @@ class PipelineRunner(QThread):
             self._stage_end(STAGE_PROOFREAD)
         self._check()
 
-        # 源语言"自动检测"：从定稿文本推断实际语言（翻译提示词与审核窗口显示用）
+        # 源语言"自动检测"：从定稿文本推断实际语言（翻译提示词与审核窗口显示用），
+        # 并回写到任务配置——后续 SRT 文件名等以检测出的语言代号为准
         source_code = cfg.source_lang_code
         if source_code == "auto":
             source_code = detect_language_code(segments)
+            cfg.source_lang_code = source_code
             self._log(tr("runner.lang_detected",
                          lang=LANG_NAMES.get(source_code, source_code)))
         source_name = LANG_NAMES.get(source_code, "原文语言")
@@ -390,17 +393,20 @@ class PipelineRunner(QThread):
             self._stage_end(STAGE_REVIEW_TRANSLATION)
         self._check()
 
-        # 7. SRT 字幕（文件名随字幕形式：单语仅目标语种代号，双语上位语言在前）
+        # 7. SRT 字幕（文件名随字幕形式：单语仅目标语种代号，双语上位语言在前；
+        #    源语言"自动检测"时以检测出的代号命名）
         srt_mode = SUBTITLE_MODE_MAP.get(cfg.subtitle_mode, MODE_MONO)
         srt_path = self._ws.srt_path(
-            cfg.target_lang_code, cfg.source_lang_code,
+            cfg.target_lang_code, source_code,
             source_on_top=(srt_mode == MODE_BILINGUAL_SOURCE_TOP),
         )
         generate_srt(
             segments, str(srt_path), srt_mode,
-            source_lang=cfg.source_lang_code, target_lang=cfg.target_lang_code,
+            source_lang=source_code, target_lang=cfg.target_lang_code,
         )
         self._log(tr("runner.srt_done", path=srt_path.name, count=len(segments)))
+        # SRT 生成时的译文快照（配音复核中修改译文后对比同步用）
+        srt_texts = [seg.target_text for seg in segments]
 
         # 8+. 配音链路
         audio_out = ""
@@ -409,7 +415,7 @@ class PipelineRunner(QThread):
             # 8. 参考音色挑选 + 音色管理审核
             refs = self._pick_and_review_voices(segments, vocals)
 
-            # 9. TTS 逐句生成 + 异常复听
+            # 9. TTS 逐句生成 + 配音复核
             self._stage_begin(STAGE_TTS)
             if self._ws.is_done(STAGE_TTS):
                 segments = self._ws.load_segments(self._ws.tts_json)
@@ -417,6 +423,19 @@ class PipelineRunner(QThread):
             else:
                 self._run_tts(segments, refs, vocals)
             self._check()
+
+            # 复核中换过译文的句子同步回 SRT：与快照做字符串对比
+            # （纯内存比较，算力开销可忽略），有差异时整体重写一次字幕文件
+            edited = sum(
+                1 for old, seg in zip(srt_texts, segments)
+                if old != seg.target_text
+            )
+            if edited:
+                generate_srt(
+                    segments, str(srt_path), srt_mode,
+                    source_lang=source_code, target_lang=cfg.target_lang_code,
+                )
+                self._log(tr("runner.srt_synced", count=edited))
 
             # 10. 混音
             self._stage_begin(STAGE_MIX)
@@ -447,6 +466,7 @@ class PipelineRunner(QThread):
                         str(self._ws.output_mkv),
                         audio_lang=FFMPEG_LANGS.get(cfg.target_lang_code, "und"),
                         subtitle_lang=FFMPEG_LANGS.get(cfg.target_lang_code, "und"),
+                        audio_title=f"AI dubbing {cfg.target_lang_code.upper()}",
                         progress=self._stage_progress(STAGE_MUX),
                     )
                     # 封装输出夹内同时保留处理好的字幕文件副本
@@ -608,6 +628,7 @@ class PipelineRunner(QThread):
                     )
                     _retire_old(seg, out)
                     seg.tts_audio_path = str(out)
+                    seg.stretch_ratio = ratio
                     seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
                     done += 1
                     self._stage_progress(STAGE_TTS)(
@@ -639,6 +660,7 @@ class PipelineRunner(QThread):
                     )
                     _retire_old(seg, out)
                     seg.tts_audio_path = str(out)
+                    seg.stretch_ratio = ratio
                     seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
                     done += 1
                     self._stage_progress(STAGE_TTS)(
@@ -648,39 +670,40 @@ class PipelineRunner(QThread):
 
             self._ws.save_segments(self._ws.tts_json, segments)
 
-            # 异常复听（存在伸缩超限句时暂停；对话框就地修改译文）。
-            # 复听未决期间 engine 保持加载：勾选重生成时直接复用，避免重载；
-            # 用户不选重生成或取消时，由最外层 finally 统一释放。
-            review_items = [
-                (i, seg) for i, seg in enumerate(segments) if seg.needs_review
-            ]
+            # 配音复核（全部已合成句子进入对话框：可试听、修改译文、
+            # 即时重生成；伸缩比异常句以红色粗体标出）。
+            # 复核未决期间 engine 保持加载：对话框经 regen_hook 复用引擎
+            # 逐句重生成（runner 线程此时阻塞在等待审核结果，不会并发
+            # 使用引擎）；用户取消时，由最外层 finally 统一释放。
+            review_items = todo
             if review_items:
                 self._log(tr("runner.tts_review_needed", count=len(review_items)))
-                result = self._request_review(ReviewPayload(
-                    kind="tts",
-                    segments=[seg for _i, seg in review_items],
-                    ref_map={"indices": [i for i, _seg in review_items]},
-                ))
-                # 勾选重生成的句子用（可能已修改的）译文重新合成
-                regen_local = list(result.regenerate_indices or [])
-                for done, local_idx in enumerate(regen_local, 1):
-                    self._check()
+
+                def _regen_one(local_idx: int, progress=None) -> float:
+                    """对话框内即时重生成一句（对话框后台线程调用，
+                    progress 为单句进度回调，转给 TTS 引擎锚点+插值上报）。"""
                     gi, seg = review_items[local_idx]
                     ref = seg_refs.get(gi)
                     if not ref:
-                        continue
+                        raise RuntimeError(tr("runner.tts_no_ref", spk=seg.spk))
                     out = _tts_out(seg)
-                    _raw, _ratio = engine.synthesize(
+                    _raw, ratio = engine.synthesize(
                         seg.target_text, ref, seg.duration, str(out),
-                        lang=cfg.target_lang_code,
+                        lang=cfg.target_lang_code, progress=progress,
                     )
                     _retire_old(seg, out)
                     seg.tts_audio_path = str(out)
-                    progress(
-                        done / len(regen_local),
-                        tr("runner.tts_regen_progress", done=done, total=len(regen_local)),
-                    )
-                # 复听确认后清除全部待复核标记并保存
+                    seg.stretch_ratio = ratio
+                    seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
+                    return ratio
+
+                self._request_review(ReviewPayload(
+                    kind="tts",
+                    segments=[seg for _i, seg in review_items],
+                    ref_map={"indices": [i for i, _seg in review_items]},
+                    regen_hook=_regen_one,
+                ))
+                # 重生成已在对话框内即时完成；确认后清除待复核标记并保存
                 for _i, seg in review_items:
                     seg.needs_review = False
                 self._ws.save_segments(self._ws.tts_json, segments)
