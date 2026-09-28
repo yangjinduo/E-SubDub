@@ -2,7 +2,8 @@
 """共用分段表格控件：表格 + 试听条组合，选中行即切取片段播放。
 
 从 ASR 校对对话框抽取，供编辑类对话框与各流程结果查看器复用：
-- 编辑模式（readonly=False）：说话人下拉 + 文本输入框 + 删除/恢复按钮
+- 编辑模式（readonly=False）：说话人下拉 + 文本编辑框（自动换行、
+  行高随内容自适应）+ 删除/恢复按钮
 - 只读模式（readonly=True）：纯文本展示，仍支持选中行试听
 Segment 采用鸭子类型：仅访问 spk/start/end/text/deleted 等属性，
 与 app.core.segment.Segment 完全兼容。
@@ -14,14 +15,14 @@ import os
 import subprocess
 import tempfile
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QRect, Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QFontMetrics, QTextOption
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
-    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -57,6 +58,12 @@ _COLOR_NORMAL = QColor("#1F2937")
 _COLOR_DELETED = QColor("#9CA3AF")
 _COLOR_BG_DELETED = QColor("#F3F4F6")
 _COLOR_BG_NORMAL = QColor("#FFFFFF")
+
+# 行高自适应：最小行高与文本换行内容上下的留白
+_MIN_ROW_HEIGHT = 42
+_CELL_V_PAD = 8
+# 文本编辑框（QPlainTextEdit）边框 + 文档边距等固定附加高度
+_EDITOR_CHROME = 12
 
 
 def fmt_time(seconds: float) -> str:
@@ -125,6 +132,7 @@ class SegmentsTableWidget(QWidget):
         self._readonly = readonly
         self._clip_cache: "dict[tuple[float, float], str]" = {}
         self._action_buttons: list[QPushButton] = []
+        self._editors: list[QPlainTextEdit] = []
 
         columns = [
             tr("asr_review.column_index"),
@@ -140,7 +148,7 @@ class SegmentsTableWidget(QWidget):
         self._table.setHorizontalHeaderLabels(columns)
         self._table.setStyleSheet(TABLE_QSS)
         self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(42)
+        self._table.verticalHeader().setDefaultSectionSize(_MIN_ROW_HEIGHT)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
@@ -153,6 +161,15 @@ class SegmentsTableWidget(QWidget):
         for col, width in widths:
             self._table.setColumnWidth(col, width)
 
+        if not self._readonly:
+            # 列宽变化（拖拽或窗口缩放）后重算各行的换行行高；拖拽过程中
+            # sectionResized 触发频繁，用单发定时器合并
+            self._height_timer = QTimer(self)
+            self._height_timer.setSingleShot(True)
+            self._height_timer.setInterval(40)
+            self._height_timer.timeout.connect(self._update_all_row_heights)
+            header.sectionResized.connect(lambda *_: self._height_timer.start())
+
         self._player = AudioPlayerBar(self)
 
         layout = QVBoxLayout(self)
@@ -162,12 +179,24 @@ class SegmentsTableWidget(QWidget):
         layout.addWidget(self._player)
 
         self._fill_rows()
+        if not self._readonly:
+            # 首次布局完成后按最终列宽校准各行高度（Stretch 列宽此时才确定）
+            QTimer.singleShot(0, self._update_all_row_heights)
 
     # -------------------------------------------------------------- 公开接口
 
     def stop(self) -> None:
         """停止试听播放（窗口关闭前调用）。"""
         self._player.stop()
+
+    def eventFilter(self, obj, event) -> bool:
+        """文本编辑框：拦截回车键，保持单句文本单行（不插入换行）。"""
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            return True
+        return super().eventFilter(obj, event)
 
     # -------------------------------------------------------------- 内部构建
 
@@ -197,10 +226,21 @@ class SegmentsTableWidget(QWidget):
                 )
                 self._table.setCellWidget(row, 3, combo)
 
-                edit = QLineEdit(str(seg.text))
-                edit.setStyleSheet("QLineEdit { padding: 4px 8px; }")
-                edit.textChanged.connect(lambda text, r=row: self._on_text_changed(r, text))
-                self._table.setCellWidget(row, 4, edit)
+                # 文本编辑框：自动换行、无滚动条；内容行数变化时行高自适应
+                edit = QPlainTextEdit(str(seg.text))
+                edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+                edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                edit.setTabChangesFocus(True)
+                edit.installEventFilter(self)  # 拦截回车，避免文本插入换行
+                edit.textChanged.connect(lambda r=row: self._on_text_changed(r))
+                edit_holder = QWidget()
+                holder_layout = QVBoxLayout(edit_holder)
+                holder_layout.setContentsMargins(2, 2, 2, 2)
+                holder_layout.setSpacing(0)
+                holder_layout.addWidget(edit, 0, Qt.AlignmentFlag.AlignVCenter)
+                self._editors.append(edit)
+                self._table.setCellWidget(row, 4, edit_holder)
 
                 status_item = QTableWidgetItem(tr("asr_review.status_normal"))
                 status_item.setTextAlignment(center)
@@ -217,6 +257,8 @@ class SegmentsTableWidget(QWidget):
                 self._table.setCellWidget(row, 6, holder)
 
             self._apply_row_state(row)
+            if not self._readonly:
+                self._update_row_height(row)
 
     def _apply_row_state(self, row: int) -> None:
         """按 deleted 状态刷新整行外观：置灰 / 恢复。"""
@@ -246,14 +288,44 @@ class SegmentsTableWidget(QWidget):
             tr("asr_review.restore") if deleted else tr("asr_review.mark_delete")
         )
 
+    # -------------------------------------------------------------- 行高自适应
+
+    def _wrapped_height(self, text: str, width: int) -> int:
+        """估算文本按给定宽度自动换行后所需的高度（像素）。"""
+        fm = QFontMetrics(self._table.font())
+        avail = max(width - 16, 30)  # 扣除单元格左右留白
+        rect = fm.boundingRect(QRect(0, 0, avail, 100000), Qt.TextFlag.TextWordWrap, text)
+        return rect.height()
+
+    def _update_row_height(self, row: int) -> None:
+        """按文本换行后的高度调整行高，并同步文本编辑框高度。"""
+        if self._readonly:
+            return
+        seg = self._segments[row]
+        text_h = self._wrapped_height(str(seg.text or ""), self._table.columnWidth(4))
+        editor_h = text_h + _EDITOR_CHROME
+        height = max(_MIN_ROW_HEIGHT, editor_h + _CELL_V_PAD)
+        self._table.setRowHeight(row, height)
+        self._editors[row].setFixedHeight(min(editor_h, height - _CELL_V_PAD))
+
+    def _update_all_row_heights(self) -> None:
+        """按当前列宽重算全部行高（列宽变化/首次布局后调用）。"""
+        if self._readonly:
+            return
+        for row in range(len(self._segments)):
+            self._update_row_height(row)
+
     # -------------------------------------------------------------- 内部槽
 
     def _on_spk_changed(self, row: int, text: str) -> None:
         self._segments[row].spk = text
         self.changed.emit()
 
-    def _on_text_changed(self, row: int, text: str) -> None:
-        self._segments[row].text = text
+    def _on_text_changed(self, row: int) -> None:
+        """文本编辑：回写 Segment 并按换行行数刷新行高。"""
+        edit = self._editors[row]
+        self._segments[row].text = edit.toPlainText()
+        self._update_row_height(row)
         self.changed.emit()
 
     def _toggle_delete_state(self, row: int) -> None:

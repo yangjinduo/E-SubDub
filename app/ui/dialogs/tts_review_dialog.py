@@ -5,7 +5,9 @@
 （点击"重新生成此句"或批量按钮后由 regen_hook 在后台逐句排队执行，
 生成中的句子显示"生成中…"、其余排队句显示"等待重生成"，完成后可
 再次试听或重生成）；伸缩比异常（needs_review）的句子数值以红色粗体
-标出。Segment 采用鸭子类型，与 app.core.segment.Segment 完全兼容。
+标出。原文/译文列自动换行、行高随内容自适应；底部提供连续试听
+（从当前句一路播放到最后一句）。Segment 采用鸭子类型，与
+app.core.segment.Segment 完全兼容。
 """
 
 from __future__ import annotations
@@ -14,17 +16,18 @@ import os
 import threading
 from collections import deque
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QRect, Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QFontMetrics, QTextOption
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -53,6 +56,12 @@ QHeaderView::section {
     font-weight: 600;
 }
 """
+
+# 行高自适应：最小行高与原文/译文换行内容上下的留白
+_MIN_ROW_HEIGHT = 42
+_CELL_V_PAD = 8
+# 译文编辑框（QPlainTextEdit）边框 + 文档边距等固定附加高度
+_EDITOR_CHROME = 12
 
 
 def _fmt_time(seconds: float) -> str:
@@ -105,6 +114,9 @@ class TtsReviewDialog(QDialog):
         self._regen_hook = regen_hook  # 即时重生成回调：行号 → 伸缩比
         self._listen_buttons: list[QPushButton] = []
         self._regen_buttons: list[QPushButton] = []
+        self._editors: list[QPlainTextEdit] = []
+        self._continuous_playing = False  # 连续试听进行中
+        self._continuous_index = -1  # 连续试听当前播放行
 
         # 重生成队列：_regen_pending 由锁保护（worker 线程消费）；
         # _regen_states/_regen_active 仅主线程访问（UI 状态）
@@ -121,7 +133,7 @@ class TtsReviewDialog(QDialog):
         self._regen_queue_done.connect(self._on_regen_queue_done)
 
         self.setWindowTitle(tr("tts_review.title"))
-        self.resize(920, 660)
+        self.resize(1020, 660)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -133,12 +145,13 @@ class TtsReviewDialog(QDialog):
         layout.addWidget(title)
 
         # 主表格
-        self._table = QTableWidget(len(self._segments), 7, self)
+        self._table = QTableWidget(len(self._segments), 8, self)
         self._table.setHorizontalHeaderLabels(
             [
                 tr("tts_review.column_index"),
                 tr("tts_review.column_time"),
                 tr("tts_review.column_speaker"),
+                tr("tts_review.column_source"),
                 tr("tts_review.column_target"),
                 tr("tts_review.column_ratio"),
                 tr("tts_review.column_listen"),
@@ -147,19 +160,53 @@ class TtsReviewDialog(QDialog):
         )
         self._table.setStyleSheet(TABLE_QSS)
         self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(42)
+        self._table.verticalHeader().setDefaultSectionSize(_MIN_ROW_HEIGHT)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setWordWrap(True)  # 原文/译文列随列宽自动换行
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        for col, width in ((0, 46), (1, 130), (2, 70), (4, 70), (5, 70), (6, 110)):
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        for col, width in ((0, 46), (1, 130), (2, 70), (5, 70), (6, 70), (7, 110)):
             self._table.setColumnWidth(col, width)
         layout.addWidget(self._table, stretch=1)
 
+        # 列宽变化（拖拽或窗口缩放）后重算各行的换行行高；拖拽过程中
+        # sectionResized 触发频繁，用单发定时器合并
+        self._height_timer = QTimer(self)
+        self._height_timer.setSingleShot(True)
+        self._height_timer.setInterval(40)
+        self._height_timer.timeout.connect(self._update_all_row_heights)
+        header.sectionResized.connect(lambda *_: self._height_timer.start())
+
         # 底部试听条
         self._player = AudioPlayerBar(self)
+        self._player.finished.connect(self._on_player_finished)
         layout.addWidget(self._player)
+
+        # 连续试听行：与上方试听条同款布局（试听按钮 + 进度滑块 + 计数标签）
+        continuous_row = QHBoxLayout()
+        continuous_row.setContentsMargins(0, 0, 0, 0)
+        continuous_row.setSpacing(10)
+        self._continuous_button = QPushButton(tr("tts_review.continuous_listen"))
+        self._continuous_button.setFixedWidth(72)  # 与试听按钮同宽
+        # 72px 宽度下全局按钮样式的 18px 水平内边距放不下四字文案，
+        # 仅收窄本按钮内边距，其余观感（底色/边框/圆角/高度）不变
+        self._continuous_button.setStyleSheet("QPushButton { padding: 6px 8px; }")
+        self._continuous_button.clicked.connect(self._on_continuous_clicked)
+        self._continuous_slider = QSlider(Qt.Orientation.Horizontal)
+        self._continuous_slider.setRange(0, max(len(self._segments) - 1, 0))
+        self._continuous_slider.setValue(0)
+        self._continuous_slider.setEnabled(False)  # 连续试听未开始时禁用
+        self._continuous_slider.sliderReleased.connect(self._on_continuous_slider_released)
+        self._continuous_count_label = QLabel(f"0 / {len(self._segments)}")
+        self._continuous_count_label.setStyleSheet("color: #6B7280; font-size: 12px;")
+        self._continuous_count_label.setMinimumWidth(110)
+        continuous_row.addWidget(self._continuous_button)
+        continuous_row.addWidget(self._continuous_slider, stretch=1)
+        continuous_row.addWidget(self._continuous_count_label)
+        layout.addLayout(continuous_row)
 
         # 统计与重生成操作行（位于取消/确认上一行，左对齐）
         action_row = QHBoxLayout()
@@ -191,6 +238,8 @@ class TtsReviewDialog(QDialog):
 
         self._fill_rows()
         self._refresh_stats()
+        # 首次布局完成后按最终列宽校准各行高度（Stretch 列宽此时才确定）
+        QTimer.singleShot(0, self._update_all_row_heights)
 
     # -------------------------------------------------------------- 公开接口
 
@@ -204,6 +253,7 @@ class TtsReviewDialog(QDialog):
 
     def done(self, result: int) -> None:
         """关闭前释放播放器持有的配音文件句柄（重生成会覆盖同名 wav）。"""
+        self._continuous_playing = False  # 防止释放播放器后仍推进连续试听
         self._player.release()
         super().done(result)
 
@@ -221,6 +271,15 @@ class TtsReviewDialog(QDialog):
             return
         super().reject()
 
+    def eventFilter(self, obj, event) -> bool:
+        """译文编辑框：拦截回车键，保持单句译文单行（不插入换行）。"""
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            return True
+        return super().eventFilter(obj, event)
+
     # -------------------------------------------------------------- 内部构建
 
     def _fill_rows(self) -> None:
@@ -236,15 +295,28 @@ class TtsReviewDialog(QDialog):
                 ),
             )
             self._table.setItem(row, 2, QTableWidgetItem(str(seg.spk)))
-
-            edit = QLineEdit(str(seg.target_text))
-            edit.setStyleSheet("QLineEdit { padding: 4px 8px; }")
-            edit.textChanged.connect(
-                lambda text, r=row: self._on_target_changed(r, text)
+            # 原文列：与译文对照，方便修改过长的译文
+            self._table.setItem(
+                row, 3, QTableWidgetItem(str(getattr(seg, "text", "") or ""))
             )
-            self._table.setCellWidget(row, 3, edit)
 
-            self._table.setItem(row, 4, _ratio_item(seg))
+            # 译文编辑框：自动换行、无滚动条；内容行数变化时行高自适应
+            edit = QPlainTextEdit(str(seg.target_text))
+            edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+            edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            edit.setTabChangesFocus(True)
+            edit.installEventFilter(self)  # 拦截回车，避免译文插入换行
+            edit.textChanged.connect(lambda r=row: self._on_target_changed(r))
+            edit_holder = QWidget()
+            holder_layout = QVBoxLayout(edit_holder)
+            holder_layout.setContentsMargins(2, 2, 2, 2)
+            holder_layout.setSpacing(0)
+            holder_layout.addWidget(edit, 0, Qt.AlignmentFlag.AlignVCenter)
+            self._editors.append(edit)
+            self._table.setCellWidget(row, 4, edit_holder)
+
+            self._table.setItem(row, 5, _ratio_item(seg))
 
             # 试听按钮：tts_audio_path 为空或文件不存在时禁用。
             # 点击时按行号实时读取当前路径——重生成后文件名随译文
@@ -261,16 +333,16 @@ class TtsReviewDialog(QDialog):
             listen_layout = QHBoxLayout(listen_holder)
             listen_layout.setContentsMargins(6, 2, 6, 2)
             listen_layout.addWidget(listen_button)
-            self._table.setCellWidget(row, 5, listen_holder)
+            self._table.setCellWidget(row, 6, listen_holder)
 
             # 重新生成按钮：点击后即时排队重生成（生成期间显示状态）
             regen_button = QPushButton(tr("tts_review.regenerate_this"))
             regen_button.setObjectName("cardSettingButton")
             regen_button.clicked.connect(
-                lambda _=False, r=row: self._enqueue_regen([r])
+                lambda _=False, r=row: self._on_regen_clicked(r)
             )
             self._regen_buttons.append(regen_button)
-            self._table.setCellWidget(row, 6, regen_button)
+            self._table.setCellWidget(row, 7, regen_button)
 
     def _refresh_stats(self) -> None:
         """刷新底部统计标签（总数 / 异常数 / 待重生成数）。"""
@@ -283,9 +355,24 @@ class TtsReviewDialog(QDialog):
 
     # -------------------------------------------------------------- 内部槽
 
-    def _on_target_changed(self, row: int, text: str) -> None:
-        """译文编辑：即时回写 Segment。"""
-        self._segments[row].target_text = text
+    def _on_target_changed(self, row: int) -> None:
+        """译文编辑：即时回写 Segment，并按换行行数刷新行高。"""
+        edit = self._editors[row]
+        self._segments[row].target_text = edit.toPlainText()
+        self._update_row_height(row)
+
+    def _on_regen_clicked(self, row: int) -> None:
+        """单句"重新生成此句"：排队后保持当前选中行与焦点不变。
+
+        排队会立刻禁用被点击的按钮，Qt 会把焦点转移给下一行的译文
+        编辑框，观感上像选中跳到了下一句；这里显式把焦点交还表格，
+        并在选中行被连带改变时恢复原选中行。
+        """
+        current = self._table.currentRow()
+        self._enqueue_regen([row])
+        self._table.setFocus()
+        if current >= 0 and self._table.currentRow() != current:
+            self._table.setCurrentCell(current, max(self._table.currentColumn(), 0))
 
     def _on_select_abnormal(self) -> None:
         """批量按钮：把全部伸缩比异常句加入重生成队列。"""
@@ -303,12 +390,97 @@ class TtsReviewDialog(QDialog):
 
     def _on_listen_clicked(self, row: int) -> None:
         """试听该句生成的配音（每次点击按当前 tts_audio_path 实时取文件，
-        重生成后新文件名也能正确链接）。"""
+        重生成后新文件名也能正确链接）。单句试听会中断连续试听。"""
+        self._stop_continuous()
         seg = self._segments[row]
         path = str(getattr(seg, "tts_audio_path", "") or "")
         if path and os.path.isfile(path):
             self._player.set_source(path)
             self._player.play()
+
+    # -------------------------------------------------------------- 行高自适应
+
+    def _wrapped_height(self, text: str, width: int) -> int:
+        """估算文本按给定宽度自动换行后所需的高度（像素）。"""
+        fm = QFontMetrics(self._table.font())
+        avail = max(width - 16, 30)  # 扣除单元格左右留白
+        rect = fm.boundingRect(QRect(0, 0, avail, 100000), Qt.TextFlag.TextWordWrap, text)
+        return rect.height()
+
+    def _update_row_height(self, row: int) -> None:
+        """按原文/译文换行后的高度调整行高，并同步译文编辑框高度。"""
+        seg = self._segments[row]
+        source_h = self._wrapped_height(
+            str(getattr(seg, "text", "") or ""), self._table.columnWidth(3)
+        )
+        target_h = self._wrapped_height(
+            str(seg.target_text or ""), self._table.columnWidth(4)
+        )
+        editor_h = target_h + _EDITOR_CHROME
+        height = max(_MIN_ROW_HEIGHT, source_h + _CELL_V_PAD, editor_h + _CELL_V_PAD)
+        self._table.setRowHeight(row, height)
+        self._editors[row].setFixedHeight(min(editor_h, height - _CELL_V_PAD))
+
+    def _update_all_row_heights(self) -> None:
+        """按当前列宽重算全部行高（列宽变化/首次布局后调用）。"""
+        for row in range(len(self._segments)):
+            self._update_row_height(row)
+
+    # -------------------------------------------------------------- 连续试听
+
+    def _on_continuous_clicked(self) -> None:
+        """连续试听：从当前选中句播放到最后一句；播放中再次点击则停止。"""
+        if self._continuous_playing:
+            self._stop_continuous()
+            self._player.stop()
+            return
+        start = self._table.currentRow()
+        if start < 0 or start >= len(self._segments):
+            start = 0  # 无当前项时从第一句开始
+        self._continuous_playing = True
+        self._continuous_button.setText(tr("player.stop"))
+        self._continuous_slider.setEnabled(True)
+        self._advance_continuous(start)
+
+    def _on_continuous_slider_released(self) -> None:
+        """拖动连续试听滑块松开：跳到对应句继续播放。"""
+        if self._continuous_playing:
+            self._advance_continuous(self._continuous_slider.value())
+
+    def _advance_continuous(self, index: int) -> None:
+        """连续试听推进到第 index 句；文件缺失时顺延下一句，直至播完。"""
+        if not self._continuous_playing:
+            return
+        while 0 <= index < len(self._segments):
+            seg = self._segments[index]
+            path = str(getattr(seg, "tts_audio_path", "") or "")
+            if path and os.path.isfile(path):
+                self._continuous_index = index
+                self._continuous_slider.setValue(index)
+                self._continuous_count_label.setText(
+                    f"{index + 1} / {len(self._segments)}"
+                )
+                self._player.set_source(path)
+                self._player.play()
+                return
+            index += 1
+        self._stop_continuous()
+
+    def _stop_continuous(self) -> None:
+        """退出连续试听状态，恢复按钮文字与进度显示。"""
+        if not self._continuous_playing:
+            return
+        self._continuous_playing = False
+        self._continuous_index = -1
+        self._continuous_button.setText(tr("tts_review.continuous_listen"))
+        self._continuous_slider.setValue(0)
+        self._continuous_slider.setEnabled(False)
+        self._continuous_count_label.setText(f"0 / {len(self._segments)}")
+
+    def _on_player_finished(self) -> None:
+        """一句播放自然结束：连续试听中自动接播下一句。"""
+        if self._continuous_playing:
+            self._advance_continuous(self._continuous_index + 1)
 
     # -------------------------------------------------------------- 重生成队列
 
@@ -370,6 +542,7 @@ class TtsReviewDialog(QDialog):
 
     def _on_regen_started(self, row: int) -> None:
         """主线程：该句开始生成——释放播放器句柄（同名 wav 将被覆盖）。"""
+        self._stop_continuous()  # 连续试听中先退出，避免播放被覆盖的文件
         self._player.release()
         self._regen_states[row] = "running"
         self._regen_buttons[row].setText(tr("tts_review.regen_running"))
@@ -389,7 +562,7 @@ class TtsReviewDialog(QDialog):
         self._regen_buttons[row].setEnabled(True)
         seg = self._segments[row]
         if not error:
-            self._table.setItem(row, 4, _ratio_item(seg))
+            self._table.setItem(row, 5, _ratio_item(seg))
             path = str(getattr(seg, "tts_audio_path", "") or "")
             self._listen_buttons[row].setEnabled(
                 bool(path) and os.path.isfile(path)
