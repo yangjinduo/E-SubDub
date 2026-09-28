@@ -18,7 +18,7 @@
         06_译文审核/translated.json       # 审核后版（post）
         07_配音生成/{refs/, tts/, tts.json}
         08_混音/ai_new_audio.wav
-        09_封装输出/{文件名}.dubbed.mkv    # 成品：配音视频 + 处理好的字幕副本
+        09_封装输出/{文件名}.dubbed.mkv    # 成品：配音视频
 
 重复执行同文件任务时，已完成的阶段（产物文件仍存在）直接跳过并复用产物；
 人工审核修改内容后由 runner 显式失效下游阶段。旧版 manifest（无 layout
@@ -175,6 +175,17 @@ class Workspace:
     def reset_stages(self, stages: list[str]) -> None:
         for stage in stages:
             self.reset_stage(stage)
+
+    # ------------------------------------------------------------------ 自定义标记
+
+    def stage_flag(self, key: str):
+        """读取自定义标记（影响产物形态的设置快照，None = 未记录）。"""
+        return self._manifest.get("flags", {}).get(key)
+
+    def set_stage_flag(self, key: str, value) -> None:
+        """写入自定义标记（随 manifest 持久化）。"""
+        self._manifest.setdefault("flags", {})[key] = value
+        self._save_manifest()
 
     # ------------------------------------------------------------------ 流程子夹
 

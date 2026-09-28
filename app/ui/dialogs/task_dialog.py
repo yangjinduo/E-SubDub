@@ -88,6 +88,8 @@ class TaskWindow(QDialog):
         auto_row.setContentsMargins(0, 0, 0, 0)
         self._auto_accept_check = QCheckBox(tr("taskwindow.auto_accept"))
         self._auto_accept_check.setToolTip(tr("taskwindow.auto_accept_tip"))
+        # TOOLTIP 不限时显示：用户看完前不自动消失，移开鼠标才隐藏
+        self._auto_accept_check.setToolTipDuration(24 * 60 * 60 * 1000)
         auto_row.addWidget(self._auto_accept_check)
         auto_row.addStretch(1)
 
@@ -142,7 +144,8 @@ class TaskWindow(QDialog):
             self._import_area.set_file(cfg.media_path)
         self._task_settings.set_selected_codes(
             cfg.source_lang_code, cfg.target_lang_code, cfg.subtitle_mode,
-            cfg.dubbing_enabled, cfg.ai_proofread_enabled, cfg.output_dir,
+            cfg.dubbing_enabled, cfg.ai_proofread_enabled,
+            cfg.overlay_original_audio, cfg.output_dir,
         )
         self._auto_accept_check.setChecked(cfg.auto_accept_reviews)
         self._restore_pipeline(item)
@@ -335,6 +338,7 @@ class TaskWindow(QDialog):
             task_category=task_category_text(dubbing, self._task_settings.subtitle_mode()),
             auto_accept_reviews=self._auto_accept_check.isChecked(),
             ai_proofread_enabled=ai_proofread,
+            overlay_original_audio=self._task_settings.overlay_original_audio(),
             asr_model_dir=resource_manager.get_resource_path("transcribe") or "",
             tts_model_dir=resource_manager.get_resource_path("tts") or "",
             llm_model_path=str(gguf) if gguf else "",

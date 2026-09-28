@@ -89,6 +89,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "runner.tts_progress": "配音生成 {done}/{total} 句",
         "runner.tts_review_needed": "配音复核：共 {count} 句，可试听、修改译文并即时重生成",
         "runner.srt_synced": "配音复核修改了 {count} 句译文，已同步重新生成字幕",
+        "runner.mix_overlay": "叠加原声混音：对白时段用新配音，句间保留原声（含语气词）",
         "runner.tts_env_missing": "TTS 运行环境未就绪：{detail}（IndexTTS-2.5 需独立环境 .venv-tts 与源码 third_party/index-tts）",
         "runner.auto_review_passed": "人工审核自动通过（挂机批量模式）",
         # ---- 资源状态栏 ----
@@ -134,6 +135,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "task.subtitle_mode": "字幕形式",
         "task.dubbing_check": "生成配音（声音克隆）",
         "task.ai_proofread": "AI校对文本后再人工审核",
+        "task.overlay_original": "混音后叠加原背景音",
+        "task.overlay_original.tooltip": (
+            "勾选：每句配音（含背景音）按对白时间线覆盖回原声音频——对白时段播新配音，"
+            "句间等其余时段保留原声，笑声、惊叹等语气词与现场氛围因此得以保留；\n"
+            "不勾选：整轨使用分离出的纯背景音配新配音，原声中的语气词不会保留。"
+        ),
         "task.output_dir": "输出目录",
         "task.choose_output_dir": "选择输出目录",
         "task.subtitle.single": "单语字幕",
@@ -408,6 +415,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "runner.tts_progress": "Generating dubbing {done}/{total}",
         "runner.tts_review_needed": "Dubbing review: {count} segments; listen, edit translations, and regenerate on the spot",
         "runner.srt_synced": "{count} translations edited during dubbing review; subtitles regenerated",
+        "runner.mix_overlay": "Mixing over the original audio: dialogues use the new dub, gaps keep the original (interjections preserved)",
         "runner.tts_env_missing": "TTS runtime environment not ready: {detail} (IndexTTS-2.5 requires .venv-tts and sources in third_party/index-tts)",
         "runner.auto_review_passed": "Reviews auto-accepted (unattended batch mode)",
         # ---- Resource bar ----
@@ -453,6 +461,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "task.subtitle_mode": "Subtitle format",
         "task.dubbing_check": "Generate dubbing (voice cloning)",
         "task.ai_proofread": "AI proofread before manual review",
+        "task.overlay_original": "Lay dubbing over original audio",
+        "task.overlay_original.tooltip": (
+            "Checked: each dubbed line (with background) is laid over the original audio on its "
+            "dialogue timeline — dialogues play the new dub while everything in between keeps the "
+            "original sound, so laughter, gasps and other interjections survive;\n"
+            "Unchecked: the whole track uses the separated background only, and those "
+            "interjections are lost."
+        ),
         "task.output_dir": "Output directory",
         "task.choose_output_dir": "Choose output directory",
         "task.subtitle.single": "Monolingual subtitles",

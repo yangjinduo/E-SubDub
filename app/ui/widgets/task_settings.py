@@ -2,7 +2,7 @@
 
 布局：
 - 第一行：源语言 / 目标语言 / 字幕形式（三组“标签+下拉”等宽铺满整行，两端对齐）
-- 第二行：配音开关 / AI 校对开关 / 输出目录
+- 第二行：配音开关 / AI 校对开关 / 叠加原背景音开关 / 输出目录
 
 语言选项内部携带稳定语言代码（itemData），供后续流水线模块使用；
 界面文案统一走 i18n（tr），语言切换后由主窗口整体重建。
@@ -93,6 +93,15 @@ class TaskSettingsPanel(QFrame):
         self._ai_proofread_check = QCheckBox(tr("task.ai_proofread"))
         self._ai_proofread_check.setChecked(False)  # 默认关闭
 
+        # 混音后叠加原背景音（默认开启）：混音完成后，每句配音（含背景音）
+        # 按对白时间线覆盖回原声音频——对白时段播新配音，句间等其余时段
+        # 保留原声，笑声、惊叹等语气词与现场氛围不丢失（仅配音任务生效）
+        self._overlay_original_check = QCheckBox(tr("task.overlay_original"))
+        self._overlay_original_check.setChecked(True)  # 默认开启
+        self._overlay_original_check.setToolTip(tr("task.overlay_original.tooltip"))
+        # TOOLTIP 不限时显示：用户看完前不自动消失，移开鼠标才隐藏
+        self._overlay_original_check.setToolTipDuration(24 * 60 * 60 * 1000)
+
         self._output_edit = QLineEdit(str(config.OUTPUT_DIR))
         self._browse_button = QPushButton("…")
         self._browse_button.setFixedWidth(44)
@@ -104,6 +113,7 @@ class TaskSettingsPanel(QFrame):
         option_row.setSpacing(12)
         option_row.addWidget(self._dubbing_check)
         option_row.addWidget(self._ai_proofread_check)
+        option_row.addWidget(self._overlay_original_check)
         option_row.addStretch(1)
         option_row.addWidget(output_label)
         option_row.addWidget(self._output_edit, 2)
@@ -151,6 +161,10 @@ class TaskSettingsPanel(QFrame):
         """AI 校对开关状态（文本先经 LLM 校对再人工审核）。"""
         return self._ai_proofread_check.isChecked()
 
+    def overlay_original_audio(self) -> bool:
+        """混音后叠加原背景音开关状态（对白覆盖回原声，保留句间语气词）。"""
+        return self._overlay_original_check.isChecked()
+
     def output_dir(self) -> str:
         """输出目录路径文本。"""
         return self._output_edit.text().strip()
@@ -165,6 +179,7 @@ class TaskSettingsPanel(QFrame):
             "subtitle": self._subtitle_combo.currentIndex(),
             "dubbing": self._dubbing_check.isChecked(),
             "ai_proofread": self._ai_proofread_check.isChecked(),
+            "overlay_original": self._overlay_original_check.isChecked(),
             "output": self._output_edit.text(),
         }
 
@@ -177,6 +192,7 @@ class TaskSettingsPanel(QFrame):
         self._subtitle_combo.blockSignals(True)
         self._dubbing_check.blockSignals(True)
         self._ai_proofread_check.blockSignals(True)
+        self._overlay_original_check.blockSignals(True)
         try:
             if "source" in state:
                 self._source_combo.setCurrentIndex(state["source"])
@@ -188,6 +204,8 @@ class TaskSettingsPanel(QFrame):
                 self._dubbing_check.setChecked(state["dubbing"])
             if "ai_proofread" in state:
                 self._ai_proofread_check.setChecked(state["ai_proofread"])
+            if "overlay_original" in state:
+                self._overlay_original_check.setChecked(state["overlay_original"])
             if "output" in state:
                 self._output_edit.setText(state["output"])
         finally:
@@ -196,10 +214,11 @@ class TaskSettingsPanel(QFrame):
             self._subtitle_combo.blockSignals(False)
             self._dubbing_check.blockSignals(False)
             self._ai_proofread_check.blockSignals(False)
+            self._overlay_original_check.blockSignals(False)
 
     def set_selected_codes(
         self, source: str, target: str, subtitle: str,
-        dubbing: bool, ai_proofread: bool, output_dir: str,
+        dubbing: bool, ai_proofread: bool, overlay_original: bool, output_dir: str,
     ) -> None:
         """按稳定代码恢复设置（任务窗口绑定已有任务时使用）。"""
         for combo, code in (
@@ -212,6 +231,7 @@ class TaskSettingsPanel(QFrame):
                 combo.setCurrentIndex(index)
         self._dubbing_check.setChecked(dubbing)
         self._ai_proofread_check.setChecked(ai_proofread)
+        self._overlay_original_check.setChecked(overlay_original)
         self._output_edit.setText(output_dir)
 
     # ------------------------------------------------------------------ 交互

@@ -5,6 +5,9 @@
   （避免两次进程调用）；
 - 混音：以 no_vocals 为基准轨（采样率/总时长/声道数），TTS 逐条重采样、
   响度对齐到原人声参考后按 start 时间叠加；
+- 叠加原声（可选，full_audio_wav 非空时）：混音完成后以原声为底，把每句
+  对白的混音内容（配音+背景）按对白时间线覆盖回原声——对白时段播新配音，
+  句间等其余时段保留原声（笑声、惊叹等语气词与现场氛围不丢失）；
 - stretch_to_duration：librosa 变调不变速时长拉伸，供 TTS 模块兜底。
 """
 
@@ -27,6 +30,10 @@ except Exception:  # pragma: no cover - base.py 尚未就绪时兜底
 
 # 静音/近静音的 RMS 下限（dBFS），避免 log10(0) 与无穷增益
 SILENCE_DB = -120.0
+
+# 叠加原声时句子边界的交叉淡化时长（秒）：平滑“原声 ↔ 混音”切换，
+# 避免原声人声在边界瞬间切断产生爆音
+_OVERLAY_XFADE_SEC = 0.02
 
 
 def _rms_db(data: np.ndarray) -> float:
@@ -75,11 +82,12 @@ def align_loudness(wav_path: str, target_db: float, out_path: str | None = None)
     return dest
 
 
-def _load_tts_as_track(path: str, canvas_sr: float, canvas_channels: int) -> np.ndarray:
-    """读入 TTS 音频并整形为 (n, canvas_channels) float32。
+def _load_as_track(path: str, canvas_sr: float, canvas_channels: int) -> np.ndarray:
+    """读入音频（TTS 配音 / 原声音轨）并整形为 (n, canvas_channels) float32。
 
-    采样率与画布不同 → librosa.resample；声道数与画布不同 →
-    先转单声道（多声道取均值）再复制到画布声道数。
+    采样率与画布不同 → librosa.resample；声道数与画布一致 → 原样保留
+    （保住立体声像）；不一致 → 先转单声道（多声道取均值）再复制到画布
+    声道数。
     """
     y, sr_t = sf.read(path, dtype="float32", always_2d=True)
     if sr_t != canvas_sr:
@@ -87,6 +95,8 @@ def _load_tts_as_track(path: str, canvas_sr: float, canvas_channels: int) -> np.
 
         # (n, ch) → 时间在 axis=0，librosa 沿时间轴重采样
         y = librosa.resample(y, orig_sr=sr_t, target_sr=canvas_sr, axis=0)
+    if y.shape[1] == canvas_channels:
+        return y
     if y.shape[1] == 1:
         mono = y[:, 0]
     else:
@@ -96,12 +106,49 @@ def _load_tts_as_track(path: str, canvas_sr: float, canvas_channels: int) -> np.
     return np.repeat(mono.reshape(-1, 1), canvas_channels, axis=1)
 
 
+def _overlay_mixed_ranges(
+    base: np.ndarray,
+    mixed: np.ndarray,
+    tts_segments: list,
+    placed_ends: dict,
+    sr: float,
+) -> None:
+    """把每句对白的混音内容（配音+背景）就地覆盖进原声底轨 base。
+
+    仅覆盖有 TTS 的句子：覆盖区间 = [句开始, max(句结束, TTS 实际放置
+    终点)]；无 TTS 的句子（被删除 / 生成失败）不覆盖——该时段保留原声，
+    避免出现人声被静音的空缺。边界做短交叉淡化，避免原声人声瞬间切断
+    产生爆音。
+    """
+    fade = max(1, int(round(_OVERLAY_XFADE_SEC * sr)))
+    total = len(base)
+    for seg in tts_segments:
+        placed = int(placed_ends.get(id(seg), 0))
+        if placed <= 0:
+            continue  # 无 TTS（被删除/生成失败）：保留原声
+        start = float(getattr(seg, "start", 0.0))
+        end = float(getattr(seg, "end", 0.0))
+        a = max(0, int(round(start * sr)))
+        b = min(total, max(int(round(end * sr)), placed))
+        if b <= a:
+            continue
+        seg_m = mixed[a:b].copy()
+        f = min(fade, (b - a) // 2)
+        if f > 0:
+            ramp = np.linspace(0.0, 1.0, f, dtype=np.float32).reshape(-1, 1)
+            # 入端：原声淡出、混音淡入；出端反向
+            seg_m[:f] = base[a : a + f] * (1.0 - ramp) + seg_m[:f] * ramp
+            seg_m[-f:] = seg_m[-f:] * (1.0 - ramp[::-1]) + base[b - f : b] * ramp[::-1]
+        base[a:b] = seg_m
+
+
 def mix_tracks(
     tts_segments: list,
     no_vocals_wav: str,
     out_wav: str,
     vocals_ref_wav: str,
     progress: "ProgressCallback | None" = None,
+    full_audio_wav: str = "",
 ) -> str:
     """把 TTS 配音段叠加到背景轨，写出成品混音 wav（pcm_s16le），返回 out_wav。
 
@@ -112,7 +159,11 @@ def mix_tracks(
     ③ 创建等长静音画布（float32，同背景轨声道数）；
     ④ 逐条：读 TTS（重采样/声道整形）→ RMS 对齐到原人声响度 → 按 start
       叠加进画布（越界裁剪，与已有内容相加）；
-    ⑤ 画布 + no_vocals 相加、clip ±1.0、写出 out_wav。
+    ⑤ 画布 + no_vocals 相加、clip ±1.0 得混音轨；
+    ⑥ 叠加原声（full_audio_wav 非空时）：读原声（重采样/声道整形到基准轨
+      规格）为底，有配音的对白时间段用混音轨同区间覆盖（边界交叉淡化）——
+      对白时段播新配音+背景，句间及无配音句子（被删除/生成失败）保留原声
+      （语气词/现场氛围不丢失）。
     tts_audio_path 为空或文件不存在的段跳过并 warning。
     """
     # ① 基准轨
@@ -128,7 +179,12 @@ def mix_tracks(
     canvas = np.zeros_like(bg)
     n = len(tts_segments) if tts_segments else 0
     done = 0
+    # 各句 TTS 在画布上的实际放置终点（叠加原声时确定覆盖区间用）
+    placed_ends: dict[int, int] = {}
     for seg in tts_segments:
+        if getattr(seg, "deleted", False):
+            # 复核中删除的句子：不参与混音（叠加原声模式下保留原声）
+            continue
         start = float(getattr(seg, "start", 0.0))
         end = float(getattr(seg, "end", 0.0))
         path = getattr(seg, "tts_audio_path", "") or ""
@@ -139,7 +195,7 @@ def mix_tracks(
             )
             continue
         # ④ 读入、整形、对齐响度
-        track = _load_tts_as_track(path, sr, channels)
+        track = _load_as_track(path, sr, channels)
         seg_db = _rms_db(track)
         if seg_db > SILENCE_DB:
             gain = 10.0 ** ((ref_db - seg_db) / 20.0)
@@ -155,10 +211,26 @@ def mix_tracks(
             logger.warning("TTS 段完全落在画布外，跳过: start=%.3f", start)
             continue
         canvas[dst_from:dst_to] += track[src_from : src_from + (dst_to - dst_from)]
+        placed_ends[id(seg)] = dst_to
         done += 1
-        _report(progress, done / max(n, 1), f"混音配音段 {done}/{n}")
+        _report(progress, done / max(n, 1) * 0.7, f"混音配音段 {done}/{n}")
     # ⑤ 与背景轨合并
     mixed = np.clip(bg + canvas, -1.0, 1.0)
+    del canvas
+    # ⑥ 叠加原声（可选）
+    if full_audio_wav:
+        _report(progress, 0.72, "读入原声音频")
+        base = _load_as_track(full_audio_wav, sr, channels)
+        # 时长对齐基准轨（demucs 分离保持原长，此处兜底处理微小差异）
+        if len(base) < total_samples:
+            pad = np.zeros((total_samples - len(base), channels), dtype=np.float32)
+            base = np.concatenate([base, pad], axis=0)
+        elif len(base) > total_samples:
+            base = base[:total_samples]
+        _overlay_mixed_ranges(base, mixed, tts_segments, placed_ends, sr)
+        logger.info("叠加原声混音: %d 个对白时间段覆盖回原声", len(placed_ends))
+        mixed = base
+        _report(progress, 0.9, "对白覆盖回原声")
     _report(progress, 0.98, "写出混音文件")
     sf.write(out_wav, mixed, sr, subtype="PCM_16")
     _report(progress, 1.0, "混音完成")

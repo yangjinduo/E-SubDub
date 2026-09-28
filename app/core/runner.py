@@ -120,6 +120,7 @@ class TaskConfig:
     task_category: str = ""        # 任务类别（工作夹名后缀，固定中文）
     auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
     ai_proofread_enabled: bool = False  # 文本校对前先经 LLM 校对（默认关闭）
+    overlay_original_audio: bool = True  # 混音后将配音对白按时间线覆盖回原声（保留句间语气词，默认开启）
     asr_model_dir: str = ""
     tts_model_dir: str = ""
     llm_model_path: str = ""       # GGUF 文件路径
@@ -455,15 +456,27 @@ class PipelineRunner(QThread):
 
             # 10. 混音
             self._stage_begin(STAGE_MIX)
+            # 叠加原声开关与上次混音时不同：成品形态改变，混音/封装失效重跑
+            # （未记录开关的旧任务按"未叠加"处理，勾选后重跑即生效）
+            if (
+                self._ws.is_done(STAGE_MIX)
+                and bool(self._ws.stage_flag("mix_overlay_original"))
+                != cfg.overlay_original_audio
+            ):
+                self._ws.reset_stages([STAGE_MIX, STAGE_MUX])
             if self._ws.is_done(STAGE_MIX):
                 self._skip_stage(STAGE_MIX)
             else:
                 from app.pipeline.mix import mix_tracks
                 self._ws.ensure_stage_dir(STAGE_MIX)
+                if cfg.overlay_original_audio:
+                    self._log(tr("runner.mix_overlay"))
                 mix_tracks(
                     segments, no_vocals, str(self._ws.mixed_audio), vocals,
                     progress=self._stage_progress(STAGE_MIX),
+                    full_audio_wav=full_audio if cfg.overlay_original_audio else "",
                 )
+                self._ws.set_stage_flag("mix_overlay_original", cfg.overlay_original_audio)
                 self._ws.mark_done(STAGE_MIX)
                 self._stage_end(STAGE_MIX)
             audio_out = str(self._ws.mixed_audio)
@@ -485,8 +498,7 @@ class PipelineRunner(QThread):
                         audio_title=f"AI dubbing {cfg.target_lang_code.upper()}",
                         progress=self._stage_progress(STAGE_MUX),
                     )
-                    # 封装输出夹内同时保留处理好的字幕文件副本
-                    shutil.copy2(srt_path, mux_dir / srt_path.name)
+                    shutil.copy2(srt_path, mux_dir / srt_path.name) # 封装输出夹内同时保留处理好的字幕文件副本
                     self._ws.mark_done(STAGE_MUX)
                     self._stage_end(STAGE_MUX)
                 mkv_out = str(self._ws.output_mkv)
