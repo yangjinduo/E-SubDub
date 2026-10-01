@@ -86,11 +86,20 @@ DEFAULT_PROMPT = (
 # 解析模型输出行：[0.00][S01] hello world[2.30]
 SEGMENT_RE = re.compile(r"\[(\d+(?:\.\d+)?)\]\[(S\d+)\](.*?)\[(\d+(?:\.\d+)?)\]", re.S)
 
-# 块间重叠（秒）：相邻块重叠区用于去重拼接
+# 块间重叠（秒）：回退固定步进切块时相邻块重叠区用于去重拼接；
+# VAD 切点落在静音处时句子不跨块，无需重叠
 CHUNK_OVERLAP = 10.0
 
-# 单块生成的最大新 token 数（转写进度按 生成 token 数/MAX_NEW_TOKENS 估算）
-MAX_NEW_TOKENS = 2048
+# 转写输出 token 密度（token/秒音频）：中文多说话人实测约 8.9，留余量取 12。
+# 单块生成预算 = 块时长 × 该密度 + 256，上限 MAX_NEW_TOKENS_CAP。
+# 预算不足会导致转写中途被截断（非 EOS 停止），末尾内容静默丢失。
+TOKENS_PER_SECOND = 12
+TOKENS_BASE = 256
+MAX_NEW_TOKENS_CAP = 16384
+
+# C 点切块：候选静音段最短时长（秒）与从目标切点向前找静音的窗口（秒）
+MIN_SILENCE = 0.3
+CUT_LOOKBACK = 90.0
 
 
 class _CountingStreamer(BaseStreamer):
@@ -210,13 +219,21 @@ class ASRModule:
     # 单块推理
     # ------------------------------------------------------------------
 
-    def _transcribe_chunk(self, wav_path: str, on_tokens=None) -> list[dict]:
+    def _transcribe_chunk(
+        self, wav_path: str, audio_seconds: float, on_tokens=None
+    ) -> list[dict]:
         """对单个音频文件推理，返回解析后的分段（时间相对该文件起点）。
 
+        audio_seconds：该块音频时长（秒），用于估算生成 token 预算。
         on_tokens：可选回调 on_tokens(count)，转写过程中每生成若干 token
         调用一次（count 为累计新 token 数），用于进度显示与取消检查。
         """
         processor = self._processor
+        # 生成预算按块时长动态估算：预算用尽时 generate 强制停止，
+        # 未转完的内容会被静默丢弃（历史 bug：固定 2048 导致长块截断）
+        budget = min(
+            int(audio_seconds * TOKENS_PER_SECOND) + TOKENS_BASE, MAX_NEW_TOKENS_CAP
+        )
         messages = [
             {
                 "role": "user",
@@ -241,11 +258,22 @@ class ASRModule:
                 input_features=inputs["input_features"],
                 audio_feature_lengths=inputs["audio_feature_lengths"],
                 audio_chunk_mapping=inputs["audio_chunk_mapping"],
-                max_new_tokens=MAX_NEW_TOKENS,
+                max_new_tokens=budget,
                 do_sample=False,
                 streamer=streamer,
             )
         gen_ids = outputs[0][prompt_len:]
+        # 截断检测：生成数达到预算且末 token 不是 EOS，说明块尾内容可能
+        # 未转写完，明确告警而非静默丢失
+        if gen_ids.numel() >= budget:
+            eos_id = processor.tokenizer.eos_token_id
+            eos_ids = eos_id if isinstance(eos_id, (list, tuple)) else [eos_id]
+            if int(gen_ids[-1]) not in eos_ids:
+                logger.warning(
+                    "转写输出达到 max_new_tokens=%d 上限（%.1f 秒音频），"
+                    "该块末尾内容可能被截断: %s",
+                    budget, audio_seconds, wav_path,
+                )
         result = processor.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
         return [
             {"start": float(a), "spk": sp, "text": body.strip(), "end": float(b)}
@@ -305,15 +333,17 @@ class ASRModule:
         frac_from: float,
         frac_to: float,
         base_msg: str,
+        budget: int,
     ):
         """构造 token 计数 → 进度回调：生成进度映射到 [frac_from, frac_to)。
 
+        budget 为该块的生成 token 预算（按块时长动态估算）。
         消息在 base_msg 基础上按 10% 步进附加百分比（0% 时用 base_msg，
         与起始消息一致以配合 runner 的去重日志，避免刷屏）。
         """
 
         def on_tokens(count: int) -> None:
-            frac = min(count / MAX_NEW_TOKENS, 1.0)
+            frac = min(count / budget, 1.0)
             pct = min(int(frac * 10), 9) * 10
             report_progress(
                 progress,
@@ -331,9 +361,10 @@ class ASRModule:
     ) -> list[Segment]:
         """转写 wav 文件，返回按时间排序的 Segment 列表。
 
-        超过 chunk_minutes 分钟的音频用 ffmpeg 切块（块间重叠 10 秒，
-        临时文件用完即删），逐块推理后按重叠区去重拼接；各块说话人
-        标签按块顺序全局偏移重编号。
+        超过 chunk_minutes 分钟的音频切块后逐块推理：优先用 silero-vad
+        在静音间隙处切（C 点切块，句子不跨块）；VAD 不可用时回退固定
+        步进切块（块间重叠 10 秒，重叠区去重拼接）。各块说话人标签按
+        块顺序全局偏移重编号；生成 token 预算按块时长动态估算。
         """
         if not self.loaded:
             raise RuntimeError("ASR 模型未加载，请先调用 load()")
@@ -346,8 +377,13 @@ class ASRModule:
         if duration <= chunk_seconds + CHUNK_OVERLAP:
             base_msg = f"转写中（{duration:.1f} 秒音频）"
             report_progress(progress, 0.1, base_msg)
+            budget = min(
+                int(duration * TOKENS_PER_SECOND) + TOKENS_BASE, MAX_NEW_TOKENS_CAP
+            )
             raw = self._transcribe_chunk(
-                wav_path, self._token_progress(progress, 0.1, 0.9, base_msg)
+                wav_path,
+                duration,
+                self._token_progress(progress, 0.1, 0.9, base_msg, budget),
             )
             report_progress(progress, 0.95, "转写完成，解析分段")
             segments = [
@@ -358,28 +394,53 @@ class ASRModule:
             report_progress(progress, 1.0, f"转写完成，共 {len(segments)} 段")
             return segments
 
-        # 长音频：切块处理（步长 = 块长 - 重叠）
-        stride = chunk_seconds - CHUNK_OVERLAP
-        starts: list[float] = []
-        start = 0.0
-        while start < duration:
-            starts.append(start)
-            start += stride
-        total = len(starts)
-
+        # 长音频：切块处理。VAD 检测阶段占 [0, VAD_FRAC)，各块占余下区间
+        VAD_FRAC = 0.05
         merged: list[Segment] = []
         spk_offset = 0  # 已使用的全局说话人编号数
         with tempfile.TemporaryDirectory(prefix="asr_chunks_") as tmp:
             tmp_dir = Path(tmp)
-            for i, chunk_start in enumerate(starts):
-                chunk_len = min(chunk_seconds, duration - chunk_start)
+            # 统一转 16k 单声道中间文件：VAD 与切块共用，避免重复转码
+            full16k = tmp_dir / "full_16k.wav"
+            self._cut_chunk(wav_path, 0.0, duration, full16k)
+            report_progress(progress, VAD_FRAC * 0.5, "检测静音切点（VAD）")
+            cut_points = self._find_cut_points(str(full16k), chunk_seconds)
+            if cut_points is not None:
+                # C 点切块：切点在静音间隙处，句子不跨块，无需重叠
+                blocks = [
+                    (cut_points[i], cut_points[i + 1] - cut_points[i])
+                    for i in range(len(cut_points) - 1)
+                ]
+                vad_frac = VAD_FRAC
+            else:
+                # 回退：固定步进切块，块间重叠 CHUNK_OVERLAP 靠去重拼接兜底
+                stride = chunk_seconds - CHUNK_OVERLAP
+                starts: list[float] = []
+                start = 0.0
+                while start < duration:
+                    starts.append(start)
+                    start += stride
+                blocks = [
+                    (s, min(chunk_seconds, duration - s)) for s in starts
+                ]
+                vad_frac = 0.0
+            report_progress(progress, vad_frac, "切块完成，开始逐块转写")
+            total = len(blocks)
+
+            for i, (chunk_start, chunk_len) in enumerate(blocks):
                 chunk_file = tmp_dir / f"chunk_{i:04d}.wav"
-                self._cut_chunk(wav_path, chunk_start, chunk_len, chunk_file)
+                self._cut_chunk(str(full16k), chunk_start, chunk_len, chunk_file)
                 chunk_msg = f"转写块 {i + 1}/{total}（{chunk_start:.0f}~{chunk_start + chunk_len:.0f} 秒）"
                 # 该块的切块/生成/合并各占块内进度的 0~0.1 / 0.1~0.9 / 0.9~1
+                frac_a = vad_frac + (1.0 - vad_frac) * (i + 0.1) / total
+                frac_b = vad_frac + (1.0 - vad_frac) * (i + 0.9) / total
+                budget = min(
+                    int(chunk_len * TOKENS_PER_SECOND) + TOKENS_BASE, MAX_NEW_TOKENS_CAP
+                )
                 raw = self._transcribe_chunk(
                     str(chunk_file),
-                    self._token_progress(progress, (i + 0.1) / total, (i + 0.9) / total, chunk_msg),
+                    chunk_len,
+                    self._token_progress(progress, frac_a, frac_b, chunk_msg, budget),
                 )
                 chunk_file.unlink(missing_ok=True)
 
@@ -402,8 +463,76 @@ class ASRModule:
                 spk_offset += local_max
 
                 self._merge_chunk(merged, chunk_segs)
-                report_progress(progress, (i + 1) / total, chunk_msg)
+                report_progress(
+                    progress,
+                    vad_frac + (1.0 - vad_frac) * (i + 1) / total,
+                    chunk_msg,
+                )
 
         merged.sort(key=lambda s: s.start)
         report_progress(progress, 1.0, f"转写完成，共 {len(merged)} 段")
         return merged
+
+    @staticmethod
+    def _find_cut_points(wav16k_path: str, chunk_seconds: float) -> Optional[list[float]]:
+        """C 点切块：用 silero-vad 找静音间隙作为切点，句子不跨块。
+
+        从每个目标切点（当前块起点 + chunk_seconds）向前在 CUT_LOOKBACK
+        窗口内找最靠后且时长 >= MIN_SILENCE 的静音段，取其中点为切点；
+        找不到（连续长配乐/对白）时退化为硬切并告警。
+
+        返回切点列表 [0, c1, ..., 时长]；silero-vad 不可用或检测失败时
+        返回 None，调用方回退固定步进切块。
+        """
+        try:
+            from silero_vad import get_speech_timestamps, load_silero_vad
+        except ImportError:
+            logger.warning("silero-vad 未安装，回退固定步进切块（pip install silero-vad）")
+            return None
+
+        try:
+            wav, sr = sf.read(wav16k_path, dtype="float32")
+            if wav.ndim > 1:
+                wav = wav[:, 0]
+            duration = len(wav) / sr
+            speech = get_speech_timestamps(
+                torch.from_numpy(wav), load_silero_vad(), sampling_rate=sr
+            )
+        except Exception:
+            logger.exception("VAD 静音检测失败，回退固定步进切块")
+            return None
+
+        # 语音区间的补集即静音段（时长 >= MIN_SILENCE 才可作为切点候选）
+        silences: list[tuple[float, float]] = []
+        prev_end = 0.0
+        for seg in speech:
+            s, e = seg["start"] / sr, seg["end"] / sr
+            if s - prev_end >= MIN_SILENCE:
+                silences.append((prev_end, s))
+            prev_end = e
+        if duration - prev_end >= MIN_SILENCE:
+            silences.append((prev_end, duration))
+
+        cut_points = [0.0]
+        cur = 0.0
+        while duration - cur > chunk_seconds + CHUNK_OVERLAP:
+            target = cur + chunk_seconds
+            # 取静音段与回看窗口的交集（长静音可能横跨目标点），
+            # 静音段有序，最后一个满足的即最靠近目标点；切点取交集中点
+            best: Optional[tuple[float, float]] = None
+            for s, e in silences:
+                lo = max(s, target - CUT_LOOKBACK)
+                hi = min(e, target)
+                if hi - lo >= MIN_SILENCE:
+                    best = (lo, hi)
+            if best is not None:
+                cut_points.append((best[0] + best[1]) / 2)
+            else:
+                logger.warning(
+                    "目标切点 %.0fs 前 %.0fs 内未找到 >=%.1fs 的静音段，硬切（跨句风险）",
+                    target, CUT_LOOKBACK, MIN_SILENCE,
+                )
+                cut_points.append(target)
+            cur = cut_points[-1]
+        cut_points.append(duration)
+        return cut_points
