@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """工作目录管理：按"文件名_任务类别"建工作夹，各流程产物分入带序号的
-中文子夹（01_～09_，文件夹按流程顺序排序），manifest 记录阶段状态。
+中文子夹（01_～10_，文件夹按流程顺序排序），manifest 记录阶段状态。
 
-目录布局（layout v4）：
+目录布局（layout v5）：
     {输出目录}/{文件名}_{任务类别}/
         manifest.json                     # 阶段状态 + layout 版本
         {文件名}.{语种}.srt               # 成品：字幕（单语 ZH / 双语 ZH_EN）
@@ -10,19 +10,21 @@
         01_音频提取/full_audio.wav
         02_人声分离/{vocals.wav, no_vocals.wav}
         03_语音识别/asr.json
-        04_文本校对/corrected.json        # AI 校对版（启用 AI 校对时，pre）
-        04_文本校对/reviewed.json         # 人工审核后定稿（post）
-        04_文本校对/句子切片/ 开始时间-结束时间-说话人ID-文本.wav
+        04_文本审核/reviewed.json         # 人工审核定稿
+        04_文本审核/句子切片/ 开始时间-结束时间-说话人ID-文本.wav
             # 审核定稿分段的逐句切片，作 TTS 参考
-        05_翻译/translated.json           # LLM 翻译版（pre）
+        05_翻译/translated.json           # LLM 翻译版（pre，配音任务含时长修正）
         06_译文审核/translated.json       # 审核后版（post）
         07_配音生成/{refs/, tts/, tts.json}
-        08_混音/ai_new_audio.wav
-        09_封装输出/{文件名}.dubbed.mkv    # 成品：配音视频
+            # tts.json = TTS 合成结果（pre，复核前）
+        08_配音复核/tts_reviewed.json     # 配音复核后的分段数据（post）
+        09_混音/ai_new_audio.wav
+        10_封装输出/{文件名}.dubbed.mkv    # 成品：配音视频
 
 重复执行同文件任务时，已完成的阶段（产物文件仍存在）直接跳过并复用产物；
 人工审核修改内容后由 runner 显式失效下游阶段。旧版 manifest（无 layout
-字段的平铺布局，或子夹序号不同的 v2/v3）加载时视为全新任务全量重跑，不做迁移。
+字段的平铺布局，或子夹序号不同的 v2～v4）加载时视为全新任务全量重跑，
+不做迁移。
 """
 
 from __future__ import annotations
@@ -44,37 +46,43 @@ STAGE_REVIEW = "review"
 STAGE_TRANSLATE = "translate"
 STAGE_REVIEW_TRANSLATION = "review_translation"
 STAGE_TTS = "tts"
+STAGE_TTS_REVIEW = "tts_review"
 STAGE_MIX = "mix"
 STAGE_MUX = "mux"
 
 # 各流程产物子夹名（固定中文，带两位序号前缀便于按流程顺序排序；
 # 不随界面语言变化：保证断点复用路径稳定，且与"查看流程结果"功能的
 # 文件夹一一对应）。
-# "review"（人工审核）不再单独成步：动作并入 04_文本校对，其产物与
-# 句子切片目录同放 "04_文本校对" 子夹（与 STAGE_PROOFREAD 同名）。
+# "review"（人工审核）不再单独成步：动作并入 04_文本审核，其产物与
+# 句子切片目录同放 "04_文本审核" 子夹（与 STAGE_PROOFREAD 同名）。
+# 配音复核产物单独入 08_配音复核 夹（复核前的合成结果留在 07_配音生成）。
 STAGE_DIR_NAMES: dict[str, str] = {
     STAGE_EXTRACT: "01_音频提取",
     STAGE_SEPARATE: "02_人声分离",
     STAGE_ASR: "03_语音识别",
-    STAGE_PROOFREAD: "04_文本校对",
-    STAGE_REVIEW: "04_文本校对",
+    STAGE_PROOFREAD: "04_文本审核",
+    STAGE_REVIEW: "04_文本审核",
     STAGE_TRANSLATE: "05_翻译",
     STAGE_REVIEW_TRANSLATION: "06_译文审核",
     STAGE_TTS: "07_配音生成",
-    STAGE_MIX: "08_混音",
-    STAGE_MUX: "09_封装输出",
+    STAGE_TTS_REVIEW: "08_配音复核",
+    STAGE_MIX: "09_混音",
+    STAGE_MUX: "10_封装输出",
 }
 
-# 旧版（layout v2 子夹无序号 / v3 含 05_人工审核）目录名：清理工作夹时一并删除
+# 旧版（layout v2 子夹无序号 / v3 含 05_人工审核 / v4 文本校对同夹复核
+# 产物）目录名：清理工作夹时一并删除
 _LEGACY_STAGE_DIR_NAMES: tuple[str, ...] = (
     "音频提取", "人声分离", "语音识别", "文本校对", "人工审核",
     "翻译", "译文审核", "配音生成", "混音", "封装输出",
     "05_人工审核", "06_翻译", "07_译文审核", "08_配音生成", "09_混音", "10_封装输出",
+    "04_文本校对", "08_混音", "09_封装输出",
 )
 
-# 工作夹布局版本：v4 = 人工审核并入 04_文本校对、后续子夹序号前移；
-# 旧版 manifest 加载时清空阶段状态（全量重跑）
-_LAYOUT_VERSION = 4
+# 工作夹布局版本：v5 = 配音复核独立成夹（08_配音复核）、混音/封装后移、
+# 文本校对更名文本审核（纯人工审核步骤）；旧版 manifest 加载时清空阶段
+# 状态（全量重跑）
+_LAYOUT_VERSION = 5
 
 # 各阶段对应的产物文件（相对工作夹）；文件丢失时视为未完成
 _STAGE_PRODUCTS: dict[str, tuple[str, ...]] = {
@@ -84,13 +92,13 @@ _STAGE_PRODUCTS: dict[str, tuple[str, ...]] = {
         f"{STAGE_DIR_NAMES[STAGE_SEPARATE]}/no_vocals.wav",
     ),
     STAGE_ASR: (f"{STAGE_DIR_NAMES[STAGE_ASR]}/asr.json",),
-    STAGE_PROOFREAD: (f"{STAGE_DIR_NAMES[STAGE_PROOFREAD]}/corrected.json",),
     STAGE_REVIEW: (f"{STAGE_DIR_NAMES[STAGE_REVIEW]}/reviewed.json",),
     STAGE_TRANSLATE: (f"{STAGE_DIR_NAMES[STAGE_TRANSLATE]}/translated.json",),
     STAGE_REVIEW_TRANSLATION: (
         f"{STAGE_DIR_NAMES[STAGE_REVIEW_TRANSLATION]}/translated.json",
     ),
     STAGE_TTS: (f"{STAGE_DIR_NAMES[STAGE_TTS]}/tts.json",),
+    STAGE_TTS_REVIEW: (f"{STAGE_DIR_NAMES[STAGE_TTS_REVIEW]}/tts_reviewed.json",),
     STAGE_MIX: (f"{STAGE_DIR_NAMES[STAGE_MIX]}/ai_new_audio.wav",),
     # mux 成品文件名随媒体/语言变化，在 is_done 中按实际路径特判
 }
@@ -160,7 +168,7 @@ class Workspace:
             if not (self.dir / name).is_file():
                 return False
         if stage == STAGE_MUX and not self.output_mkv.is_file():
-            return False  # 封装成品在 09_封装输出 夹内，按实际路径校验
+            return False  # 封装成品在 10_封装输出 夹内，按实际路径校验
         return True
 
     def mark_done(self, stage: str) -> None:
@@ -218,12 +226,7 @@ class Workspace:
         return self.stage_dir(STAGE_ASR) / "asr.json"
 
     @property
-    def corrected_pre(self) -> Path:
-        """AI 校对结果（人工审核前）。"""
-        return self.stage_dir(STAGE_PROOFREAD) / "corrected.json"
-
-    @property
-    def corrected_post(self) -> Path:
+    def reviewed_json(self) -> Path:
         """人工审核后的定稿。"""
         return self.stage_dir(STAGE_REVIEW) / "reviewed.json"
 
@@ -242,6 +245,11 @@ class Workspace:
         return self.stage_dir(STAGE_TTS) / "tts.json"
 
     @property
+    def tts_reviewed_json(self) -> Path:
+        """配音复核后的分段数据（译文/配音路径的最终形态）。"""
+        return self.stage_dir(STAGE_TTS_REVIEW) / "tts_reviewed.json"
+
+    @property
     def tts_dir(self) -> Path:
         return self.stage_dir(STAGE_TTS) / "tts"
 
@@ -251,14 +259,14 @@ class Workspace:
 
     @property
     def seg_slice_dir(self) -> Path:
-        """逐句人声切片目录（文本校对步骤人工审核环节的句子切片文件夹，TTS 参考用）。"""
+        """逐句人声切片目录（文本审核步骤人工审核的句子切片文件夹，TTS 参考用）。"""
         return self.stage_dir(STAGE_REVIEW) / "句子切片"
 
     @property
     def mixed_audio(self) -> Path:
         return self.stage_dir(STAGE_MIX) / "ai_new_audio.wav"
 
-    # 成品（字幕/配音音频在工作夹根目录；配音视频成品在 09_封装输出 夹内）
+    # 成品（字幕/配音音频在工作夹根目录；配音视频成品在 10_封装输出 夹内）
     def srt_path(
         self,
         target_lang: str,
@@ -282,7 +290,7 @@ class Workspace:
 
     @property
     def output_mkv(self) -> Path:
-        """配音成品 MKV（09_封装输出 夹内，与字幕副本同放）。"""
+        """配音成品 MKV（10_封装输出 夹内，与字幕副本同放）。"""
         return self.stage_dir(STAGE_MUX) / f"{self.media_path.stem}.dubbed.mkv"
 
     @property
@@ -304,8 +312,8 @@ class Workspace:
     def clean_temp(self) -> None:
         """删除中间流程子夹与 manifest。
 
-        保留成品：根目录的字幕 / 配音音频，以及 09_封装输出 夹
-        （配音视频 + 字幕副本）；旧版（无序号 / v3 序号）子夹名一并清理。
+        保留成品：根目录的字幕 / 配音音频，以及 10_封装输出 夹
+        （配音视频 + 字幕副本）；旧版（无序号 / v3～v4 序号）子夹名一并清理。
         """
         import shutil
 

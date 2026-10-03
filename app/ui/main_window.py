@@ -4,9 +4,15 @@
 本窗口只承担队列总览：任务状态/进度一览、双击打开任务窗口。
 语言切换时通过 _build_ui() 整体重建（TaskManager 挂在主窗口本体，
 队列与任务窗口不受重建影响）。
+
+启动期的精确设备检测（需导入 torch，数秒）与运行环境状态检查在
+_StartupProbe 守护线程中执行：窗口先用快速粗检测结果立即显示，
+探测完成后经信号回主线程刷新设备卡与徽标，期间窗口始终可操作。
 """
 
-from PySide6.QtCore import QTimer
+import threading
+
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout
 
 from app.core.hardware import DeviceInfo, detect_device, detect_device_standalone
@@ -21,6 +27,31 @@ from app.ui.widgets.system_monitor import SystemMonitorBar
 from app.ui.widgets.task_list import TaskListPanel
 
 
+class _StartupProbe(QObject):
+    """启动期后台探测：torch 精确设备检测 + 运行环境状态检查。
+
+    detect_device() 首次调用需导入 torch（数秒）、environment_status()
+    做 .venv-tts / llama-server 文件级检查；两者放守护线程执行，结果经
+    result_ready 信号回主线程，探测期间不阻塞 UI。守护线程不持有
+    QThread 对象，应用退出时无需等待。
+    """
+
+    result_ready = Signal(object, object)  # DeviceInfo, environment_status() 字典
+
+    def start(self) -> None:
+        threading.Thread(
+            target=self._run, daemon=True, name="startup-probe",
+        ).start()
+
+    def _run(self) -> None:
+        device = detect_device()
+        env = environment_status()
+        try:
+            self.result_ready.emit(device, env)
+        except RuntimeError:
+            pass  # 主窗口已销毁（应用启动后立即退出的极端情况）
+
+
 class MainWindow(QMainWindow):
     """应用主窗口。"""
 
@@ -32,10 +63,11 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         # 资源管理器单例
         self._manager = get_resource_manager()
-        # 最新设备检测结果（语言切换重建界面时复用，不重复检测）
+        # 当前显示的设备信息：启动时为不依赖 torch 的快速粗检测结果，
+        # _StartupProbe 完成精确检测后经信号替换
         self._device: DeviceInfo = device_info or detect_device_standalone()
-        self._device_refreshed = False
-        # 运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态，设备卡徽标用
+        # 运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态，设备卡徽标用；
+        # 探测完成前按上次缓存（首启为未就绪）显示
         self._env_state: tuple[bool, bool] = (False, False)
         # 任务队列（挂在主窗口本体上：语言切换重建 central widget 不受影响）
         self._task_manager = TaskManager(parent=self)
@@ -44,7 +76,11 @@ class MainWindow(QMainWindow):
         get_env_setup_manager().environment_changed.connect(self._on_env_changed)
         # 打开中的任务窗口（含未开始的空窗口；应用退出时统一销毁）
         self._task_windows: list[TaskWindow] = []
+        # 启动期后台探测（精确设备 + 运行环境状态），完成后信号刷新
+        self._probe = _StartupProbe()
+        self._probe.result_ready.connect(self._on_probe_ready)
         self._build_ui()
+        self._probe.start()
 
     # ------------------------------------------------------------------ 界面构建
 
@@ -60,7 +96,8 @@ class MainWindow(QMainWindow):
         # ------------------------------ 顶部：资源状态栏 ------------------------------
         self._resource_bar = ResourceStatusBar(self._manager)
         self._resource_bar.set_device(self._device)
-        self._refresh_env_state()
+        # 环境徽标先按缓存状态显示，探测完成后由 _on_probe_ready 刷新
+        self._resource_bar.set_env_state(*self._env_state)
         self._resource_bar.settings_requested.connect(self._open_settings_dialog)
 
         # ------------------------------ 中部：任务列表 ------------------------------
@@ -81,18 +118,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._monitor)
         self.setCentralWidget(central)
 
-        # 界面显示后用 torch 做一次精确设备检测（导入 torch 需数秒，仅首次执行）
-        if not self._device_refreshed:
-            QTimer.singleShot(300, self._refresh_device)
+    # ------------------------------------------------------------------ 设备 / 环境
 
-    # ------------------------------------------------------------------ 设备
-
-    def _refresh_device(self) -> None:
-        """基于 torch 的精确设备检测，刷新设备卡显示与队列推理设备。"""
-        self._device = detect_device()
+    def _on_probe_ready(self, device: DeviceInfo, env: dict) -> None:
+        """启动探测完成：刷新设备卡、环境徽标与队列推理设备。"""
+        self._device = device
+        self._env_state = (env["tts_ready"], env["llama_ready"])
         self._resource_bar.set_device(self._device)
+        self._resource_bar.set_env_state(*self._env_state)
         self._task_manager.device = self._device.device
-        self._device_refreshed = True
 
     # ------------------------------------------------------------------ 运行环境
 

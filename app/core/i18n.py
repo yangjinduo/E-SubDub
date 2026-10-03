@@ -56,7 +56,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.log.no_file": "请先导入媒体文件。",
         "main.log.task_settings": "源语言 {src} → 目标语言 {dst}",
         "main.log.missing_resources": "以下资源未就绪，请先在设置中下载：{names}",
-        "main.log.llm_server_missing": "未找到 llama-server（macOS 可通过 brew install llama.cpp 安装），无法执行文本校对与翻译。",
+        "main.log.llm_server_missing": "未找到 llama-server（macOS 可通过 brew install llama.cpp 安装），无法执行字幕翻译。",
         "main.log.finished": "处理完成：{outputs}",
         "main.log.cancelled": "已取消处理（已完成阶段的产物已保留，重新开始可继续）。",
         "main.log.failed": "处理失败：{error}",
@@ -76,8 +76,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # ---- 流程引擎 ----
         "runner.started": "开始处理：{name}",
         "runner.stage_skipped": "跳过{stage}（复用已有产物）",
-        "runner.ai_proofread": "AI校对",
         "runner.lang_detected": "检测到源语言：{lang}",
+        "runner.homura_fix": "译文时长修正：{overlong} 句预计超长，{fixed} 句已压缩重译（其余由配音伸缩兜底）",
         "runner.device_fallback": "{stage}加速推理失败（{error}），回退 CPU 重试",
         "runner.srt_done": "字幕已生成：{path}（{count} 条）",
         "runner.mux_skipped_audio_input": "输入为音频文件，跳过 MKV 封装（配音成品为混音 wav）",
@@ -100,7 +100,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "resource.ffmpeg.feature": "音频提取",
         "resource.demucs.feature": "人声分离",
         "resource.transcribe.feature": "音频转文字",
-        "resource.translate.feature": "文本校对与翻译",
+        "resource.translate.feature": "字幕翻译",
+        "resource.homura.feature": "配音时长修正",
         "resource.tts.feature": "声音克隆",
         # ---- 运行环境搭建 ----
         "settings.env_feature": "运行环境",
@@ -134,7 +135,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "task.target_language": "目标语言",
         "task.subtitle_mode": "字幕形式",
         "task.dubbing_check": "生成配音（声音克隆）",
-        "task.ai_proofread": "AI校对文本后再人工审核",
         "task.overlay_original": "混音后叠加原背景音",
         "task.overlay_original.tooltip": (
             "勾选：每句配音（含背景音）按对白时间线覆盖回原声音频——对白时段播新配音，"
@@ -187,10 +187,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "step.extract": "提取音频",
         "step.separate": "人声分离",
         "step.asr": "语音识别",
-        "step.proofread": "文本校对",
+        "step.proofread": "文本审核",
         "step.translate": "翻译",
         "step.review_translation": "译文审核",
         "step.tts": "配音生成",
+        "step.tts_review": "配音复核",
         "step.mix": "混音",
         "step.mux": "封装输出",
         # ---- 设置窗口 ----
@@ -381,7 +382,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.log.no_file": "Please import a media file first.",
         "main.log.task_settings": "Source {src} → Target {dst}",
         "main.log.missing_resources": "Resources not ready, please download them in Settings first: {names}",
-        "main.log.llm_server_missing": "llama-server not found (on macOS install via brew install llama.cpp); proofreading and translation are unavailable.",
+        "main.log.llm_server_missing": "llama-server not found (on macOS install via brew install llama.cpp); translation is unavailable.",
         "main.log.finished": "Finished: {outputs}",
         "main.log.cancelled": "Cancelled (outputs of finished stages are kept; restart to resume).",
         "main.log.failed": "Failed: {error}",
@@ -402,8 +403,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # ---- Pipeline engine ----
         "runner.started": "Processing started: {name}",
         "runner.stage_skipped": "Skipped {stage} (reusing existing outputs)",
-        "runner.ai_proofread": "AI proofreading",
         "runner.lang_detected": "Detected source language: {lang}",
+        "runner.homura_fix": "Length fix: {overlong} segments projected overlong, {fixed} re-compressed (the rest handled by TTS stretch)",
         "runner.device_fallback": "{stage} accelerated inference failed ({error}); retrying on CPU",
         "runner.srt_done": "Subtitles generated: {path} ({count} entries)",
         "runner.mux_skipped_audio_input": "Audio input: MKV muxing skipped (dubbing output is the mixed wav)",
@@ -426,7 +427,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "resource.ffmpeg.feature": "Audio extraction",
         "resource.demucs.feature": "Vocal separation",
         "resource.transcribe.feature": "Speech-to-text",
-        "resource.translate.feature": "Proofreading & translation",
+        "resource.translate.feature": "Subtitle translation",
+        "resource.homura.feature": "Dubbing duration correction",
         "resource.tts.feature": "Voice cloning",
         # ---- Runtime environment setup ----
         "settings.env_feature": "Runtime environment",
@@ -460,7 +462,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "task.target_language": "Target language",
         "task.subtitle_mode": "Subtitle format",
         "task.dubbing_check": "Generate dubbing (voice cloning)",
-        "task.ai_proofread": "AI proofread before manual review",
         "task.overlay_original": "Lay dubbing over original audio",
         "task.overlay_original.tooltip": (
             "Checked: each dubbed line (with background) is laid over the original audio on its "
@@ -515,10 +516,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "step.extract": "Extract audio",
         "step.separate": "Separate vocals",
         "step.asr": "Transcribe",
-        "step.proofread": "Proofread",
+        "step.proofread": "Text review",
         "step.translate": "Translate",
         "step.review_translation": "Review translation",
         "step.tts": "Generate dubbing",
+        "step.tts_review": "Review dubbing",
         "step.mix": "Mix",
         "step.mux": "Mux output",
         # ---- Settings dialog ----

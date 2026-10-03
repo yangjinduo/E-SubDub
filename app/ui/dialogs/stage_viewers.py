@@ -5,7 +5,7 @@
 每个窗口头部有"打开文件夹"按钮（在资源管理器中定位该流程的结果目录），
 各查看器内容按流程类型定制：
 - 提取音频 / 人声分离 / 混音：音轨试听条（可拖进度条）；
-- 语音识别 / 文本校对：分段表格（选中行试听该句语音 + 文本）；
+- 语音识别 / 文本审核：分段表格（选中行试听该句语音 + 文本）；
 - 翻译 / 译文审核：原文译文对照表（选中行试听原声）；
 - 配音生成：每段原文/译文 + 原声/配音试听按钮；
 - 封装输出：原视频与配音后视频并排播放（不支持视频解码时显示回退提示）。
@@ -47,6 +47,7 @@ from app.core.workspace import (
     STAGE_SEPARATE,
     STAGE_TRANSLATE,
     STAGE_TTS,
+    STAGE_TTS_REVIEW,
     Workspace,
 )
 from app.ui.widgets.audio_player import AudioPlayerBar
@@ -599,16 +600,10 @@ class AsrViewer(_SegmentsStageViewer):
 
 
 class ProofreadViewer(_SegmentsStageViewer):
-    """文本校对：校对定稿文本 + 分段语音试听。
-
-    人工审核定稿（reviewed.json）优先；未启用 AI 校对或尚未审核时
-    回退 AI 校对结果（corrected.json）。
-    """
+    """文本审核：人工审核定稿文本 + 分段语音试听。"""
 
     def _segments_path(self) -> Path:
-        if self._ws.corrected_post.is_file():
-            return self._ws.corrected_post
-        return self._ws.corrected_pre
+        return self._ws.reviewed_json
 
 
 class _TranslationStageViewer(StageViewerWindow):
@@ -643,13 +638,23 @@ class TranslationReviewViewer(_TranslationStageViewer):
 class TtsViewer(StageViewerWindow):
     """配音生成：每段原声/译文/新生成的配音。"""
 
+    def _segments_path(self) -> Path:
+        return self._ws.tts_json
+
     def _build_content(self) -> None:
-        segments = _load_stage_segments(self._ws, self._ws.tts_json)
+        segments = _load_stage_segments(self._ws, self._segments_path())
         if not segments:
             self._add_hint(tr("viewer.no_data"))
             return
         audio = _segment_audio_source(self._ws)
         self._content.addWidget(_TtsSegmentsWidget(segments, audio, self))
+
+
+class TtsReviewViewer(TtsViewer):
+    """配音复核：复核后的配音结果（译文/配音文件的最终形态）。"""
+
+    def _segments_path(self) -> Path:
+        return self._ws.tts_reviewed_json
 
 
 class MuxViewer(StageViewerWindow):
@@ -680,6 +685,7 @@ _VIEWER_CLASSES: dict[str, type[StageViewerWindow]] = {
     STAGE_TRANSLATE: TranslateViewer,
     STAGE_REVIEW_TRANSLATION: TranslationReviewViewer,
     STAGE_TTS: TtsViewer,
+    STAGE_TTS_REVIEW: TtsReviewViewer,
     STAGE_MIX: MixViewer,
     STAGE_MUX: MuxViewer,
 }

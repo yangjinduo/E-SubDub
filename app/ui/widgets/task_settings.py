@@ -1,8 +1,8 @@
-"""任务设置区：源/目标语言、字幕形式（下拉）、配音开关、AI 校对开关、输出目录。
+"""任务设置区：源/目标语言、字幕形式（下拉）、配音开关、输出目录。
 
 布局：
 - 第一行：源语言 / 目标语言 / 字幕形式（三组“标签+下拉”等宽铺满整行，两端对齐）
-- 第二行：配音开关 / AI 校对开关 / 叠加原背景音开关 / 输出目录
+- 第二行：配音开关 / 叠加原背景音开关 / 输出目录
 
 语言选项内部携带稳定语言代码（itemData），供后续流水线模块使用；
 界面文案统一走 i18n（tr），语言切换后由主窗口整体重建。
@@ -83,15 +83,10 @@ class TaskSettingsPanel(QFrame):
             pair.addWidget(combo, 1)
             lang_row.addLayout(pair, 1)
 
-        # 第二行：配音开关 / AI 校对开关 / 输出目录
+        # 第二行：配音开关 / 叠加原背景音开关 / 输出目录
         self._dubbing_check = QCheckBox(tr("task.dubbing_check"))
         self._dubbing_check.setChecked(True)  # 默认开启
         self._dubbing_check.toggled.connect(self.dubbing_enabled_changed.emit)
-
-        # AI 校对（可选）：勾选后文本先经 LLM 校对再进入人工审核，
-        # 未勾选时 ASR 结果直接进入人工审核
-        self._ai_proofread_check = QCheckBox(tr("task.ai_proofread"))
-        self._ai_proofread_check.setChecked(False)  # 默认关闭
 
         # 混音后叠加原背景音（默认开启）：混音完成后，每句配音（含背景音）
         # 按对白时间线覆盖回原声音频——对白时段播新配音，句间等其余时段
@@ -112,7 +107,6 @@ class TaskSettingsPanel(QFrame):
         option_row = QHBoxLayout()
         option_row.setSpacing(12)
         option_row.addWidget(self._dubbing_check)
-        option_row.addWidget(self._ai_proofread_check)
         option_row.addWidget(self._overlay_original_check)
         option_row.addStretch(1)
         option_row.addWidget(output_label)
@@ -157,10 +151,6 @@ class TaskSettingsPanel(QFrame):
         """配音开关状态。"""
         return self._dubbing_check.isChecked()
 
-    def ai_proofread_enabled(self) -> bool:
-        """AI 校对开关状态（文本先经 LLM 校对再人工审核）。"""
-        return self._ai_proofread_check.isChecked()
-
     def overlay_original_audio(self) -> bool:
         """混音后叠加原背景音开关状态（对白覆盖回原声，保留句间语气词）。"""
         return self._overlay_original_check.isChecked()
@@ -178,7 +168,6 @@ class TaskSettingsPanel(QFrame):
             "target": self._target_combo.currentIndex(),
             "subtitle": self._subtitle_combo.currentIndex(),
             "dubbing": self._dubbing_check.isChecked(),
-            "ai_proofread": self._ai_proofread_check.isChecked(),
             "overlay_original": self._overlay_original_check.isChecked(),
             "output": self._output_edit.text(),
         }
@@ -191,7 +180,6 @@ class TaskSettingsPanel(QFrame):
         self._target_combo.blockSignals(True)
         self._subtitle_combo.blockSignals(True)
         self._dubbing_check.blockSignals(True)
-        self._ai_proofread_check.blockSignals(True)
         self._overlay_original_check.blockSignals(True)
         try:
             if "source" in state:
@@ -202,8 +190,6 @@ class TaskSettingsPanel(QFrame):
                 self._subtitle_combo.setCurrentIndex(state["subtitle"])
             if "dubbing" in state:
                 self._dubbing_check.setChecked(state["dubbing"])
-            if "ai_proofread" in state:
-                self._ai_proofread_check.setChecked(state["ai_proofread"])
             if "overlay_original" in state:
                 self._overlay_original_check.setChecked(state["overlay_original"])
             if "output" in state:
@@ -213,12 +199,11 @@ class TaskSettingsPanel(QFrame):
             self._target_combo.blockSignals(False)
             self._subtitle_combo.blockSignals(False)
             self._dubbing_check.blockSignals(False)
-            self._ai_proofread_check.blockSignals(False)
             self._overlay_original_check.blockSignals(False)
 
     def set_selected_codes(
         self, source: str, target: str, subtitle: str,
-        dubbing: bool, ai_proofread: bool, overlay_original: bool, output_dir: str,
+        dubbing: bool, overlay_original: bool, output_dir: str,
     ) -> None:
         """按稳定代码恢复设置（任务窗口绑定已有任务时使用）。"""
         for combo, code in (
@@ -230,7 +215,6 @@ class TaskSettingsPanel(QFrame):
             if index >= 0:
                 combo.setCurrentIndex(index)
         self._dubbing_check.setChecked(dubbing)
-        self._ai_proofread_check.setChecked(ai_proofread)
         self._overlay_original_check.setChecked(overlay_original)
         self._output_edit.setText(output_dir)
 

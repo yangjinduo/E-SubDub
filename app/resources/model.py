@@ -1,7 +1,8 @@
 """资源（模型 / 工具）数据模型与单例管理器。
 
-资源分五项：音频提取（FFmpeg）、人声分离（Demucs htdemucs）、音频转文字
-（MOSS-Transcribe-Diarize）、文本校对与翻译（Qwen3 GGUF）、声音克隆（IndexTTS-2.5）。
+资源分六项：音频提取（FFmpeg）、人声分离（Demucs htdemucs）、音频转文字
+（MOSS-Transcribe-Diarize）、字幕翻译（Index-Translate-2B）、配音时长修正
+（Index-Homura-2B，可选）、声音克隆（IndexTTS-2.5）。
 
 真实检测规则：
 - FFmpeg：内置工具，get_ffmpeg_path() 非 None 即就绪；
@@ -102,29 +103,20 @@ def get_models_root() -> Path:
 
 # ---------------------------------------------------------------- LLM 档位
 
-# LLM 档位表：档位名 -> 模型名 / 魔搭仓库 / 默认子目录 / 体积（GB）
+# LLM 档位表：档位名 -> 模型名 / 仓库 / 默认子目录 / 体积（GB）。
+# Index 系列 GGUF 仅发布于 HuggingFace（hf-mirror 可直连），魔搭无对应仓库，
+# 应用内下载按钮不可用，需按 homepage_url 手动下载。
 LLM_VARIANTS: dict[str, dict] = {
-    "qwen3-1.7b": {
-        "model_name": "Qwen3-1.7B",
-        "repo_id": "Qwen/Qwen3-1.7B-GGUF",
-        "default_subdir": "llm/Qwen3-1.7B-GGUF",
-        "download_size_gb": 1.1,
-    },
-    "qwen3-4b": {
-        "model_name": "Qwen3-4B",
-        "repo_id": "Qwen/Qwen3-4B-GGUF",
-        "default_subdir": "llm/Qwen3-4B-GGUF",
-        "download_size_gb": 2.5,
-    },
-    "qwen3-8b": {
-        "model_name": "Qwen3-8B",
-        "repo_id": "Qwen/Qwen3-8B-GGUF",
-        "default_subdir": "llm/Qwen3-8B-GGUF",
-        "download_size_gb": 5.0,
+    "index-translate-2b": {
+        "model_name": "Index-Translate-2B",
+        "repo_id": "mradermacher/Index-Translate-2B-GGUF",
+        "default_subdir": "Index-Translate-2B",
+        "download_size_gb": 1.3,
+        "homepage_url": "https://hf-mirror.com/mradermacher/Index-Translate-2B-GGUF",
     },
 }
 
-DEFAULT_LLM_VARIANT = "qwen3-4b"
+DEFAULT_LLM_VARIANT = "index-translate-2b"
 
 
 def _llm_meta(variant: str) -> ResourceMeta:
@@ -135,17 +127,18 @@ def _llm_meta(variant: str) -> ResourceMeta:
         repo_id=spec["repo_id"],
         allow_patterns=["*Q4_K_M*"],
         download_size_gb=spec["download_size_gb"],
-        homepage_url=f"https://modelscope.cn/models/{spec['repo_id']}",
+        homepage_url=spec["homepage_url"],
         default_subdir=spec["default_subdir"],
     )
 
 
-# 五项资源的静态定义：key、功能名、模型名（固定顺序；下载元数据见 RESOURCE_META）
+# 六项资源的静态定义：key、功能名、模型名（固定顺序；下载元数据见 RESOURCE_META）
 _RESOURCE_DEFINITIONS: list[dict] = [
     {"key": "ffmpeg", "feature_name": "音频提取", "model_name": "FFmpeg"},
     {"key": "demucs", "feature_name": "人声分离", "model_name": "Demucs htdemucs"},
     {"key": "transcribe", "feature_name": "音频转文字", "model_name": "MOSS-Transcribe-Diarize"},
-    {"key": "translate", "feature_name": "文本校对与翻译", "model_name": "Qwen3-4B"},
+    {"key": "translate", "feature_name": "字幕翻译", "model_name": "Index-Translate-2B"},
+    {"key": "homura", "feature_name": "配音时长修正", "model_name": "Index-Homura-2B"},
     {"key": "tts", "feature_name": "声音克隆", "model_name": "IndexTTS-2.5"},
 ]
 
@@ -175,6 +168,16 @@ RESOURCE_META: dict[str, ResourceMeta] = {
         default_subdir="asr/MOSS-Transcribe-Diarize",
     ),
     "translate": _llm_meta(DEFAULT_LLM_VARIANT),
+    # Index-Homura-2B：按目标音节数约束译文的翻译模型（中文源 → en/ja/ar/es），
+    # 配音任务中用于压缩超长译文；可选资源，缺失时跳过时长修正不阻塞任务
+    "homura": ResourceMeta(
+        key="homura",
+        repo_id="Abu-Dju/Index-Homura-2B-Q8_0-GGUF",
+        allow_patterns=["*.gguf"],
+        download_size_gb=1.9,
+        homepage_url="https://hf-mirror.com/Abu-Dju/Index-Homura-2B-Q8_0-GGUF",
+        default_subdir="Index-Homura-2B",
+    ),
     # IndexTTS-2.5：零样本声音克隆（GPT 骨干 + flow-matching 解码 + BigVGAN）。
     # 官方依赖 transformers 4.52，与主环境（ASR 所需 5.x）冲突 → 运行于
     # .venv-tts 子进程（见 app/pipeline/tts.py）；源码 third_party/index-tts
@@ -277,6 +280,17 @@ def _detect_translate() -> Path | None:
     return None
 
 
+def _detect_homura() -> Path | None:
+    """Homura：目录下存在大于 1GB 的 *.gguf（可选资源，缺失返回 None）。"""
+    d = get_models_root() / RESOURCE_META["homura"].default_subdir
+    if not d.is_dir():
+        return None
+    for gguf in d.glob("*.gguf"):
+        if gguf.stat().st_size > _GB:
+            return d
+    return None
+
+
 def _detect_tts() -> Path | None:
     """TTS：模型目录存在 config.yaml 且总大小 > 1GB，且无下载半成品文件。
 
@@ -329,13 +343,13 @@ class ResourceManager(QObject):
     # ------------------------------------------------------------------ LLM 档位
 
     def get_llm_variant(self) -> str:
-        """返回当前 LLM 档位名（如 "qwen3-4b"）。"""
+        """返回当前 LLM 档位名（如 "index-translate-2b"）。"""
         return self._llm_variant
 
     def set_llm_variant(self, variant: str) -> None:
-        """切换 LLM 档位（qwen3-1.7b / qwen3-4b / qwen3-8b）。
+        """切换 LLM 档位（当前仅 index-translate-2b）。
 
-        本期仅影响元数据（魔搭仓库 / 体积 / 模型名）与检测路径，
+        本期仅影响元数据（仓库 / 体积 / 模型名）与检测路径，
         UI 接入为后续任务。
         """
         if variant not in LLM_VARIANTS:
@@ -369,6 +383,8 @@ class ResourceManager(QObject):
             path = _detect_transcribe()
         elif key == "translate":
             path = _detect_translate()
+        elif key == "homura":
+            path = _detect_homura()
         elif key == "tts":
             path = _detect_tts()
         else:

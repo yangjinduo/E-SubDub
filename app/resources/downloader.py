@@ -174,7 +174,7 @@ class ModelDownloader(QObject):
 
         参数：
             key: 资源标识（同一 key 重复下载会被忽略并记录 warning）
-            repo_id: 魔搭仓库 id（如 "Qwen/Qwen3-4B-GGUF"）
+            repo_id: 魔搭仓库 id（如 "openmoss/MOSS-Transcribe-Diarize"）
             target_dir: 下载目标目录（支持用户自选位置）
             allow_patterns: 文件匹配模式（None 表示整仓下载）
             total_size_gb: 预估总大小（GB）；缺省时查 RESOURCE_META[key]

@@ -94,6 +94,8 @@ def _build_server_cmd(
 
     GPU offload：-ngl 999 = 全部层进显存（llama.cpp CUDA 构建默认 ngl=0，
     不传该参数则完全跑 CPU）；CPU 构建（如 macOS brew/Metal 构建）忽略。
+    --jinja：使用模型内嵌聊天模板（Qwen3.5 系需配合请求中的
+    chat_template_kwargs.enable_thinking=False 关闭思考模式）。
     """
     cmd = [
         exe,
@@ -102,6 +104,7 @@ def _build_server_cmd(
         "--host", "127.0.0.1",
         "-c", "8192",
         "-t", str(threads),
+        "--jinja",
     ]
     if use_gpu:
         cmd += ["-ngl", "999"]
@@ -287,22 +290,25 @@ class LLMClient:
         self,
         system: str,
         user: str,
-        temperature: float = 0.2,
+        temperature: float = 0.0,
         max_tokens: int = 4096,
     ) -> str:
         """单轮对话，返回助手回复文本。
 
-        自动在 user 末尾追加 " /no_think"（Qwen3 关闭思考模式）；
-        temperature <= 0.3 时 JSON 遵循率最佳（POC 结论）。
+        system 为空串时不发送 system 消息（Index 翻译模型只需 user 指令）；
+        经 chat_template_kwargs.enable_thinking=False 关闭思考模式（模板
+        预闭合 think 块，直接输出答案）；翻译官方推荐贪婪解码（temperature=0）。
         """
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user.rstrip()})
         payload = {
             "model": "default",
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user.rstrip() + " /no_think"},
-            ],
+            "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
             "stream": False,
         }
         r = requests.post(

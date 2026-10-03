@@ -1,81 +1,83 @@
 # -*- coding: utf-8 -*-
-"""字幕翻译：LLM 将原文译为目标语言，译文适配配音时长与口语表达。"""
+"""字幕翻译：Index-Translate-2B 主翻译 + Index-Homura-2B 时长修正（可选）。
+
+主翻译：纯文本逐句批量（编号行输入/输出），使用模型训练对齐的中文指令
+模板（"请将以下X文本翻译为Y，直接输出翻译结果，不要进行任何解释"），
+输入不含时间戳/说话人/JSON 字段等格式负担，降低小模型幻觉。
+
+时长修正（homura_length_fix）：配音场景下译文预计朗读时长明显超出分段
+时长的句子，交 Index-Homura-2B 按"目标音节数"约束重译压缩（仅支持中文
+源 → en/ja/ar/es）；仍不达标的句子由 TTS 伸缩兜底，不在此硬性保证。
+"""
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Optional
 
 from app.core.segment import Segment
-from app.pipeline.base import ProgressCallback, extract_json_array, report_progress, sliding_windows
+from app.pipeline.base import ProgressCallback, report_progress
 from app.pipeline.llm_engine import LLMClient
 
 logger = logging.getLogger(__name__)
 
-# 每批条数 / 相邻批重叠条数
-BATCH_SIZE = 15
-BATCH_OVERLAP = 3
+# 每批句数：纯文本行输入/输出，行数即句数（冒烟实测 20 句内格式稳定）
+BATCH_SIZE = 20
 
-# 修复"对象提前闭合"损坏时允许的键名（与本模块的输出 schema 一致）
-_REPAIRABLE_KEYS = r'"(?:target_text|spk|start|end|text)"'
-
-# few-shot 示例的源句与各目标语言译文：示例必须与目标语言方向一致，
-# 否则小模型（Qwen3-4B）会把示例的译文语言当成目标语言
-# （如源语言"自动检测"时译文原样输出中文）
-_EXAMPLE_SOURCE = "你要跟我们来吗？"
-_EXAMPLE_TARGETS: dict[str, str] = {
-    "英语": "Are you coming with us?",
-    "日语": "一緒に来ますか？",
-    "韩语": "우리랑 같이 갈래요?",
-    "法语": "Tu viens avec nous ?",
-    "德语": "Kommst du mit uns?",
-    "西班牙语": "¿Vienes con nosotros?",
-    "俄语": "Ты идёшь с нами?",
+# Homura 时长修正：目标语言代码 → 指令用语言名（模型仅支持中文源）
+HOMURA_TARGETS: dict[str, str] = {
+    "en": "英语",
+    "ja": "日语",
+    "ar": "阿拉伯语",
+    "es": "西班牙语",
 }
 
+# 目标语速（音节/秒，保守初值）：目标音节数 = 分段时长 × 语速
+# （短句偏松、长句偏紧，后续可用 IndexTTS 实测标定微调）
+SYLLABLE_RATE: dict[str, float] = {
+    "en": 4.0,
+    "ja": 7.5,   # 音拍/秒
+    "ar": 5.0,
+    "es": 6.0,
+}
 
-def _extract_json_array_with_repair(text: str) -> Optional[list]:
-    """extract_json_array 增强版：解析失败时修复常见损坏后重试。
+# 触发修正的偏差阈值：当前音节数 > 目标 × 阈值 时才重译
+# （译文偏短可由 TTS 补静音/变速兜底，偏长才是硬伤）
+DEVIATION_THRESHOLD = 1.15
 
-    Qwen3-4B 偶发输出"对象提前闭合"的 JSON（text 与译文内容相同的短句
-    上易触发），如 {"text": "Michael..."}, "target_text": "Michael..."}。
-    此处在数组上下文中把 `}, "白名单键":` 还原为 `, "键":` 再解析；
-    合法 JSON 不受影响（正常嵌套结构中 `}` 后跟的是 `{` 或 `]`）。
-    """
-    parsed = extract_json_array(text)
-    if parsed is not None or not text:
-        return parsed
-    left = text.find("[")
-    right = text.rfind("]")
-    if left == -1 or right <= left:
-        return None
-    snippet = text[left : right + 1]
-    repaired = re.sub(r"\}\s*,\s*(" + _REPAIRABLE_KEYS + r")\s*:", r", \1:", snippet)
-    if repaired == snippet:
-        return None
-    try:
-        data = json.loads(repaired)
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, list) else None
+# 参与时长修正的最短分段（秒）：过短的分段压缩空间小、修正意义不大
+_MIN_FIX_DURATION = 0.5
 
 
-def _build_system_prompt(source_lang: str, target_lang: str) -> str:
+# ---------------------------------------------------------------- 主翻译
+
+def _translate_prompt(source_lang: str, target_lang: str, lines: list[str]) -> str:
+    """构造训练对齐格式的翻译指令（编号行正文）。"""
+    body = "\n".join(f"{i}. {t}" for i, t in enumerate(lines, 1))
     return (
-        f"你是专业的字幕译制与配音适配引擎。用户给出一个 JSON 数组，"
-        f"每个元素含 spk/start/end/text 字段。你的任务：\n"
-        f"1. 为数组中每一项新增 target_text 字段，填入 text 的译文："
-        f"把{source_lang}原文翻译为{target_lang}，"
-        f"target_text 必须是{target_lang}，不得保留原文语言；\n"
-        f"2. 译文必须口语化、自然流畅，适合直接用于配音朗读；\n"
-        f"3. 每条译文的朗读时长应尽量匹配该条的 end-start 秒：按{target_lang}"
-        f"正常语速估算字数，若原文内容明显超出该时长则压缩表达、只保留核心信息；\n"
-        f"4. spk/start/end/text 字段原样保留，不得修改，不要添加注释；\n"
-        f"5. 只输出 JSON 数组，每一项必须含 spk/start/end/text/target_text "
-        f"五个字段，不要输出任何其他文字或代码围栏。"
+        f"请将以下{source_lang}文本逐句翻译为{target_lang}，"
+        f"每句一行并保留行首编号，直接输出翻译结果，不要进行任何解释：\n{body}"
     )
+
+
+def _parse_numbered_lines(text: str, expected: int) -> Optional[list[str]]:
+    """解析编号行输出：返回译文列表（长度须等于 expected），失败返回 None。
+
+    行首编号须带分隔符（1. / 1、/ 1) 等）才剥离，避免误剥译文自身开头
+    的数字（如 "1994年…"）；无编号的裸行整行保留。仅有编号没有译文的
+    行（如 "1."）视为空译文，整批判失败。
+    """
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+    if len(lines) != expected:
+        return None
+    out: list[str] = []
+    for ln in lines:
+        if re.fullmatch(r"\d+\s*[.、)）]?", ln):
+            return None  # 只有编号没有译文
+        m = re.match(r"^\d+\s*[.、)）]\s*(.+)$", ln)
+        out.append((m.group(1) if m else ln).strip())
+    return out if all(out) else None
 
 
 def translate_segments(
@@ -87,80 +89,145 @@ def translate_segments(
 ) -> list[Segment]:
     """用 LLM 翻译字幕，返回新列表（原列表不变）。
 
-    - deleted 段跳过（不发给 LLM，直接保留）；
-    - 滑动窗口分批（每批 15 条、重叠 3 条），重叠区以先成功处理的结果为准；
-    - JSON 解析失败重试 1 次，仍失败则该批 target_text 保留原文并记 warning。
+    - deleted 段跳过（不发给 LLM，译文保持空串，后续阶段跳过）；
+    - 每批 BATCH_SIZE 句纯文本行翻译；批次解析失败重试 1 次，仍失败
+      则降级为逐句请求；单句失败时该句译文回退原文并记 warning。
     """
     result = [seg.copy() for seg in segments]
-    # 只翻译未删除的段
-    active_idx = [i for i, s in enumerate(result) if not s.deleted]
-    updated = [False] * len(result)
-    windows = list(sliding_windows(len(active_idx), BATCH_SIZE, BATCH_OVERLAP))
-
-    system = _build_system_prompt(source_lang, target_lang)
-    # few-shot 示例：给出期望的输出形态（含 target_text 字段），避免 Qwen3-4B
-    # 只按输入结构复述而漏掉 target_text；示例方向与目标语言一致
-    # （目标中文用英→中，其余用中→目标语言）
-    if target_lang == "中文":
-        example_text, example_target = "Are you coming with us?", "你要跟我们来吗？"
-    else:
-        example_text = _EXAMPLE_SOURCE
-        example_target = _EXAMPLE_TARGETS.get(target_lang, "Are you coming with us?")
-    example_in = [{"spk": "S01", "start": 1.0, "end": 2.0, "text": example_text}]
-    example_out = [
-        {"spk": "S01", "start": 1.0, "end": 2.0, "text": example_text, "target_text": example_target}
+    active_idx = [
+        i for i, s in enumerate(result)
+        if not s.deleted and s.text.strip()
     ]
-    for wi, (lo, hi) in enumerate(windows):
-        idxs = active_idx[lo:hi]
-        payload = [
-            {"spk": result[i].spk, "start": result[i].start, "end": result[i].end, "text": result[i].text}
-            for i in idxs
-        ]
-        user = (
-            "示例输入：\n" + json.dumps(example_in, ensure_ascii=False) + "\n"
-            "示例输出：\n" + json.dumps(example_out, ensure_ascii=False) + "\n\n"
-            "请翻译以下字幕 JSON 数组（为每一项添加 target_text 字段）：\n"
-            + json.dumps(payload, ensure_ascii=False)
-        )
+    batches = [
+        (lo, min(lo + BATCH_SIZE, len(active_idx)))
+        for lo in range(0, len(active_idx), BATCH_SIZE)
+    ]
 
-        data = None
+    for bi, (lo, hi) in enumerate(batches):
+        idxs = active_idx[lo:hi]
+        lines = [result[i].text for i in idxs]
+        user = _translate_prompt(source_lang, target_lang, lines)
+
+        translated: Optional[list[str]] = None
         for attempt in (1, 2):
             try:
-                resp = client.chat(system, user, temperature=0.2)
-                parsed = _extract_json_array_with_repair(resp)
-                if parsed is not None and len(parsed) == len(idxs):
-                    data = parsed
+                resp = client.chat("", user)
+                translated = _parse_numbered_lines(resp, len(idxs))
+                if translated is not None:
                     break
                 logger.warning(
-                    "翻译批次 %d 第 %d 次响应结构异常（%s 项，期望 %s 项），重试",
-                    wi + 1, attempt, len(parsed) if parsed is not None else "非数组", len(idxs),
+                    "翻译批次 %d 第 %d 次响应行数不符（期望 %d 句），重试",
+                    bi + 1, attempt, len(idxs),
                 )
             except Exception as exc:  # 网络或 HTTP 异常
-                logger.warning("翻译批次 %d 第 %d 次请求失败: %r", wi + 1, attempt, exc)
+                logger.warning("翻译批次 %d 第 %d 次请求失败: %r", bi + 1, attempt, exc)
 
-        if data is None:
-            # 该批失败：未处理的段保留原文作 target_text（若后续重叠批成功可覆盖）
+        if translated is None:
+            # 批量失败：降级逐句请求，单句失败回退原文
+            translated = []
             for i in idxs:
-                if not updated[i]:
-                    result[i].target_text = result[i].text
-            logger.warning(
-                "翻译批次 %d/%d 失败，保留原文作译文", wi + 1, len(windows)
-            )
-        else:
-            for j, item in enumerate(data):
-                gi = idxs[j]
-                if updated[gi] or not isinstance(item, dict):
-                    continue  # 重叠区以先出现的为准
-                target_text = item.get("target_text")
-                if isinstance(target_text, str) and target_text.strip():
-                    result[gi].target_text = target_text.strip()
-                    updated[gi] = True
-                elif not updated[gi]:
-                    result[gi].target_text = result[gi].text  # 单条缺失时回退原文
+                one: Optional[str] = None
+                try:
+                    resp = client.chat(
+                        "", _translate_prompt(source_lang, target_lang, [result[i].text]),
+                    )
+                    parsed = _parse_numbered_lines(resp, 1)
+                    one = parsed[0] if parsed else None
+                except Exception as exc:
+                    logger.warning("第 %d 句翻译请求失败: %r", i, exc)
+                translated.append(one or result[i].text)
+            logger.warning("翻译批次 %d/%d 批量失败，已降级逐句翻译", bi + 1, len(batches))
+
+        for i, text in zip(idxs, translated):
+            result[i].target_text = text
 
         report_progress(
             progress,
-            (wi + 1) / len(windows) if windows else 1.0,
-            f"字幕翻译批次 {wi + 1}/{len(windows)}",
+            (bi + 1) / len(batches) if batches else 1.0,
+            f"字幕翻译批次 {bi + 1}/{len(batches)}",
         )
     return result
+
+
+# ---------------------------------------------------------------- 时长修正（Homura）
+
+def count_syllables(text: str, lang_code: str) -> int:
+    """估算文本音节数（启发式，仅用于触发判断与效果对比，非精确值）。
+
+    - en/es：拉丁字母连续元音组数；
+    - ja：假名各计 1 拍，汉字按 2 拍估算；
+    - ar：按字母数一半估算（短元音不书写，无法直接数音节）。
+    """
+    if lang_code == "ja":
+        kana = sum(1 for c in text if "\u3040" <= c <= "\u30ff")
+        kanji = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        return kana + 2 * kanji
+    if lang_code == "ar":
+        letters = sum(1 for c in text if "\u0600" <= c <= "\u06ff")
+        return max(1, (letters + 1) // 2)
+    return len(re.findall(r"[aeiouyàáâãèéêëìíîïòóôõùúûü]+", text.lower()))
+
+
+def _homura_prompt(target_name: str, syllables: int, text: str, mora: bool) -> str:
+    """构造 Homura 音节约束翻译指令（音节数写进提示词文本，非模板参数）。"""
+    unit = "音拍" if mora else "音节"
+    return (
+        f"请将以下中文文本翻译为{target_name}，译文不超过{syllables}个{unit}，"
+        f"直接输出翻译结果，不要进行任何解释：\n{text}"
+    )
+
+
+def homura_length_fix(
+    client: LLMClient,
+    segments: list[Segment],
+    target_lang_code: str,
+    target_lang_name: str,
+    progress: Optional[ProgressCallback] = None,
+) -> tuple[list[Segment], int, int]:
+    """用 Index-Homura-2B 修正超长译文，返回（新列表, 修正句数, 超长句数）。
+
+    仅处理预计朗读时长超出分段时长 DEVIATION_THRESHOLD 倍的句子：按目标
+    音节数（分段时长 × 语速）重译压缩；重译结果音节数未减少时保留原译文
+    （交给 TTS 伸缩兜底）。译文偏短的句子不处理（TTS 可补静音）。
+    """
+    rate = SYLLABLE_RATE.get(target_lang_code)
+    if rate is None:
+        return segments, 0, 0
+
+    result = [seg.copy() for seg in segments]
+    overlong = [
+        (i, seg) for i, seg in enumerate(result)
+        if (
+            not seg.deleted
+            and seg.target_text.strip()
+            and seg.duration >= _MIN_FIX_DURATION
+            and count_syllables(seg.target_text, target_lang_code)
+            > seg.duration * rate * DEVIATION_THRESHOLD
+        )
+    ]
+    if not overlong:
+        report_progress(progress, 1.0, "译文时长检查通过，无需修正")
+        return result, 0, 0
+
+    mora = target_lang_code == "ja"
+    fixed = 0
+    for n, (i, seg) in enumerate(overlong):
+        target_n = max(3, round(seg.duration * rate))
+        prompt = _homura_prompt(target_lang_name, target_n, seg.text, mora)
+        new_text = ""
+        try:
+            new_text = client.chat("", prompt).strip()
+        except Exception as exc:
+            logger.warning("第 %d 句 Homura 重译失败: %r", i, exc)
+        # 仅在确实变短时采纳（音节数按同口径估算对比）
+        if new_text and (
+            count_syllables(new_text, target_lang_code)
+            < count_syllables(seg.target_text, target_lang_code)
+        ):
+            result[i].target_text = new_text
+            fixed += 1
+        report_progress(
+            progress, (n + 1) / len(overlong),
+            f"译文时长修正 {n + 1}/{len(overlong)}",
+        )
+    return result, fixed, len(overlong)

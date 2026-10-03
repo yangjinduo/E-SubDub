@@ -76,6 +76,17 @@ class _GpuSampleThread(QThread):
             return None
 
 
+# 已请求停止但 OS 线程尚未退出的 GPU 采样线程：保留 Python 引用，
+# 防止 QThread 对象在窗口销毁时被连带销毁（线程仍在运行会触发
+# Qt 告警甚至崩溃）；finished 送达后移除
+_GPU_THREAD_KEEPALIVE: list[_GpuSampleThread] = []
+
+
+def _retire_keepalive(thread: _GpuSampleThread) -> None:
+    if thread in _GPU_THREAD_KEEPALIVE:
+        _GPU_THREAD_KEEPALIVE.remove(thread)
+
+
 class _Sparkline(QFrame):
     """迷你折线图（0-100 数值序列，最近点在最右侧）。"""
 
@@ -232,7 +243,17 @@ class SystemMonitorBar(QFrame):
     def stop(self) -> None:
         """停止采样与后台线程（语言切换重建 / 应用退出时调用）。"""
         self._timer.stop()
-        if self._gpu_thread is not None:
-            self._gpu_thread.stop()
-            self._gpu_thread.wait(2000)
-            self._gpu_thread = None
+        thread = self._gpu_thread
+        self._gpu_thread = None
+        if thread is None:
+            return
+        thread.stop()
+        # 最坏情况：线程正卡在 timeout=2s 的 nvidia-smi 子进程中，需等
+        # 子进程返回后才能看到停止标志，wait 上限须大于该子进程超时
+        if thread.wait(3000):
+            return
+        # 极端情况（nvidia-smi 卡死）：摘除父对象并保留全局引用至线程退出，
+        # 避免窗口销毁时连带销毁仍在运行的 QThread
+        thread.setParent(None)
+        _GPU_THREAD_KEEPALIVE.append(thread)
+        thread.finished.connect(lambda t=thread: _retire_keepalive(t))

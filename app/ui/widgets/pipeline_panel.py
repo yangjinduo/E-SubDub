@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
 from app.core.i18n import tr
 
 # 处理流程步骤（顺序固定）：(步骤 ID, i18n key)
-# "proofread"（文本校对）= AI 校对（可选）+ 人工审核，人工审核动作并入该步骤；
-# 无单独"人工审核"步骤，序号由列表顺序自动生成（01～09）
+# "proofread"（文本审核）= 人工审核（审核动作并入该步骤）；
+# "tts_review"（配音复核）= TTS 合成后的复核暂停点；
+# 序号由列表顺序自动生成（01～10）
 PIPELINE_STEPS: list[tuple[str, str]] = [
     ("extract", "step.extract"),
     ("separate", "step.separate"),
@@ -29,13 +30,14 @@ PIPELINE_STEPS: list[tuple[str, str]] = [
     ("translate", "step.translate"),
     ("review_translation", "step.review_translation"),
     ("tts", "step.tts"),
+    ("tts_review", "step.tts_review"),
     ("mix", "step.mix"),
     ("mux", "step.mux"),
 ]
 
 # 仅字幕模式（配音关闭）时需要置灰的步骤 ID：
-# 不生成配音就不需要人声分离，也不需要 TTS / 混音 / MKV 封装
-DUBBING_STEP_IDS: set[str] = {"separate", "tts", "mix", "mux"}
+# 不生成配音就不需要人声分离，也不需要 TTS / 配音复核 / 混音 / MKV 封装
+DUBBING_STEP_IDS: set[str] = {"separate", "tts", "tts_review", "mix", "mux"}
 
 # 步骤状态：等待 / 进行中 / 完成 / 已禁用
 STEP_PENDING = "pending"

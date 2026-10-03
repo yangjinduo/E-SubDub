@@ -144,8 +144,7 @@ class TaskWindow(QDialog):
             self._import_area.set_file(cfg.media_path)
         self._task_settings.set_selected_codes(
             cfg.source_lang_code, cfg.target_lang_code, cfg.subtitle_mode,
-            cfg.dubbing_enabled, cfg.ai_proofread_enabled,
-            cfg.overlay_original_audio, cfg.output_dir,
+            cfg.dubbing_enabled, cfg.overlay_original_audio, cfg.output_dir,
         )
         self._auto_accept_check.setChecked(cfg.auto_accept_reviews)
         self._restore_pipeline(item)
@@ -169,8 +168,8 @@ class TaskWindow(QDialog):
     def _done_stage_for(step_id: str) -> str:
         """步骤显示完成所依据的内部阶段。
 
-        "proofread"（文本校对）= AI 校对 + 人工审核：人工审核
-        （内部 STAGE_REVIEW）完成才算步骤完成；其余步骤与自身阶段一致。
+        "proofread"（文本审核）= 人工审核：人工审核（内部 STAGE_REVIEW）
+        完成才算步骤完成；其余步骤与自身阶段一致。
         """
         return STAGE_REVIEW if step_id == "proofread" else step_id
 
@@ -258,11 +257,10 @@ class TaskWindow(QDialog):
     def _validate_and_confirm(self) -> bool:
         """启动前校验资源与授权；全部通过返回 True（失败时已记录日志）。"""
         dubbing = self._task_settings.dubbing_enabled()
-        ai_proofread = self._task_settings.ai_proofread_enabled()
         source = self._task_settings.source_language_code()
         target = self._task_settings.target_language_code()
-        # 需要调用 LLM 的环节：AI 校对 或 翻译（源≠目标 或 源语言自动检测）
-        need_llm = ai_proofread or source != target or source == "auto"
+        # 需要调用 LLM 的环节：翻译（源≠目标 或 源语言自动检测）
+        need_llm = source != target or source == "auto"
 
         # 1. 模型资源（ffmpeg 为内置工具，不在此列）
         manager = get_resource_manager()
@@ -284,7 +282,7 @@ class TaskWindow(QDialog):
                 self._panel.log(tr("runner.tts_env_missing", detail=detail))
                 return False
 
-        # 3. llama-server（AI 校对/LLM 翻译的推理服务；两者都不需要时跳过检查）
+        # 3. llama-server（LLM 翻译的推理服务；无需翻译时跳过检查）
         if need_llm and not resolve_llama_server_exe():
             self._panel.log(tr("main.log.llm_server_missing"))
             return False
@@ -306,15 +304,14 @@ class TaskWindow(QDialog):
     def _build_task_config(self, media_path: str) -> TaskConfig | None:
         """汇总当前任务设置与资源路径，构造 TaskConfig。"""
         dubbing = self._task_settings.dubbing_enabled()
-        ai_proofread = self._task_settings.ai_proofread_enabled()
         source = self._task_settings.source_language_code()
         target = self._task_settings.target_language_code()
-        # 需要调用 LLM 的环节：AI 校对 或 翻译（与 _validate_and_confirm 一致）
-        need_llm = ai_proofread or source != target or source == "auto"
+        # 需要调用 LLM 的环节：翻译（与 _validate_and_confirm 一致）
+        need_llm = source != target or source == "auto"
         resource_manager = get_resource_manager()
 
         # LLM GGUF 权重（translate 资源就绪即保证存在 gguf 文件）；
-        # 无需 LLM 时不要求（源=目标语言且未启用 AI 校对）
+        # 无需 LLM 时不要求（源=目标语言）
         gguf = None
         llm_server = ""
         if need_llm:
@@ -327,6 +324,14 @@ class TaskWindow(QDialog):
                 return None
             llm_server = resolve_llama_server_exe() or ""
 
+        # Homura 时长修正模型（可选资源：就绪才装配，中文源配音任务生效）
+        homura_gguf = ""
+        if dubbing:
+            homura_dir = resource_manager.get_resource_path("homura")
+            if homura_dir:
+                found = next(Path(homura_dir).glob("*.gguf"), None)
+                homura_gguf = str(found) if found else ""
+
         return TaskConfig(
             media_path=media_path,
             output_dir=self._task_settings.output_dir(),
@@ -337,11 +342,11 @@ class TaskWindow(QDialog):
             device=self._manager.device,
             task_category=task_category_text(dubbing, self._task_settings.subtitle_mode()),
             auto_accept_reviews=self._auto_accept_check.isChecked(),
-            ai_proofread_enabled=ai_proofread,
             overlay_original_audio=self._task_settings.overlay_original_audio(),
             asr_model_dir=resource_manager.get_resource_path("transcribe") or "",
             tts_model_dir=resource_manager.get_resource_path("tts") or "",
             llm_model_path=str(gguf) if gguf else "",
+            homura_model_path=homura_gguf,
             llm_server_exe=llm_server,
         )
 
