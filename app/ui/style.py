@@ -359,23 +359,23 @@ QPushButton#rowDeleteButton:disabled {
     color: #9CA3AF;
 }
 
-/* ------------------------------ 系统监视栏（深色格 + 折线图） ------------------------------ */
+/* ------------------------------ 系统监视栏（浅色格直接置于窗口背景） ------------------------------ */
 QFrame#monitorCell {
-    background: #111827;
-    border: 1px solid #1F2937;
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
     border-radius: 10px;
 }
 QLabel#monitorName {
-    color: #9CA3AF;
+    color: #6B7280;
     font-size: 12px;
 }
 QLabel#monitorValue {
-    color: #F9FAFB;
+    color: #111827;
     font-size: 15px;
     font-weight: 600;
 }
 QLabel#monitorSub {
-    color: #6B7280;
+    color: #9CA3AF;
     font-size: 11px;
 }
 QFrame#sparkline {

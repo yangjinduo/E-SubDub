@@ -106,8 +106,8 @@ class _Sparkline(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         width, height = self.width(), self.height()
 
-        # 参考网格：中线
-        painter.setPen(QPen(QColor(255, 255, 255, 26), 1))
+        # 参考网格：中线（浅色底，半透明黑）
+        painter.setPen(QPen(QColor(0, 0, 0, 26), 1))
         painter.drawLine(0, height // 2, width, height // 2)
 
         if len(self._samples) < 2:
@@ -176,7 +176,6 @@ class SystemMonitorBar(QFrame):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setProperty("card", True)
         self._gpu_fail_count = 0
         self._gpu_thread: _GpuSampleThread | None = None
 
@@ -185,7 +184,8 @@ class SystemMonitorBar(QFrame):
         self._gpu_cell = _MonitorCell(tr("monitor.gpu"), "#F59E0B")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 12, 20, 12)
+        # 无外层卡片，留白交给主窗口布局统一控制（16 边距 + 12 行距）
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self._cpu_cell, 1)
         layout.addWidget(self._mem_cell, 1)
