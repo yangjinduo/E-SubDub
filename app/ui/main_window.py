@@ -13,7 +13,7 @@ _StartupProbe 守护线程中执行：窗口先用快速粗检测结果立即显
 import threading
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QWidget, QVBoxLayout
 
 from app.core.hardware import DeviceInfo, detect_device, detect_device_standalone
 from app.core.i18n import tr
@@ -176,13 +176,26 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 窗口关闭
 
     def closeEvent(self, event) -> None:
-        """关闭主窗口：停止队列与采样线程，销毁全部任务窗口。"""
+        """关闭主窗口：有未终结任务先确认中断，再停止队列与采样线程，销毁全部任务窗口。"""
+        if self._task_manager.has_active_tasks() and not self._confirm_interrupt():
+            event.ignore()
+            return
         self._task_manager.shutdown()
         for window in list(self._task_windows):
             window.force_close()
         self._task_windows.clear()
         self._monitor.stop()
         super().closeEvent(event)
+
+    def _confirm_interrupt(self) -> bool:
+        """任务执行中的关闭确认：确认中断返回 True，取消关闭返回 False。"""
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("main.close_confirm_title"))
+        box.setText(tr("main.close_confirm_text"))
+        confirm = box.addButton(tr("common.confirm"), QMessageBox.AcceptRole)
+        box.addButton(tr("common.cancel"), QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is confirm
 
     # ------------------------------------------------------------------ 设置窗口
 

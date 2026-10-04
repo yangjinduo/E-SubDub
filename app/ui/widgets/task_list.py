@@ -32,10 +32,9 @@ from PySide6.QtWidgets import (
 from app.core.i18n import tr
 from app.core.task_manager import TaskItem, TaskManager, TaskState
 
-# 任务状态 → i18n key
+# 任务状态 → i18n key（RUNNING 不在此表：_status_text 单独处理，显示当前流程名）
 _STATE_KEYS = {
     TaskState.QUEUED: "queue.state.queued",
-    TaskState.RUNNING: "queue.state.running",
     TaskState.CANCELLING: "queue.state.cancelling",
     TaskState.DONE: "queue.state.done",
     TaskState.FAILED: "queue.state.failed",

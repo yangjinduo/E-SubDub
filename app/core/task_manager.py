@@ -113,6 +113,10 @@ class TaskManager(QObject):
                 return item
         return None
 
+    def has_active_tasks(self) -> bool:
+        """是否有未终结任务（排队中/运行中/取消中）。"""
+        return any(not TaskState.is_terminal(item.state) for item in self._tasks)
+
     # ------------------------------------------------------------------ 窗口注册表
 
     def register_window(self, task_id: str, window) -> None:
