@@ -128,23 +128,6 @@ class SettingsDialog(QDialog):
         self._resources_title.setObjectName("sectionTitle")
         layout.addWidget(self._resources_title)
 
-        header = QGridLayout()
-        header.setHorizontalSpacing(12)
-        self._header_labels = [
-            QLabel(tr("settings.col_function")),
-            QLabel(tr("settings.col_status")),
-            QLabel(tr("settings.col_location")),
-            QLabel(tr("settings.col_actions")),
-        ]
-        for label in self._header_labels:
-            label.setStyleSheet("color: #6B7280; font-size: 12px; font-weight: 600;")
-        header.addWidget(self._header_labels[0], 0, 0)
-        header.addWidget(self._header_labels[1], 0, 1)
-        header.addWidget(self._header_labels[2], 0, 2)
-        header.addWidget(self._header_labels[3], 0, 3)
-        header.setColumnStretch(2, 1)
-        layout.addLayout(header)
-
         # 资源行容器（状态变化时整体重建）
         self._rows_layout = QVBoxLayout()
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -386,11 +369,6 @@ class SettingsDialog(QDialog):
         self._lang_label.setText(tr("settings.language"))
         self._lang_hint.setText(tr("settings.language_hint"))
         self._resources_title.setText(tr("settings.resources"))
-        for label, key in zip(
-            self._header_labels,
-            ("settings.col_function", "settings.col_status", "settings.col_location", "settings.col_actions"),
-        ):
-            label.setText(tr(key))
         self._rebuild_resource_rows()
 
     # ------------------------------------------------------------------ 下载

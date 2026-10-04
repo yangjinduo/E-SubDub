@@ -445,7 +445,7 @@ class _EnvSetupThread(QThread):
         伴随包（CUDA 构建随后按需单独下载伴随包）。
         """
         headers = {
-            "User-Agent": "SubtitleDubbingStudio",
+            "User-Agent": "MinimSubDub",
             "Accept": "application/vnd.github+json",
         }
         last_err: Exception | None = None

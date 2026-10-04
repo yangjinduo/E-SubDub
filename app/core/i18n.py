@@ -4,7 +4,7 @@
 - 不使用 Qt Linguist（.ts/.qm）体系，改用 Python 字典，便于在 PyInstaller
   打包中零成本内置，且流水线等非 UI 模块也能直接调用 tr()；
 - 语言偏好保存到用户配置目录（platformdirs），路径：
-  <user_config_dir>/SubtitleDubbingStudio/settings.json；
+  <user_config_dir>/MinimSubDub/settings.json；
 - tr() 查找顺序：当前语言 → zh-CN 兜底 → 返回 key 本身（便于发现漏译）。
 """
 
@@ -18,7 +18,7 @@ from platformdirs import user_config_dir
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = "SubtitleDubbingStudio"
+APP_NAME = "MinimSubDub"  # 配置目录标识（无空格）；显示名见 AppConfig.APP_NAME
 DEFAULT_LANGUAGE = "zh-CN"
 
 # 支持的语言：代码 → 原生名称（原生名称不翻译，始终以其语言本身显示）
@@ -42,7 +42,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.download": "开始下载",
         "common.model_homepage": "模型主页",
         # ---- 主窗口 ----
-        "main.title": "视频字幕与配音生成器",
+        "main.title": "Minim SubDub",
         "main.start": "开始处理",
         "main.start_batch": "开始批量处理",
         "main.log.batch_started": "开始批量处理：共 {count} 个文件",
@@ -201,11 +201,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.language": "界面语言",
         "settings.language_hint": "切换后立即生效",
         "settings.resources": "资源管理",
-        "settings.col_function": "功能",
-        "settings.col_model": "模型",
-        "settings.col_status": "状态",
-        "settings.col_location": "位置 / 下载",
-        "settings.col_actions": "操作",
         "settings.builtin": "内置工具",
         "settings.builtin_hint": "随软件内置，无需下载或删除。",
         "settings.path_unknown": "（未知路径）",
@@ -370,7 +365,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.download": "Download",
         "common.model_homepage": "Model homepage",
         # ---- Main window ----
-        "main.title": "Video Subtitle & Dubbing Studio",
+        "main.title": "Minim SubDub",
         "main.start": "Start",
         "main.start_batch": "Start batch",
         "main.log.batch_started": "Batch started: {count} files in total",
@@ -532,11 +527,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.language": "Interface language",
         "settings.language_hint": "Applied immediately",
         "settings.resources": "Resources",
-        "settings.col_function": "Function",
-        "settings.col_model": "Model",
-        "settings.col_status": "Status",
-        "settings.col_location": "Location / download",
-        "settings.col_actions": "Actions",
         "settings.builtin": "Built-in",
         "settings.builtin_hint": "Bundled with the app; no download or deletion needed.",
         "settings.path_unknown": "(unknown path)",

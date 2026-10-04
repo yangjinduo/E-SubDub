@@ -15,6 +15,7 @@ import threading
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QWidget, QVBoxLayout
 
+from app.core.config import AppConfig
 from app.core.hardware import DeviceInfo, detect_device, detect_device_standalone
 from app.core.i18n import tr
 from app.core.task_manager import TaskManager
@@ -90,7 +91,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_monitor"):
             self._monitor.stop()
 
-        self.setWindowTitle(tr("main.title"))
+        self.setWindowTitle(f"{tr('main.title')} v{AppConfig.APP_VERSION}")
         self.setMinimumSize(1100, 750)  # 最小尺寸，窗口可自由缩放
 
         # ------------------------------ 顶部：资源状态栏 ------------------------------
