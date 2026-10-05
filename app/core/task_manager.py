@@ -22,7 +22,8 @@ from PySide6.QtCore import QObject, Signal
 
 from app.core.i18n import tr
 from app.core.runner import PipelineRunner, ReviewResult, TaskConfig
-from app.core.workspace import STAGE_EXTRACT, Workspace
+from app.core.tts_runner import TtsRunner, TtsTaskConfig
+from app.core.workspace import STAGE_EXTRACT, STAGE_TTS_TEXT, Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class TaskItem:
     """队列中的单个任务（配置 + 运行状态）。"""
 
     id: str
-    config: TaskConfig
+    config: TaskConfig | TtsTaskConfig
     workspace: Workspace
     state: str = TaskState.QUEUED
     progress: int = 0
@@ -56,7 +57,9 @@ class TaskItem:
 
     @property
     def display_name(self) -> str:
-        """任务显示名：文件名_任务类别（与工作夹名一致）。"""
+        """任务显示名：文件名/任务名_任务类别（与工作夹名一致）。"""
+        if isinstance(self.config, TtsTaskConfig):
+            return f"{self.config.task_name}_{self.config.task_category}"
         return f"{Path(self.config.media_path).stem}_{self.config.task_category}"
 
 
@@ -75,11 +78,11 @@ class TaskManager(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._tasks: list[TaskItem] = []
-        self._runner: PipelineRunner | None = None
+        self._runner: PipelineRunner | TtsRunner | None = None
         self._current: TaskItem | None = None
         # 终态信号已发但线程尚未完全退出的 runner：保留引用，
         # 待内置 finished 信号送达、线程退出后移除（_finalize_retired）
-        self._retired: list[PipelineRunner] = []
+        self._retired: list[PipelineRunner | TtsRunner] = []
         self._id_counter = itertools.count(1)
         # task_id → TaskWindow（窗口生命周期注册表）
         self._windows: dict[str, object] = {}
@@ -99,12 +102,31 @@ class TaskManager(QObject):
                 return item
         return None
 
-    def find_active_duplicate(self, config: TaskConfig) -> TaskItem | None:
-        """查找未终结的完全重复任务（同媒体 + 同类别 + 同输出目录）。"""
+    def find_active_duplicate(
+        self, config: TaskConfig | TtsTaskConfig,
+    ) -> TaskItem | None:
+        """查找未终结的完全重复任务。
+
+        媒体任务：同媒体 + 同类别 + 同输出目录；
+        文本转语音：同任务名 + 同输出目录 + 同文本（同任务名不同文本
+        可重复运行，产物在新输入下覆盖）。
+        """
         for item in self._tasks:
             if TaskState.is_terminal(item.state):
                 continue
             c = item.config
+            if isinstance(config, TtsTaskConfig):
+                if not isinstance(c, TtsTaskConfig):
+                    continue
+                if (
+                    c.task_name == config.task_name
+                    and c.output_dir == config.output_dir
+                    and c.text == config.text
+                ):
+                    return item
+                continue
+            if isinstance(c, TtsTaskConfig):
+                continue
             if (
                 c.media_path == config.media_path
                 and c.task_category == config.task_category
@@ -130,19 +152,25 @@ class TaskManager(QObject):
 
     # ------------------------------------------------------------------ 队列操作
 
-    def enqueue(self, config: TaskConfig) -> TaskItem:
+    def enqueue(self, config: TaskConfig | TtsTaskConfig) -> TaskItem:
         """任务入列并尝试启动；完全重复（未终结）任务抛 ValueError。"""
         dup = self.find_active_duplicate(config)
         if dup is not None:
             raise ValueError(tr("queue.duplicate", name=dup.display_name))
-        item = TaskItem(
-            id=f"task-{next(self._id_counter)}",
-            config=config,
-            workspace=Workspace(
+        if isinstance(config, TtsTaskConfig):
+            # 文本转语音无媒体文件：任务名作命名基础（stem 显式传，
+            # 任务名含点号时避免 Path.stem 截断）
+            workspace = Workspace(
+                config.output_dir, config.task_name,
+                category=config.task_category, stem=config.task_name,
+            )
+        else:
+            workspace = Workspace(
                 config.output_dir, config.media_path,
                 category=config.task_category,
-            ),
-        )
+            )
+        item = TaskItem(id=f"task-{next(self._id_counter)}",
+                        config=config, workspace=workspace)
         self._tasks.append(item)
         self.task_added.emit(item.id)
         self._start_next()
@@ -232,7 +260,12 @@ class TaskManager(QObject):
     def _start(self, item: TaskItem) -> None:
         # 注入 TaskManager 持有的同一 Workspace 实例：runner 线程写入的
         # manifest 完成标记对 UI 侧立即可见（重开任务窗口可正确恢复流程状态）
-        runner = PipelineRunner(item.config, workspace=item.workspace)
+        if isinstance(item.config, TtsTaskConfig):
+            runner = TtsRunner(item.config, workspace=item.workspace)
+            first_stage = STAGE_TTS_TEXT
+        else:
+            runner = PipelineRunner(item.config, workspace=item.workspace)
+            first_stage = STAGE_EXTRACT
         runner.step_state_changed.connect(
             lambda step, state, it=item: self._on_step(it, step, state)
         )
@@ -242,9 +275,10 @@ class TaskManager(QObject):
         runner.log_emitted.connect(
             lambda message, it=item: self.task_log_emitted.emit(it.id, message)
         )
-        runner.review_requested.connect(
-            lambda payload, it=item: self._on_review_requested(it, payload)
-        )
+        if isinstance(runner, PipelineRunner):
+            runner.review_requested.connect(
+                lambda payload, it=item: self._on_review_requested(it, payload)
+            )
         runner.finished_ok.connect(
             lambda result, it=item: self._on_finished_ok(it, result)
         )
@@ -259,9 +293,9 @@ class TaskManager(QObject):
         self._current = item
         item.state = TaskState.RUNNING
         item.progress = 0
-        # 启动即处于第一个流程（提取音频）：主窗口状态列无需等首个
-        # step_state_changed 信号就能显示实际流程名
-        item.current_stage = STAGE_EXTRACT
+        # 启动即处于第一个流程（媒体任务提取音频 / 文本转语音文本处理）：
+        # 主窗口状态列无需等首个 step_state_changed 信号就能显示实际流程名
+        item.current_stage = first_stage
         self.task_state_changed.emit(item.id)
         runner.start()
 
@@ -306,7 +340,7 @@ class TaskManager(QObject):
             if runner is not None:
                 self._retire_runner(runner)
 
-    def _retire_runner(self, runner: PipelineRunner) -> None:
+    def _retire_runner(self, runner: PipelineRunner | TtsRunner) -> None:
         """确保 OS 线程完全退出后才允许 runner 的 Python 包装被回收。
 
         实测 PySide6 6.9.3：终态信号（cancelled/failed/finished_ok）是
@@ -321,7 +355,7 @@ class TaskManager(QObject):
         self._retired.append(runner)
         runner.finished.connect(lambda r=runner: self._finalize_retired(r))
 
-    def _finalize_retired(self, runner: PipelineRunner) -> None:
+    def _finalize_retired(self, runner: PipelineRunner | TtsRunner) -> None:
         """内置 finished 信号送达后：等线程真正退出，再释放兜底引用。"""
         runner.wait(2000)
         if runner in self._retired:

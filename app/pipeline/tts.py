@@ -261,6 +261,8 @@ class TTSEngine:
         out_path: str,
         lang: str = "zh",
         progress: Optional[ProgressCallback] = None,
+        emo_vector: Optional[list] = None,
+        duration_factor: float = 1.0,
     ) -> tuple[float, float]:
         """克隆参考音色合成一句语音，返回 (实际时长, 伸缩比)。
 
@@ -269,6 +271,12 @@ class TTSEngine:
           过短前后各补 (目标-实际)/2 静音对齐（不做慢速拉长）；
         - stretch_ratio = 裁剪后语音时长 / 目标时长（不含补齐的静音），
           超出 [0.7, 1.3] 由调用方标记 needs_review；
+        - target_duration=0 为"自由时长"模式（文本转语音任务）：只裁
+          首尾静音、不做任何对齐，伸缩比恒为 1.0，时长交给模型自然生成；
+        - emo_vector：8 维情绪权重向量 [happy, angry, sad, afraid,
+          disgusted, melancholic, surprised, calm]，None = 跟随参考音频；
+        - duration_factor：IndexTTS 原生时长系数（1.0 正常；<1 更快、
+          >1 更慢，即语速的倒数），仅自由时长模式传入；
         - progress：单句合成进度回调。worker 转发 IndexTTS 的阶段锚点
           （0 起步 / 0.1 文本处理 / 0.2+0.7·i/n 逐段生成 / 0.9 落盘），
           锚点之间按最近历史合成耗时线性插值（0.2→0.9 主段平滑推进）。
@@ -280,15 +288,21 @@ class TTSEngine:
 
         rid = self._next_id
         self._next_id += 1
+        free_mode = target_duration <= 0
         request = {
             "id": rid, "text": text, "ref": str(ref_wav),
             "out": str(out_path), "lang": lang,
+            "duration_factor": float(duration_factor),
         }
+        if emo_vector is not None:
+            request["emo_vector"] = [float(v) for v in emo_vector]
         self._proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")  # type: ignore[union-attr]
         self._proc.stdin.flush()  # type: ignore[union-attr]
 
         t_start = time.perf_counter()
-        expected = self._estimate_synth_seconds(target_duration)
+        expected = self._estimate_synth_seconds(
+            target_duration, len(text), duration_factor,
+        )
         gen_started_at: float | None = None  # 收到 ≥0.2 锚点（进入 AR 生成主段）的时刻
         last_frac = 0.0
 
@@ -337,12 +351,16 @@ class TTSEngine:
         if len(self._synth_stats) > 30:
             del self._synth_stats[:-30]
 
-        # 后处理（父进程）：裁静音 + 时长对齐
+        # 后处理（父进程）：裁静音；配音任务再做时长对齐
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         wav, sr = sf.read(str(out_path), dtype="float32", always_2d=True)
         trimmed = _trim_silence(wav[:, 0])
         sf.write(str(out_path), trimmed, sr, subtype="PCM_16")
         raw_duration = len(trimmed) / sr
+
+        if free_mode:
+            # 自由时长（文本转语音）：保留模型自然生成时长，伸缩比恒 1.0
+            return raw_duration, 1.0
 
         # 伸缩比只计语音本身的时长；补齐的静音不计入
         ratio = raw_duration / target_duration if target_duration > 0 else 1.0
@@ -367,17 +385,24 @@ class TTSEngine:
                 )
         return raw_duration, ratio
 
-    def _estimate_synth_seconds(self, target_duration: float) -> float:
+    def _estimate_synth_seconds(
+        self, target_duration: float, text_len: int = 0,
+        duration_factor: float = 1.0,
+    ) -> float:
         """按最近合成耗时估算单句墙钟耗时（进度插值用）。
 
         用最近 30 句中最大的 墙钟/目标时长 比再放宽 25%，保证进度条
         宁慢勿快（过早到 90% 后停在落盘等待比慢慢涨更糟）；
-        无历史（首轮第一句）时按 2 倍目标时长 + 10 秒兜底。
+        自由时长模式（目标时长未知）先按文本长度估音频时长
+        （约 0.2 秒/字符，除以时长系数修正语速），再走同样的历史比例。
         """
+        est_duration = target_duration
+        if est_duration <= 0:
+            est_duration = max(text_len * 0.2 / max(duration_factor, 0.1), 1.0)
         if self._synth_stats:
             ratio = max(w / max(d, 0.1) for d, w in self._synth_stats)
-            return max(target_duration * ratio * 1.25, 1.0)
-        return max(target_duration * 2.0, 10.0)
+            return max(est_duration * ratio * 1.25, 1.0)
+        return max(est_duration * 2.0, 10.0)
 
     # ------------------------------------------------------------------ 子进程 IO
 

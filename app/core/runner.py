@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """流程编排引擎：QThread 中按阶段串行执行流水线，支持人工审核暂停点。
 
-阶段顺序（配音模式全量；仅字幕模式跳过人声分离 / TTS / 配音复核 / 混音 / 封装）：
+阶段顺序（配音模式全量；仅字幕模式跳过 人声分离 / TTS / 配音复核 / 混音，
+封装输出退化为归档字幕副本）：
 音频提取 → 人声分离 → ASR → 文本审核（人工）→
 LLM 翻译（Index-Translate-2B，配音任务追加 Index-Homura-2B 时长修正）→
 [译文人工审核] → SRT 字幕 → 参考音色挑选/[音色管理] →
@@ -179,7 +180,7 @@ class ReviewResult:
 class RunResult:
     """全部完成后的产物信息（finished_ok 信号负载）。"""
 
-    srt_path: str
+    srt_path: str              # 成品字幕（10_封装输出 夹内副本）
     mkv_path: str          # 音频输入（无视频可封装）时为空串
     audio_path: str        # 混音成品（仅字幕模式为空串）
     workspace: Workspace
@@ -443,6 +444,8 @@ class PipelineRunner(QThread):
         # 8+. 配音链路
         audio_out = ""
         mkv_out = ""
+        # 封装输出夹：成品归档目的地（MKV / 配音音频副本 / 字幕副本）
+        mux_dir = self._ws.ensure_stage_dir(STAGE_MUX)
         if dub:
             # 8. 参考音色挑选 + 音色管理审核
             refs = self._pick_and_review_voices(segments, vocals)
@@ -517,14 +520,13 @@ class PipelineRunner(QThread):
             audio_out = str(self._ws.mixed_audio)
             self._check()
 
-            # 12. MKV 封装（音频输入无视频流可封装，跳过）
+            # 12. MKV 封装（音频输入无视频流可封装，混音成品直落封装夹）
             if is_video:
                 self._stage_begin(STAGE_MUX)
                 if self._ws.is_done(STAGE_MUX):
                     self._skip_stage(STAGE_MUX)
                 else:
                     from app.pipeline.mux import mux_mkv
-                    mux_dir = self._ws.ensure_stage_dir(STAGE_MUX)
                     mux_mkv(
                         cfg.media_path, audio_out, str(srt_path),
                         str(self._ws.output_mkv),
@@ -533,20 +535,31 @@ class PipelineRunner(QThread):
                         audio_title=f"AI dubbing {cfg.target_lang_code.upper()}",
                         progress=self._stage_progress(STAGE_MUX),
                     )
-                    shutil.copy2(srt_path, mux_dir / srt_path.name) # 封装输出夹内同时保留处理好的字幕文件副本
+                    shutil.copy2(srt_path, mux_dir / srt_path.name) # 封装夹内同时保留处理好的字幕副本
                     self._ws.mark_done(STAGE_MUX)
                     self._stage_end(STAGE_MUX)
                 mkv_out = str(self._ws.output_mkv)
             else:
-                # 音频输入无视频流可封装：混音成品复制到工作夹根目录
+                # 音频输入无视频流可封装：混音成品与字幕副本归档到封装夹
                 shutil.copy2(self._ws.mixed_audio, self._ws.dubbed_wav)
+                shutil.copy2(srt_path, mux_dir / srt_path.name)
                 audio_out = str(self._ws.dubbed_wav)
                 self._log(tr("runner.mux_skipped_audio_input"))
+        else:
+            # 仅字幕任务（无配音链路）：成品 SRT 归档到封装输出夹
+            self._stage_begin(STAGE_MUX)
+            if self._ws.is_done(STAGE_MUX):
+                self._skip_stage(STAGE_MUX)
+            else:
+                shutil.copy2(srt_path, mux_dir / srt_path.name)
+                self._ws.mark_done(STAGE_MUX)
+                self._stage_end(STAGE_MUX)
 
         self.progress_changed.emit(100)
         return RunResult(
-            srt_path=str(srt_path), mkv_path=mkv_out, audio_path=audio_out,
-            workspace=self._ws,
+            # 成品 SRT 一律指封装输出夹内的副本（根目录母本为中间产物）
+            srt_path=str(mux_dir / srt_path.name), mkv_path=mkv_out,
+            audio_path=audio_out, workspace=self._ws,
         )
 
     # ------------------------------------------------------------------ 阶段实现
@@ -651,9 +664,16 @@ class PipelineRunner(QThread):
         ]
         progress = self._stage_progress(STAGE_TTS)
 
-        # 切逐句参考（占用 TTS 阶段前 5% 进度，避免与权重加载进度互相回退）
+        # 阶段内进度布局：逐句切片占前 5%，模型加载占 5%-10%，
+        # 逐句合成占后 90% —— 三段单调衔接，进度条不再回退
         def _cut_progress(fraction: float, message: str) -> None:
             progress(min(fraction, 1.0) * 0.05, message)
+
+        def _load_progress(fraction: float, message: str) -> None:
+            progress(0.05 + min(fraction, 1.0) * 0.05, message)
+
+        def _synth_progress(fraction: float, message: str) -> None:
+            progress(0.10 + min(fraction, 1.0) * 0.90, message)
 
         seg_refs, own_cnt, fb_cnt = cut_sentence_slices(
             segments, vocals, refs, self._ws.seg_slice_dir,
@@ -661,16 +681,29 @@ class PipelineRunner(QThread):
         )
         self._log(tr("runner.seg_ref_ready", own=own_cnt, fallback=fb_cnt))
 
-        def _synth(i: int, seg: Segment, engine) -> None:
-            """合成单句并记录路径/伸缩比/待复核标记。"""
+        def _synth(i: int, seg: Segment, engine, idx: int, total: int) -> None:
+            """合成单句并记录路径/伸缩比/待复核标记；句内进度按 10%
+            档位打日志，进度条按句粒度推进（与 TTS 任务一致）。"""
             ref = seg_refs.get(i)
             if not ref:
                 self._log(tr("runner.tts_no_ref", spk=seg.spk))
                 return
             out = _tts_out_path(self._ws, seg)
+
+            def _msg(frac: float) -> str:
+                pct = int(frac * 100) // 10 * 10
+                if pct <= 0:
+                    return tr("runner.tts_progress", done=idx + 1, total=total)
+                return tr("runner.tts_progress_pct",
+                          done=idx + 1, total=total, pct=pct)
+
             _raw_dur, ratio = engine.synthesize(
                 seg.target_text, ref, seg.duration, str(out),
                 lang=cfg.target_lang_code,
+                progress=lambda frac, _desc="": _synth_progress(
+                    idx / total,
+                    _msg(frac),
+                ),
             )
             _retire_old_audio(seg, out)
             seg.tts_audio_path = str(out)
@@ -680,15 +713,26 @@ class PipelineRunner(QThread):
         engine = TTSEngine()
         try:
             try:
-                engine.load(cfg.tts_model_dir, device=cfg.device, progress=progress)
+                engine.load(cfg.tts_model_dir, device=cfg.device,
+                            progress=_load_progress)
+                total = len(todo)
                 done = 0
-                for i, seg in todo:
+                for pos, (i, seg) in enumerate(todo):
                     self._check()
-                    _synth(i, seg, engine)
+                    # 句开始即打日志（确认任务已开工）；句内 10% 档位消息
+                    # 经 synthesize 回调逐级显示，0% 档与句开始消息相同
+                    # 被去重机制吞掉
+                    _synth_progress(
+                        pos / total,
+                        tr("runner.tts_progress", done=pos + 1, total=total),
+                    )
+                    _synth(i, seg, engine, pos, total)
                     done += 1
-                    self._stage_progress(STAGE_TTS)(
-                        done / len(todo),
-                        tr("runner.tts_progress", done=done, total=len(todo)),
+                    # 句完成补 100% 档（与句内 90% 档衔接成完整序列）
+                    _synth_progress(
+                        done / total,
+                        tr("runner.tts_progress_pct",
+                           done=done, total=total, pct=100),
                     )
             except Exception as exc:
                 # GPU 失败换 CPU 重试；内存不足与用户取消不重试（直接上抛）
@@ -698,18 +742,25 @@ class PipelineRunner(QThread):
                     raise
                 self._log(tr("runner.device_fallback", stage=tr("step.tts"), error=exc))
                 engine.unload()
-                engine.load(cfg.tts_model_dir, device="cpu", progress=progress)
+                engine.load(cfg.tts_model_dir, device="cpu",
+                            progress=_load_progress)
                 done = 0
                 for i, seg in todo:
                     self._check()
                     if seg.tts_audio_path and Path(seg.tts_audio_path).is_file():
                         done += 1
                         continue  # 已在失败前生成
-                    _synth(i, seg, engine)
+                    _synth_progress(
+                        done / total,
+                        tr("runner.tts_progress", done=done + 1, total=total),
+                    )
+                    _synth(i, seg, engine, done, total)
                     done += 1
-                    self._stage_progress(STAGE_TTS)(
-                        done / len(todo),
-                        tr("runner.tts_progress", done=done, total=len(todo)),
+                    # 句完成补 100% 档（与句内 90% 档衔接成完整序列）
+                    _synth_progress(
+                        done / total,
+                        tr("runner.tts_progress_pct",
+                           done=done, total=total, pct=100),
                     )
 
             self._ws.save_segments(self._ws.tts_json, segments)
@@ -937,8 +988,12 @@ class PipelineRunner(QThread):
                 (STAGE_TTS_REVIEW, 1.0),
                 (STAGE_MIX, 6.0),
             ]
-            if is_video:
-                weights.append((STAGE_MUX, 4.0))
+        # 封装输出：视频配音任务封装 MKV（4.0）；纯字幕任务仅归档 SRT
+        # 副本（1.0）；音频输入任务无独立封装阶段（成品直落封装夹）
+        if dub and is_video:
+            weights.append((STAGE_MUX, 4.0))
+        elif not dub:
+            weights.append((STAGE_MUX, 1.0))
         self._weights = weights
         self._total_weight = sum(w for _s, w in weights) or 1.0
         self._progress_base = 0.0

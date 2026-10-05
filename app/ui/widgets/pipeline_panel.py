@@ -1,9 +1,9 @@
 """底部流程进度区：步骤链 + 总进度条 + 日志框。
 
 步骤使用稳定 ID（供流程引擎调用），显示文案按当前界面语言生成；
-配音关闭（仅字幕模式）时置灰的步骤：人声分离 / 配音生成 / 混音 / 封装输出。
-步骤完成后标签可点击（发射 stage_clicked），用于打开对应流程的结果
-查看窗口。
+三种任务窗口共用本面板，各自传入步骤列表（配音与字幕 10 步 /
+生成字幕 6 步 / 文本转语音 3 步）。步骤完成后标签可点击
+（发射 stage_clicked），用于打开对应流程的结果查看窗口。
 """
 
 from PySide6.QtCore import QDateTime, Qt, Signal
@@ -21,7 +21,7 @@ from app.core.i18n import tr
 # 处理流程步骤（顺序固定）：(步骤 ID, i18n key)
 # "proofread"（文本审核）= 人工审核（审核动作并入该步骤）；
 # "tts_review"（配音复核）= TTS 合成后的复核暂停点；
-# 序号由列表顺序自动生成（01～10）
+# 序号由列表顺序自动生成
 PIPELINE_STEPS: list[tuple[str, str]] = [
     ("extract", "step.extract"),
     ("separate", "step.separate"),
@@ -35,15 +35,27 @@ PIPELINE_STEPS: list[tuple[str, str]] = [
     ("mux", "step.mux"),
 ]
 
-# 仅字幕模式（配音关闭）时需要置灰的步骤 ID：
-# 不生成配音就不需要人声分离，也不需要 TTS / 配音复核 / 混音 / MKV 封装
-DUBBING_STEP_IDS: set[str] = {"separate", "tts", "tts_review", "mix", "mux"}
+# 生成字幕任务（无配音链路）的步骤：末步封装输出把 SRT 归档到 10_封装输出
+SUBTITLE_PIPELINE_STEPS: list[tuple[str, str]] = [
+    ("extract", "step.extract"),
+    ("asr", "step.asr"),
+    ("proofread", "step.proofread"),
+    ("translate", "step.translate"),
+    ("review_translation", "step.review_translation"),
+    ("mux", "step.mux"),
+]
 
-# 步骤状态：等待 / 进行中 / 完成 / 已禁用
+# 文本转语音任务的步骤：末步封装输出 = 拼接 + 转码 + SRT，成品直落 03_封装输出
+TTS_PIPELINE_STEPS: list[tuple[str, str]] = [
+    ("tts_text", "step.tts_text"),
+    ("tts_synth", "step.tts_synth"),
+    ("tts_mux", "step.mux"),
+]
+
+# 步骤状态：等待 / 进行中 / 完成
 STEP_PENDING = "pending"
 STEP_ACTIVE = "active"
 STEP_DONE = "done"
-STEP_DISABLED = "disabled"
 
 
 class StepChip(QLabel):
@@ -90,19 +102,21 @@ class PipelinePanel(QFrame):
     # 点击已完成的流程步骤（参数为步骤 ID），用于打开结果查看窗口
     stage_clicked = Signal(str)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, steps: list | None = None, parent=None) -> None:
+        """steps：本窗口的流程步骤列表 [(step_id, i18n key)]，默认配音与字幕全量步骤。"""
         super().__init__(parent)
         self.setProperty("card", True)
 
         title = QLabel(tr("pipeline.title"))
         title.setObjectName("sectionTitle")
 
-        # 步骤链：步骤标签带序号（与流程子夹的 01_～10_ 对应），之间以箭头分隔
+        # 步骤链：步骤标签带序号（与流程子夹序号对应），之间以箭头分隔
+        step_list = steps if steps is not None else PIPELINE_STEPS
         self._chips: dict[str, StepChip] = {}
         steps_row = QHBoxLayout()
         steps_row.setContentsMargins(0, 0, 0, 0)
         steps_row.setSpacing(4)
-        for index, (step_id, key) in enumerate(PIPELINE_STEPS):
+        for index, (step_id, key) in enumerate(step_list):
             if index > 0:
                 arrow = QLabel("→")
                 arrow.setObjectName("stepArrow")
@@ -143,13 +157,6 @@ class PipelinePanel(QFrame):
         layout.addWidget(self._log_box, 1)
 
     # ------------------------------------------------------------------ 对外接口
-
-    def set_dubbing_enabled(self, enabled: bool) -> None:
-        """配音关闭（仅字幕模式）时置灰配音相关步骤，开启时恢复等待态。"""
-        for step_id in DUBBING_STEP_IDS:
-            chip = self._chips.get(step_id)
-            if chip is not None:
-                chip.set_state(STEP_PENDING if enabled else STEP_DISABLED)
 
     def set_step_state(self, step_id: str, state: str) -> None:
         """设置指定步骤的状态（供流程引擎调用，参数为步骤 ID）。"""

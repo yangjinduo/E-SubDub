@@ -5,8 +5,7 @@
 目录布局（layout v5）：
     {输出目录}/{文件名}_{任务类别}/
         manifest.json                     # 阶段状态 + layout 版本
-        {文件名}.{语种}.srt               # 成品：字幕（单语 ZH / 双语 ZH_EN）
-        {文件名}.dubbed.wav               # 成品：配音音频（音频输入）
+        {文件名}.{语种}.srt               # 字幕母本（mix/mux 的输入，成品副本在封装夹）
         01_音频提取/full_audio.wav
         02_人声分离/{vocals.wav, no_vocals.wav}
         03_语音识别/asr.json
@@ -19,7 +18,7 @@
             # tts.json = TTS 合成结果（pre，复核前）
         08_配音复核/tts_reviewed.json     # 配音复核后的分段数据（post）
         09_混音/ai_new_audio.wav
-        10_封装输出/{文件名}.dubbed.mkv    # 成品：配音视频
+        10_封装输出/{文件名}.dubbed.mkv    # 成品：配音视频 / 配音音频 + 字幕副本（纯字幕任务为纯 SRT）
 
 重复执行同文件任务时，已完成的阶段（产物文件仍存在）直接跳过并复用产物；
 人工审核修改内容后由 runner 显式失效下游阶段。旧版 manifest（无 layout
@@ -50,6 +49,12 @@ STAGE_TTS_REVIEW = "tts_review"
 STAGE_MIX = "mix"
 STAGE_MUX = "mux"
 
+# 文本转语音任务（TtsTaskConfig）的独立阶段：文本处理 → 语音合成 → 封装输出；
+# 步骤 ID 同样与 pipeline_panel 的 TTS_PIPELINE_STEPS 对应
+STAGE_TTS_TEXT = "tts_text"       # 分句 + 语言检测 + 参考音频规范化
+STAGE_TTS_SYNTH = "tts_synth"     # 逐句克隆合成（断点续跑按句粒度）
+STAGE_TTS_MUX = "tts_mux"         # 拼接 + 句间静音 + 转码 + SRT，成品直落封装夹
+
 # 各流程产物子夹名（固定中文，带两位序号前缀便于按流程顺序排序；
 # 不随界面语言变化：保证断点复用路径稳定，且与"查看流程结果"功能的
 # 文件夹一一对应）。
@@ -68,6 +73,10 @@ STAGE_DIR_NAMES: dict[str, str] = {
     STAGE_TTS_REVIEW: "08_配音复核",
     STAGE_MIX: "09_混音",
     STAGE_MUX: "10_封装输出",
+    # 文本转语音任务（无媒体文件，工作夹按任务名建）
+    STAGE_TTS_TEXT: "01_文本处理",
+    STAGE_TTS_SYNTH: "02_语音合成",
+    STAGE_TTS_MUX: "03_封装输出",
 }
 
 # 旧版（layout v2 子夹无序号 / v3 含 05_人工审核 / v4 文本校对同夹复核
@@ -100,7 +109,11 @@ _STAGE_PRODUCTS: dict[str, tuple[str, ...]] = {
     STAGE_TTS: (f"{STAGE_DIR_NAMES[STAGE_TTS]}/tts.json",),
     STAGE_TTS_REVIEW: (f"{STAGE_DIR_NAMES[STAGE_TTS_REVIEW]}/tts_reviewed.json",),
     STAGE_MIX: (f"{STAGE_DIR_NAMES[STAGE_MIX]}/ai_new_audio.wav",),
-    # mux 成品文件名随媒体/语言变化，在 is_done 中按实际路径特判
+    STAGE_TTS_TEXT: (f"{STAGE_DIR_NAMES[STAGE_TTS_TEXT]}/sentences.json",),
+    STAGE_TTS_SYNTH: (f"{STAGE_DIR_NAMES[STAGE_TTS_SYNTH]}/synthesis.json",),
+    # mux 成品文件名随媒体/语言变化，在 is_done 中按实际路径特判；
+    # STAGE_TTS_MUX 成品在 03_封装输出 夹内（文件名随格式/任务名变化），
+    # 同样在 is_done 中按 manifest 标记特判
 }
 
 
@@ -118,13 +131,20 @@ class Workspace:
         output_dir: str | Path,
         media_path: str | Path,
         category: str = "",
+        stem: str = "",
     ) -> None:
+        """stem：产物命名用的基础名（默认取 media_path 的文件名主干）。
+
+        文本转语音任务无媒体文件：media_path 传任务名，且显式传 stem
+        （任务名含点号时 Path.stem 会截断，显式 stem 保证命名与用户
+        输入一致）；媒体任务不传 stem，行为不变。
+        """
         self.media_path = Path(media_path)
-        stem = _sanitize(self.media_path.stem)
+        self._stem = _sanitize(stem) if stem else _sanitize(self.media_path.stem)
         if category:
-            self.dir = Path(output_dir) / f"{stem}_{_sanitize(category)}"
+            self.dir = Path(output_dir) / f"{self._stem}_{_sanitize(category)}"
         else:
-            self.dir = Path(output_dir) / stem
+            self.dir = Path(output_dir) / self._stem
         self.dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.dir / "manifest.json"
         self._manifest: dict = self._load_manifest()
@@ -167,8 +187,22 @@ class Workspace:
         for name in _STAGE_PRODUCTS.get(stage, ()):
             if not (self.dir / name).is_file():
                 return False
-        if stage == STAGE_MUX and not self.output_mkv.is_file():
-            return False  # 封装成品在 10_封装输出 夹内，按实际路径校验
+        if stage == STAGE_MUX:
+            # 成品在 10_封装输出 夹内，按任务形态校验：MKV（视频配音）/
+            # dubbed.wav（音频配音）/ SRT 副本（纯字幕任务），任一存在即可
+            if not (
+                self.output_mkv.is_file()
+                or self.dubbed_wav.is_file()
+                or any(self.stage_dir(STAGE_MUX).glob(f"{self._stem}.*.srt"))
+            ):
+                return False
+        if stage == STAGE_TTS_MUX:
+            # 成品音频在 03_封装输出 夹内，文件名随输出格式变化：按 runner
+            # 写入 manifest 的相对路径标记校验（SRT 由 runner 按格式/SRT
+            # 开关的标记对比决定是否重跑）
+            rel = str(self.stage_flag("tts_final_audio") or "")
+            if not rel or not (self.dir / rel).is_file():
+                return False
         return True
 
     def mark_done(self, stage: str) -> None:
@@ -286,17 +320,47 @@ class Workspace:
             codes = f"{source}_{target}" if source_on_top else f"{target}_{source}"
         else:
             codes = target
-        return self.dir / f"{self.media_path.stem}.{codes}.srt"
+        return self.dir / f"{self._stem}.{codes}.srt"
 
     @property
     def output_mkv(self) -> Path:
         """配音成品 MKV（10_封装输出 夹内，与字幕副本同放）。"""
-        return self.stage_dir(STAGE_MUX) / f"{self.media_path.stem}.dubbed.mkv"
+        return self.stage_dir(STAGE_MUX) / f"{self._stem}.dubbed.mkv"
 
     @property
     def dubbed_wav(self) -> Path:
-        """音频输入（无视频流可封装）时的配音成品。"""
-        return self.dir / f"{self.media_path.stem}.dubbed.wav"
+        """音频输入（无视频流可封装）时的配音成品（10_封装输出 夹内）。"""
+        return self.stage_dir(STAGE_MUX) / f"{self._stem}.dubbed.wav"
+
+    # ------------------------------------------------------------------ 文本转语音产物
+
+    @property
+    def tts_sentences_json(self) -> Path:
+        """01_文本处理：分句结果（句子 + 情绪向量，含语言检测结果回写）。"""
+        return self.stage_dir(STAGE_TTS_TEXT) / "sentences.json"
+
+    @property
+    def tts_ref_audio(self) -> Path:
+        """01_文本处理：规范化后的参考音频（22050Hz 单声道 WAV）。"""
+        return self.stage_dir(STAGE_TTS_TEXT) / "ref_audio.wav"
+
+    @property
+    def tts_synth_json(self) -> Path:
+        """02_语音合成：逐句合成结果（文件 + 时长，时间轴数据源）。"""
+        return self.stage_dir(STAGE_TTS_SYNTH) / "synthesis.json"
+
+    @property
+    def tts_wav_dir(self) -> Path:
+        """02_语音合成：逐句 WAV 目录（断点续跑按句粒度复用）。"""
+        return self.stage_dir(STAGE_TTS_SYNTH) / "wav"
+
+    def tts_audio_path(self, ext: str) -> Path:
+        """文本转语音成品音频（03_封装输出 夹内，扩展名随输出格式）。"""
+        return self.stage_dir(STAGE_TTS_MUX) / f"{self._stem}.{ext}"
+
+    def tts_srt_path(self, lang: str) -> Path:
+        """文本转语音成品字幕（03_封装输出 夹内，{任务名}.{语种大写}.srt）。"""
+        return self.stage_dir(STAGE_TTS_MUX) / f"{self._stem}.{lang.upper()}.srt"
 
     # ------------------------------------------------------------------ 读写分段
 
@@ -310,15 +374,17 @@ class Workspace:
     # ------------------------------------------------------------------ 清理
 
     def clean_temp(self) -> None:
-        """删除中间流程子夹与 manifest。
+        """删除中间流程子夹与根目录中间产物。
 
-        保留成品：根目录的字幕 / 配音音频，以及 10_封装输出 夹
-        （配音视频 + 字幕副本）；旧版（无序号 / v3～v4 序号）子夹名一并清理。
+        成品统一保留在封装输出夹内（媒体任务 10_封装输出 / 文本转语音
+        03_封装输出）：配音视频 + 字幕 / 配音音频副本；根目录的字幕母本 /
+        旧版配音音频按中间产物删除；旧版（无序号 / v3～v4 序号）子夹名
+        一并清理。
         """
         import shutil
 
         for stage, name in STAGE_DIR_NAMES.items():
-            if stage == STAGE_MUX:
+            if stage in (STAGE_MUX, STAGE_TTS_MUX):
                 continue  # 封装输出夹内是成品
             target = self.dir / name
             if target.is_dir():
@@ -327,6 +393,13 @@ class Workspace:
             target = self.dir / name
             if target.is_dir():
                 shutil.rmtree(target, ignore_errors=True)
+        # 根目录的中间产物：字幕母本（{stem}.{语种}.srt）与旧位置配音音频
+        for pattern in (f"{self._stem}.*.srt", f"{self._stem}.dubbed.wav"):
+            for target in self.dir.glob(pattern):
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
         manifest = self.manifest_path
         if manifest.is_file():
             try:

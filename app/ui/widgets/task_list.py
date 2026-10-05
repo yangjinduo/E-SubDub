@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""主窗口任务列表：五列表格（序号/任务名称/状态/进度/删除）+ 新建/删除任务按钮。
+"""主窗口任务列表：六列表格（序号/任务名称/类别/状态/进度/删除）+ 新建/删除任务按钮。
 
 - 行数据与 TaskManager 队列同步（入列/移除整表重建，状态/进度单行刷新）；
 - 任务名称格底层绘制进度条（不遮挡文字），进度列显示百分比文本；
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from app.core.i18n import tr
 from app.core.task_manager import TaskItem, TaskManager, TaskState
+from app.core.tts_runner import TtsTaskConfig
 
 # 任务状态 → i18n key（RUNNING 不在此表：_status_text 单独处理，显示当前流程名）
 _STATE_KEYS = {
@@ -48,6 +49,15 @@ def _status_text(item: TaskItem) -> str:
         stage = tr(f"step.{item.current_stage}") if item.current_stage else ""
         return f"{stage}…" if stage else tr("queue.state.running")
     return tr(_STATE_KEYS.get(item.state, "queue.state.queued"))
+
+
+def _category_text(item: TaskItem) -> str:
+    """任务类别显示文本：文本转语音 / 配音与字幕 / 生成字幕（按配置类型判定）。"""
+    if isinstance(item.config, TtsTaskConfig):
+        return tr("queue.cat.tts")
+    if item.config.dubbing_enabled:
+        return tr("queue.cat.dub")
+    return tr("queue.cat.sub")
 
 
 class _TaskNameCell(QWidget):
@@ -113,8 +123,16 @@ class _TaskNameCell(QWidget):
 class TaskListPanel(QFrame):
     """任务列表面板（主窗口中部）。"""
 
-    add_requested = Signal()       # 点击"＋ 新建任务"
+    # 点击"＋ 新建任务"按钮（kind: dub 配音与字幕 / sub 生成字幕 / tts 文本转语音）
+    add_requested = Signal(str)
     task_activated = Signal(str)   # 双击任务行（task_id）
+
+    # 三个新建按钮：(kind, i18n key, QSS objectName)；配色见 style.py
+    _ADD_BUTTONS: list[tuple[str, str, str]] = [
+        ("dub", "queue.add_dub", "addDubButton"),
+        ("sub", "queue.add_sub", "addSubButton"),
+        ("tts", "queue.add_tts", "addTtsButton"),
+    ]
 
     def __init__(self, manager: TaskManager, parent=None) -> None:
         super().__init__(parent)
@@ -126,9 +144,6 @@ class TaskListPanel(QFrame):
 
         title = QLabel(tr("queue.title"))
         title.setObjectName("sectionTitle")
-        self._add_button = QPushButton(tr("queue.add"))
-        self._add_button.setObjectName("addTaskButton")
-        self._add_button.clicked.connect(self.add_requested.emit)
         self._delete_button = QPushButton(tr("queue.delete"))
         self._delete_button.setObjectName("dangerButton")
         self._delete_button.setEnabled(False)
@@ -138,15 +153,21 @@ class TaskListPanel(QFrame):
         header.setContentsMargins(0, 0, 0, 0)
         header.addWidget(title)
         header.addStretch(1)
-        header.addWidget(self._add_button)
+        for kind, key, object_name in self._ADD_BUTTONS:
+            button = QPushButton(tr(key))
+            button.setObjectName(object_name)
+            button.clicked.connect(
+                lambda _checked=False, k=kind: self.add_requested.emit(k)
+            )
+            header.addWidget(button)
         header.addWidget(self._delete_button)
 
-        self._table = QTableWidget(0, 5)
+        self._table = QTableWidget(0, 6)
         self._table.setObjectName("taskTable")
         self._table.setHorizontalHeaderLabels([
             tr("queue.col.index"), tr("queue.col.name"),
-            tr("queue.col.status"), tr("queue.col.progress"),
-            tr("queue.col.delete"),
+            tr("queue.col.category"), tr("queue.col.status"),
+            tr("queue.col.progress"), tr("queue.col.delete"),
         ])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -163,6 +184,7 @@ class TaskListPanel(QFrame):
         header_view.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header_view.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self._table.verticalHeader().setDefaultSectionSize(38)
 
         layout = QVBoxLayout(self)
@@ -196,6 +218,8 @@ class TaskListPanel(QFrame):
             index.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             name = _TaskNameCell(item.display_name)
             name.set_progress(item.progress)
+            category = QTableWidgetItem(_category_text(item))
+            category.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             status = QTableWidgetItem(_status_text(item))
             status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             progress = QTableWidgetItem(f"{item.progress}%")
@@ -205,9 +229,10 @@ class TaskListPanel(QFrame):
 
             self._table.setItem(row, 0, index)
             self._table.setCellWidget(row, 1, name)
-            self._table.setItem(row, 2, status)
-            self._table.setItem(row, 3, progress)
-            self._table.setCellWidget(row, 4, delete)
+            self._table.setItem(row, 2, category)
+            self._table.setItem(row, 3, status)
+            self._table.setItem(row, 4, progress)
+            self._table.setCellWidget(row, 5, delete)
         self._on_selection_changed()
 
     def _build_row_delete_button(self, item: TaskItem) -> QPushButton:
@@ -229,7 +254,7 @@ class TaskListPanel(QFrame):
         row = self._row_by_id.get(item.id)
         if row is None:
             return
-        status = self._table.item(row, 2)
+        status = self._table.item(row, 3)
         if status is not None:
             status.setText(_status_text(item))
         button = self._delete_buttons.get(item.id)
@@ -244,7 +269,7 @@ class TaskListPanel(QFrame):
         name_cell = self._table.cellWidget(row, 1)
         if isinstance(name_cell, _TaskNameCell):
             name_cell.set_progress(value)
-        progress = self._table.item(row, 3)
+        progress = self._table.item(row, 4)
         if progress is not None:
             progress.setText(f"{value}%")
 

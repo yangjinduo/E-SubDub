@@ -19,10 +19,16 @@ from app.core.config import AppConfig
 from app.core.hardware import DeviceInfo, detect_device, detect_device_standalone
 from app.core.i18n import tr
 from app.core.task_manager import TaskManager
+from app.core.tts_runner import TtsTaskConfig
 from app.resources.env_setup import environment_status, get_env_setup_manager
 from app.resources.model import get_resource_manager
 from app.ui.dialogs.resource_dialog import SettingsDialog
-from app.ui.dialogs.task_dialog import TaskWindow
+from app.ui.dialogs.task_dialog import (
+    DubbingTaskWindow,
+    SubtitleTaskWindow,
+    TaskWindowBase,
+    TtsTaskWindow,
+)
 from app.ui.widgets.resource_bar import ResourceStatusBar
 from app.ui.widgets.system_monitor import SystemMonitorBar
 from app.ui.widgets.task_list import TaskListPanel
@@ -76,7 +82,7 @@ class MainWindow(QMainWindow):
         # 环境搭建完成后刷新设备卡徽标（设置窗口触发，窗口关闭后仍生效）
         get_env_setup_manager().environment_changed.connect(self._on_env_changed)
         # 打开中的任务窗口（含未开始的空窗口；应用退出时统一销毁）
-        self._task_windows: list[TaskWindow] = []
+        self._task_windows: list[TaskWindowBase] = []
         # 启动期后台探测（精确设备 + 运行环境状态），完成后信号刷新
         self._probe = _StartupProbe()
         self._probe.result_ready.connect(self._on_probe_ready)
@@ -143,7 +149,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 任务窗口
 
-    def _track_window(self, window: TaskWindow) -> None:
+    def _track_window(self, window: TaskWindowBase) -> None:
         """登记任务窗口，销毁时自动移除引用。"""
         self._task_windows.append(window)
         window.destroyed.connect(
@@ -151,27 +157,44 @@ class MainWindow(QMainWindow):
             if w in self._task_windows else None
         )
 
-    def _open_new_task_window(self) -> None:
-        """任务列表"＋"：新建空任务窗口。"""
-        window = TaskWindow(self._task_manager, parent=self)
+    def _create_task_window(self, kind: str, task_id: str | None = None) -> TaskWindowBase:
+        """按任务类型构造对应窗口；task_id 非空时绑定已有任务。"""
+        if kind == "tts":
+            window: TaskWindowBase = TtsTaskWindow(self._task_manager, parent=self)
+        elif kind == "sub":
+            window = SubtitleTaskWindow(self._task_manager, parent=self)
+        else:
+            window = DubbingTaskWindow(self._task_manager, parent=self)
+        if task_id is not None:
+            window.bind_task(task_id)
+        return window
+
+    def _open_new_task_window(self, kind: str) -> None:
+        """任务列表"＋"：按任务类型新建空任务窗口。"""
+        window = self._create_task_window(kind)
         self._track_window(window)
         window.show()
 
     def _activate_task_window(self, task_id: str) -> None:
-        """双击任务行：聚焦已有任务窗口，或为终态任务重建窗口。"""
+        """双击任务行：聚焦已有任务窗口，或按任务类型重建窗口。"""
         window = self._task_manager.window_for(task_id)
         if window is not None:
             window.show()
             window.raise_()
             window.activateWindow()
             return
-        # 窗口已销毁（任务终结后关闭过）：重建并绑定
+        # 窗口已销毁（任务终结后关闭过）：按任务配置类型重建并绑定
         item = self._task_manager.get_task(task_id)
         if item is None:
             return
-        window = TaskWindow(self._task_manager, parent=self)
+        if isinstance(item.config, TtsTaskConfig):
+            kind = "tts"
+        elif item.config.dubbing_enabled:
+            kind = "dub"
+        else:
+            kind = "sub"
+        window = self._create_task_window(kind, task_id)
         self._track_window(window)
-        window.bind_task(task_id)
         window.show()
 
     # ------------------------------------------------------------------ 窗口关闭

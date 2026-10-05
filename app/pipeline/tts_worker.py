@@ -10,10 +10,14 @@ IndexTTS-2.5 官方依赖 transformers 4.52，与主环境（ASR 所需 5.x）�
 - 启动参数：--model-dir <目录> --device <cuda|cpu> [--bf16]；
 - 加载完成：{"event": "ready"}；加载失败：{"event": "fatal", "error": ...,
   "kind": "memory" | "error"}（kind=memory 时父进程不再尝试 CPU 重试）；
-- 请求：{"id": int, "text": str, "ref": str, "out": str, "lang": str}
+- 请求：{"id": int, "text": str, "ref": str, "out": str, "lang": str,
+         "duration_factor": float, "emo_vector": [8 floats]（可选）}
   响应：{"id": int, "ok": true, "duration": float}
         {"id": int, "ok": false, "error": str, "kind": ...}
   进度：{"id": int, "event": "progress", "frac": 0~1, "desc": str}（合成期间）
+  duration_factor = IndexTTS 原生时长系数（1.0 正常，<1 更快 >1 更慢）；
+  emo_vector 缺省 = 跟随参考音频情绪，传入时为 8 维权重向量
+  [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]；
 - {"cmd": "shutdown"} 或 stdin 关闭即退出；合成结果即时落盘，进程被 kill
   也不丢已完成句子。
 
@@ -139,11 +143,18 @@ def main() -> int:
         rid = req.get("id")
         _current["rid"] = rid  # gr_progress 锚点归入当前请求
         try:
+            infer_kwargs = {
+                "duration_factor": float(req.get("duration_factor") or 1.0),
+            }
+            emo_vector = req.get("emo_vector")
+            if isinstance(emo_vector, (list, tuple)) and len(emo_vector) == 8:
+                infer_kwargs["emo_vector"] = [float(v) for v in emo_vector]
             tts.infer(
                 spk_audio_prompt=req["ref"],
                 text=req["text"],
                 lang=req.get("lang") or "zh",
                 output_path=req["out"],
+                **infer_kwargs,
             )
             info = sf.info(req["out"])
             send({

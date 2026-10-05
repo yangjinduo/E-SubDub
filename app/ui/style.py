@@ -220,6 +220,12 @@ QFrame#importDropArea[dndHover="true"] {
     border-color: #2563EB;
 }
 
+/* 拖放悬停高亮（任务窗口的文本卡/参考音频卡） */
+QFrame[card="true"][dndHover="true"] {
+    border-color: #2563EB;
+    background: #F8FAFF;
+}
+
 QLabel#importHintTitle {
     font-size: 17px;
     font-weight: 600;
@@ -320,8 +326,9 @@ QTableWidget#importFileTable:item:alternate {
     background: #FAFBFC;
 }
 
-/* 新建任务按钮（任务列表头部） */
-QPushButton#addTaskButton {
+/* 新建任务按钮（任务列表头部）：三类任务三色 */
+/* 配音与字幕（蓝） */
+QPushButton#addDubButton {
     background: #2563EB;
     border: 1px solid #2563EB;
     border-radius: 8px;
@@ -329,12 +336,44 @@ QPushButton#addTaskButton {
     color: #FFFFFF;
     font-weight: 600;
 }
-QPushButton#addTaskButton:hover {
+QPushButton#addDubButton:hover {
     background: #1D4ED8;
     border-color: #1D4ED8;
 }
-QPushButton#addTaskButton:pressed {
+QPushButton#addDubButton:pressed {
     background: #1E40AF;
+}
+/* 生成字幕（绿） */
+QPushButton#addSubButton {
+    background: #059669;
+    border: 1px solid #059669;
+    border-radius: 8px;
+    padding: 6px 18px;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#addSubButton:hover {
+    background: #047857;
+    border-color: #047857;
+}
+QPushButton#addSubButton:pressed {
+    background: #065F46;
+}
+/* 文本转语音（紫） */
+QPushButton#addTtsButton {
+    background: #7C3AED;
+    border: 1px solid #7C3AED;
+    border-radius: 8px;
+    padding: 6px 18px;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#addTtsButton:hover {
+    background: #6D28D9;
+    border-color: #6D28D9;
+}
+QPushButton#addTtsButton:pressed {
+    background: #581C87;
 }
 
 /* 行内删除按钮（表格删除列） */
