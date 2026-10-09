@@ -115,6 +115,19 @@ class AudioPlayerBar(QWidget):
         """返回当前加载的音频路径（可能为空串）。"""
         return self._source
 
+    def is_playing(self) -> bool:
+        """是否正在播放。"""
+        return self._playing
+
+    def position(self) -> int:
+        """当前播放位置（毫秒）；未播放或 winsound 降级模式返回 0。"""
+        if self._player is not None:
+            try:
+                return int(self._player.position())
+            except Exception:
+                return 0
+        return 0
+
     def play(self) -> None:
         """开始播放；无有效音源时直接返回，不抛异常。"""
         if not self._source or not os.path.isfile(self._source):

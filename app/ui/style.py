@@ -68,6 +68,22 @@ QPushButton#dangerButton:hover {
     border-color: #F87171;
 }
 
+/* 继续执行按钮（柔和浅绿，与删除按钮形成语义对照） */
+QPushButton#continueButton {
+    background: #D1FAE5;
+    border: 1px solid #A7F3D0;
+    color: #065F46;
+}
+QPushButton#continueButton:hover {
+    background: #A7F3D0;
+    border-color: #6EE7B7;
+}
+QPushButton#continueButton:disabled {
+    background: #F3F4F6;
+    border-color: #E5E7EB;
+    color: #9CA3AF;
+}
+
 /* 链接样式按钮（模型主页） */
 QPushButton#linkButton {
     background: transparent;

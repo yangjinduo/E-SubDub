@@ -79,6 +79,9 @@ class MainWindow(QMainWindow):
         # 任务队列（挂在主窗口本体上：语言切换重建 central widget 不受影响）
         self._task_manager = TaskManager(parent=self)
         self._task_manager.device = self._device.device
+        # 启动恢复上次会话的任务列表（运行中/排队中 → 已中断，
+        # 不自动执行；TaskListPanel 构造时从队列整表填充）
+        self._task_manager.restore_tasks()
         # 环境搭建完成后刷新设备卡徽标（设置窗口触发，窗口关闭后仍生效）
         get_env_setup_manager().environment_changed.connect(self._on_env_changed)
         # 打开中的任务窗口（含未开始的空窗口；应用退出时统一销毁）

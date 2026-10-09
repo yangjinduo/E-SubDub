@@ -40,6 +40,7 @@ _STATE_KEYS = {
     TaskState.DONE: "queue.state.done",
     TaskState.FAILED: "queue.state.failed",
     TaskState.CANCELLED: "queue.state.cancelled",
+    TaskState.INTERRUPTED: "queue.state.interrupted",
 }
 
 
@@ -148,6 +149,12 @@ class TaskListPanel(QFrame):
         self._delete_button.setObjectName("dangerButton")
         self._delete_button.setEnabled(False)
         self._delete_button.clicked.connect(self._delete_selected_tasks)
+        # 继续 / 停止双态按钮：无活动任务时"继续"（批量重入列上次未完成
+        # 的任务），有活动任务时"停止"（停止整个队列：当前任务取消且
+        # 排队任务全部取消，与任务窗口内仅停止单个任务的按钮语义不同）
+        self._resume_button = QPushButton(tr("queue.resume"))
+        self._resume_button.setObjectName("continueButton")
+        self._resume_button.clicked.connect(self._on_queue_button_clicked)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -161,6 +168,7 @@ class TaskListPanel(QFrame):
             )
             header.addWidget(button)
         header.addWidget(self._delete_button)
+        header.addWidget(self._resume_button)
 
         self._table = QTableWidget(0, 6)
         self._table.setObjectName("taskTable")
@@ -200,6 +208,13 @@ class TaskListPanel(QFrame):
         manager.task_progress_changed.connect(self._on_progress_changed)
         # 流程步骤变化 → 状态列显示当前流程名（提取音频…/翻译…）
         manager.task_step_changed.connect(self._on_step_changed)
+        # 队列结构/状态变化 → "继续执行"按钮可用性
+        manager.task_added.connect(lambda _tid: self._update_resume_button())
+        manager.task_removed.connect(lambda _tid: self._update_resume_button())
+        manager.task_state_changed.connect(
+            lambda _tid: self._update_resume_button()
+        )
+        self._update_resume_button()
         self._rebuild()
 
     # ------------------------------------------------------------------ 行操作
@@ -288,6 +303,58 @@ class TaskListPanel(QFrame):
         row = self._row_by_id.get(task_id)
         if row is not None:
             self._set_row_progress(row, value)
+
+    # ------------------------------------------------------------------ 继续 / 停止
+
+    def _update_resume_button(self) -> None:
+        """双态按钮：有活动任务显示"停止"（红色危险样式，可点）；否则
+        显示"继续"（浅绿），无可继续任务（已中断/失败/已取消）时禁用。"""
+        stop = self._manager.has_active_tasks()
+        name = "dangerButton" if stop else "continueButton"
+        if self._resume_button.objectName() != name:
+            self._resume_button.setObjectName(name)
+            self._resume_button.style().unpolish(self._resume_button)
+            self._resume_button.style().polish(self._resume_button)
+        self._resume_button.setText(
+            tr("queue.stop" if stop else "queue.resume")
+        )
+        self._resume_button.setEnabled(
+            stop or self._manager.has_resumable_tasks()
+        )
+
+    def _on_queue_button_clicked(self) -> None:
+        """按钮点击：活动任务存在 → 停止整个队列；否则走继续确认流程。"""
+        if self._manager.has_active_tasks():
+            self._manager.stop_queue()
+            return
+        self._resume_unfinished()
+
+    def _resume_unfinished(self) -> None:
+        """批量继续未完成任务（已中断/失败/已取消），确认后重新入列。"""
+        count = sum(
+            1 for item in self._manager.tasks()
+            if item.state in (
+                TaskState.INTERRUPTED, TaskState.FAILED, TaskState.CANCELLED,
+            )
+        )
+        if count == 0:
+            QMessageBox.information(self, tr("queue.resume_title"),
+                                    tr("queue.resume_none"))
+            return
+        answer = QMessageBox.question(
+            self, tr("queue.resume_title"),
+            tr("queue.resume_confirm", count=count),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        resumed = self._manager.resume_unfinished()
+        if resumed:
+            QMessageBox.information(
+                self, tr("queue.resume_title"),
+                tr("queue.resume_started", count=resumed),
+            )
 
     # ------------------------------------------------------------------ 删除
 
@@ -387,7 +454,9 @@ class TaskListPanel(QFrame):
         menu = QMenu(self)
         if item.state == TaskState.QUEUED:
             menu.addAction(tr("queue.menu.cancel"), lambda: self._manager.cancel(item.id))
-        if item.state in (TaskState.FAILED, TaskState.CANCELLED):
+        if item.state in (
+            TaskState.FAILED, TaskState.CANCELLED, TaskState.INTERRUPTED,
+        ):
             menu.addAction(tr("queue.menu.retry"), lambda: self._manager.retry(item.id))
         if TaskState.is_terminal(item.state):
             menu.addAction(

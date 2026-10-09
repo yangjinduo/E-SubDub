@@ -49,11 +49,12 @@ STAGE_TTS_REVIEW = "tts_review"
 STAGE_MIX = "mix"
 STAGE_MUX = "mux"
 
-# 文本转语音任务（TtsTaskConfig）的独立阶段：文本处理 → 语音合成 → 封装输出；
-# 步骤 ID 同样与 pipeline_panel 的 TTS_PIPELINE_STEPS 对应
-STAGE_TTS_TEXT = "tts_text"       # 分句 + 语言检测 + 参考音频规范化
-STAGE_TTS_SYNTH = "tts_synth"     # 逐句克隆合成（断点续跑按句粒度）
-STAGE_TTS_MUX = "tts_mux"         # 拼接 + 句间静音 + 转码 + SRT，成品直落封装夹
+# 文本转语音任务（TtsTaskConfig）的独立阶段：文本处理 → 语音合成 →
+# 语音复核 → 封装输出；步骤 ID 同样与 pipeline_panel 的 TTS_PIPELINE_STEPS 对应
+STAGE_TTS_TEXT = "tts_text"             # 分句 + 语言检测 + 参考音频规范化
+STAGE_TTS_SYNTH = "tts_synth"           # 逐句克隆合成（断点续跑按句粒度）
+STAGE_TTS_VOICE_REVIEW = "tts_voice_review"  # 语音复核（试听/删除/重生成，含独立暂停点）
+STAGE_TTS_MUX = "tts_mux"               # 拼接 + 句间静音 + 转码 + SRT，成品直落封装夹
 
 # 各流程产物子夹名（固定中文，带两位序号前缀便于按流程顺序排序；
 # 不随界面语言变化：保证断点复用路径稳定，且与"查看流程结果"功能的
@@ -76,16 +77,18 @@ STAGE_DIR_NAMES: dict[str, str] = {
     # 文本转语音任务（无媒体文件，工作夹按任务名建）
     STAGE_TTS_TEXT: "01_文本处理",
     STAGE_TTS_SYNTH: "02_语音合成",
-    STAGE_TTS_MUX: "03_封装输出",
+    STAGE_TTS_VOICE_REVIEW: "03_语音复核",
+    STAGE_TTS_MUX: "04_封装输出",
 }
 
 # 旧版（layout v2 子夹无序号 / v3 含 05_人工审核 / v4 文本校对同夹复核
-# 产物）目录名：清理工作夹时一并删除
+# 产物 / TTS 三阶段旧布局的 03_封装输出）目录名：清理工作夹时一并删除
 _LEGACY_STAGE_DIR_NAMES: tuple[str, ...] = (
     "音频提取", "人声分离", "语音识别", "文本校对", "人工审核",
     "翻译", "译文审核", "配音生成", "混音", "封装输出",
     "05_人工审核", "06_翻译", "07_译文审核", "08_配音生成", "09_混音", "10_封装输出",
     "04_文本校对", "08_混音", "09_封装输出",
+    "03_封装输出",  # TTS 旧三阶段布局：复核流程插入后封装输出移至 04_
 )
 
 # 工作夹布局版本：v5 = 配音复核独立成夹（08_配音复核）、混音/封装后移、
@@ -111,8 +114,11 @@ _STAGE_PRODUCTS: dict[str, tuple[str, ...]] = {
     STAGE_MIX: (f"{STAGE_DIR_NAMES[STAGE_MIX]}/ai_new_audio.wav",),
     STAGE_TTS_TEXT: (f"{STAGE_DIR_NAMES[STAGE_TTS_TEXT]}/sentences.json",),
     STAGE_TTS_SYNTH: (f"{STAGE_DIR_NAMES[STAGE_TTS_SYNTH]}/synthesis.json",),
+    STAGE_TTS_VOICE_REVIEW: (
+        f"{STAGE_DIR_NAMES[STAGE_TTS_VOICE_REVIEW]}/reviewed.json",
+    ),
     # mux 成品文件名随媒体/语言变化，在 is_done 中按实际路径特判；
-    # STAGE_TTS_MUX 成品在 03_封装输出 夹内（文件名随格式/任务名变化），
+    # STAGE_TTS_MUX 成品在 04_封装输出 夹内（文件名随格式/任务名变化），
     # 同样在 is_done 中按 manifest 标记特判
 }
 
@@ -121,6 +127,46 @@ def _sanitize(name: str) -> str:
     """文件名安全化：去掉路径分隔符与控制字符，空白折叠为下划线。"""
     cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip()
     return cleaned or "task"
+
+
+# ---------------------------------------------------------------- 流程顺序表
+# 流程查看窗口"继续"按钮用：从某流程重跑时按顺序重置该阶段及全部下游
+# manifest 标记。步骤 ID 与 pipeline_panel 步骤一致；proofread 步骤的
+# manifest 标记落在 STAGE_REVIEW（04_文本审核/reviewed.json），用映射换算。
+_STEP_TO_STAGE: dict[str, str] = {
+    "proofread": STAGE_REVIEW,
+}
+
+# 配音与字幕任务（10 步）
+MEDIA_STAGE_ORDER: tuple[str, ...] = (
+    STAGE_EXTRACT, STAGE_SEPARATE, STAGE_ASR, STAGE_PROOFREAD,
+    STAGE_TRANSLATE, STAGE_REVIEW_TRANSLATION, STAGE_TTS, STAGE_TTS_REVIEW,
+    STAGE_MIX, STAGE_MUX,
+)
+# 生成字幕任务（5 步，无配音链路）
+SUBTITLE_STAGE_ORDER: tuple[str, ...] = (
+    STAGE_EXTRACT, STAGE_ASR, STAGE_PROOFREAD, STAGE_TRANSLATE,
+    STAGE_REVIEW_TRANSLATION, STAGE_MUX,
+)
+# 文本转语音任务（4 步）
+TTS_TASK_STAGE_ORDER: tuple[str, ...] = (
+    STAGE_TTS_TEXT, STAGE_TTS_SYNTH, STAGE_TTS_VOICE_REVIEW, STAGE_TTS_MUX,
+)
+
+
+def downstream_stages(stage_id: str, order: tuple[str, ...]) -> "list[str] | None":
+    """从某步骤起的全部 manifest 阶段（含该步骤与全部下游）。
+
+    步骤不在顺序表内时返回 None；配音生成（tts）重跑时连带重置隐藏的
+    音色挑选标记（voice），保证参考音色重新挑选并经人工确认。
+    """
+    if stage_id not in order:
+        return None
+    idx = order.index(stage_id)
+    stages = [_STEP_TO_STAGE.get(s, s) for s in order[idx:]]
+    if STAGE_TTS in stages and "voice" not in stages:
+        stages.append("voice")
+    return stages
 
 
 class Workspace:
@@ -354,12 +400,17 @@ class Workspace:
         """02_语音合成：逐句 WAV 目录（断点续跑按句粒度复用）。"""
         return self.stage_dir(STAGE_TTS_SYNTH) / "wav"
 
+    @property
+    def tts_voice_reviewed_json(self) -> Path:
+        """03_语音复核：复核结果（句子删除标记 + 重生成后的时长）。"""
+        return self.stage_dir(STAGE_TTS_VOICE_REVIEW) / "reviewed.json"
+
     def tts_audio_path(self, ext: str) -> Path:
-        """文本转语音成品音频（03_封装输出 夹内，扩展名随输出格式）。"""
+        """文本转语音成品音频（04_封装输出 夹内，扩展名随输出格式）。"""
         return self.stage_dir(STAGE_TTS_MUX) / f"{self._stem}.{ext}"
 
     def tts_srt_path(self, lang: str) -> Path:
-        """文本转语音成品字幕（03_封装输出 夹内，{任务名}.{语种大写}.srt）。"""
+        """文本转语音成品字幕（04_封装输出 夹内，{任务名}.{语种大写}.srt）。"""
         return self.stage_dir(STAGE_TTS_MUX) / f"{self._stem}.{lang.upper()}.srt"
 
     # ------------------------------------------------------------------ 读写分段
@@ -377,7 +428,7 @@ class Workspace:
         """删除中间流程子夹与根目录中间产物。
 
         成品统一保留在封装输出夹内（媒体任务 10_封装输出 / 文本转语音
-        03_封装输出）：配音视频 + 字幕 / 配音音频副本；根目录的字幕母本 /
+        04_封装输出）：配音视频 + 字幕 / 配音音频副本；根目录的字幕母本 /
         旧版配音音频按中间产物删除；旧版（无序号 / v3～v4 序号）子夹名
         一并清理。
         """

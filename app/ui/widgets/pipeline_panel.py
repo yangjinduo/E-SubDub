@@ -2,7 +2,7 @@
 
 步骤使用稳定 ID（供流程引擎调用），显示文案按当前界面语言生成；
 三种任务窗口共用本面板，各自传入步骤列表（配音与字幕 10 步 /
-生成字幕 6 步 / 文本转语音 3 步）。步骤完成后标签可点击
+生成字幕 6 步 / 文本转语音 4 步）。步骤完成后标签可点击
 （发射 stage_clicked），用于打开对应流程的结果查看窗口。
 """
 
@@ -45,11 +45,13 @@ SUBTITLE_PIPELINE_STEPS: list[tuple[str, str]] = [
     ("mux", "step.mux"),
 ]
 
-# 文本转语音任务的步骤：末步封装输出 = 拼接 + 转码 + SRT，成品直落 03_封装输出
+# 文本转语音任务的步骤：03 语音复核 = 合成后的试听/删除/重生成暂停点；
+# 末步封装输出 = 拼接复核保留句 + 转码 + SRT，成品直落 04_封装输出
 TTS_PIPELINE_STEPS: list[tuple[str, str]] = [
     ("tts_text", "step.tts_text"),
     ("tts_synth", "step.tts_synth"),
-    ("tts_mux", "step.mux"),
+    ("tts_voice_review", "step.tts_voice_review"),
+    ("tts_mux", "step.tts_mux"),
 ]
 
 # 步骤状态：等待 / 进行中 / 完成

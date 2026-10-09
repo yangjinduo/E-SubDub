@@ -22,8 +22,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -51,7 +50,7 @@ from app.core.langid_util import (
 from app.core.runner import TaskConfig
 from app.core.task_manager import TaskItem, TaskManager, TaskState
 from app.core.tts_runner import TtsTaskConfig, split_sentences
-from app.core.workspace import STAGE_REVIEW, STAGE_TTS_MUX
+from app.core.workspace import STAGE_REVIEW
 from app.pipeline.llm_engine import resolve_llama_server_exe
 from app.resources.model import get_resource_manager
 from app.ui.widgets.import_area import ImportArea
@@ -217,7 +216,16 @@ class TaskWindowBase(QDialog):
         raise NotImplementedError
 
     def _on_stage_clicked(self, step_id: str) -> None:
-        """点击已完成的流程步骤（打开结果查看窗口 / 产物目录）。"""
+        """点击流程步骤：打开结果查看窗口（带"继续"按钮）。
+
+        定义在基类：媒体任务与文本转语音任务的流程卡片均可点击。
+        """
+        item = self._current_item()
+        if item is None:
+            return
+        from app.ui.dialogs.stage_viewers import open_stage_viewer
+
+        open_stage_viewer(item, step_id, parent=self, manager=self._manager)
 
     def _idle_start_text(self) -> str:
         """无任务时开始按钮文案（媒体任务按文件数区分批量）。"""
@@ -601,15 +609,6 @@ class MediaTaskWindowBase(TaskWindowBase):
             ) if Path(p).is_file()
         ]
 
-    def _on_stage_clicked(self, step_id: str) -> None:
-        """点击已完成的流程步骤：打开结果查看窗口。"""
-        item = self._current_item()
-        if item is None:
-            return
-        from app.ui.dialogs.stage_viewers import open_stage_viewer
-
-        open_stage_viewer(item, step_id, parent=self)
-
     def _idle_start_text(self) -> str:
         if len(self._import_area.files()) > 1:
             return tr("main.start_batch")
@@ -785,15 +784,15 @@ def _txt_dedup_key(path: str) -> str:
 class _TtsFileCard(QFrame):
     """文本转语音左栏：拖入/点击选择多个 TXT 文件，表格展示。
 
-    表格列：序号 / 文件名 / 路径 / 字数 / 情绪 / 删除；情绪列按钮经
-    emotion_requested 信号交窗口层打开该文件的情绪定制；载入时即读取
+    表格列：序号 / 文件名 / 路径 / 字数 / 编辑 / 删除；编辑列按钮经
+    edit_requested 信号交窗口层打开该文件的编辑对话框；载入时即读取
     文本缓存（字数统计与构造任务配置用）。交互与媒体导入区一致：
     点击空白选择、拖入追加、路径去重、行删除前确认。
     """
 
     files_added = Signal(list)       # 本次新加入的路径列表（已去重）
     files_changed = Signal()        # 文件列表内容变化（新增/删除/清空）
-    emotion_requested = Signal(str) # 情绪按钮：请求定制某文件的情绪
+    edit_requested = Signal(str)    # 编辑按钮：请求编辑某文件的句子与情绪
     clicked = Signal()              # 点击空白（宿主先折叠输入区再弹文件框）
 
     def __init__(self, parent=None) -> None:
@@ -823,13 +822,13 @@ class _TtsFileCard(QFrame):
         self._count_label.setObjectName("importCountLabel")
         self._count_label.hide()
 
-        # 文件表格（列：序号/文件名/路径/字数/情绪/删除）
+        # 文件表格（列：序号/文件名/路径/字数/编辑/删除）
         self._table = QTableWidget(0, 6)
         self._table.setObjectName("importFileTable")
         self._table.setHorizontalHeaderLabels([
             tr("import.col.index"), tr("import.col.name"),
             tr("import.col.path"), tr("tts.col.chars"),
-            tr("tts.col.emotion"), tr("import.col.delete"),
+            tr("tts.col.edit"), tr("import.col.delete"),
         ])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -850,7 +849,8 @@ class _TtsFileCard(QFrame):
         self._table.hide()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
+        # 拖入区内部紧凑排布（虚线边框已提供视觉边界，内容优先）
+        layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(8)
         # 无文件时上下弹簧（均分剩余空间）把提示文案垂直居中；有文件时
         # 弹簧隐藏，表格独占剩余高度（隐藏控件不参与布局分配）
@@ -887,8 +887,14 @@ class _TtsFileCard(QFrame):
         """该文件的情绪映射（{句子文本: 情绪 key}）。"""
         return dict(self._emotions.get(path, {}))
 
+    def set_text(self, path: str, text: str) -> None:
+        """编辑对话框确认后回写内存缓存文本（磁盘 TXT 不回写）并刷新表格。"""
+        if path in self._texts:
+            self._texts[path] = text
+            self._refresh()
+
     def set_emotions(self, path: str, mapping: dict) -> None:
-        """情绪定制确认后回写（剔除失配句子）并刷新表格。"""
+        """编辑确认后回写情绪映射（剔除失配句子）并刷新表格。"""
         text = self._texts.get(path, "")
         valid = set(split_sentences(text))
         self._emotions[path] = {
@@ -1030,16 +1036,17 @@ class _TtsFileCard(QFrame):
             ))
             chars.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            # 情绪按钮：文案即该文件的情绪摘要，点击交窗口层定制
+            # 编辑按钮：文案即该文件的编辑摘要（N 句已定制情绪），点击交
+            # 窗口层编辑句子与情绪
             emotion = self._emotions.get(path, {})
-            emo_button = QPushButton(
+            edit_button = QPushButton(
                 tr("tts.emo_custom_count", count=len(emotion)) if emotion
                 else tr("tts.emo_follow_all")
             )
-            emo_button.setFixedHeight(26)
-            emo_button.setToolTip(tr("tts.emo_edit_tip"))
-            emo_button.clicked.connect(
-                lambda _checked=False, p=path: self.emotion_requested.emit(p)
+            edit_button.setFixedHeight(26)
+            edit_button.setToolTip(tr("tts.edit_tip"))
+            edit_button.clicked.connect(
+                lambda _checked=False, p=path: self.edit_requested.emit(p)
             )
 
             delete = QPushButton(tr("common.delete"))
@@ -1054,7 +1061,7 @@ class _TtsFileCard(QFrame):
             self._table.setItem(row, 1, name_item)
             self._table.setItem(row, 2, path_item)
             self._table.setItem(row, 3, chars)
-            self._table.setCellWidget(row, 4, emo_button)
+            self._table.setCellWidget(row, 4, edit_button)
             self._table.setCellWidget(row, 5, delete)
 
         has_files = count > 0
@@ -1155,9 +1162,6 @@ class TtsTaskWindow(TaskWindowBase):
     def _window_title(self) -> str:
         return tr("taskwindow.new_tts")
 
-    def _show_auto_accept(self) -> bool:
-        return False  # 纯 TTS 任务无人工审核环节
-
     def _build_body(self, layout: QVBoxLayout) -> None:
         # ---- 文本卡：左栏文件批量 / 右栏手动输入 + 情绪行 ----
         self._text_card = QFrame()
@@ -1179,7 +1183,7 @@ class TtsTaskWindow(TaskWindowBase):
         self._file_card.files_added.connect(self._on_txt_files_added)
         self._file_card.clicked.connect(self._on_file_card_clicked)
         self._file_card.files_changed.connect(self._on_txt_files_changed)
-        self._file_card.emotion_requested.connect(self._on_file_emotion)
+        self._file_card.edit_requested.connect(self._on_file_edit)
         content_row.addWidget(self._file_card, 1)
 
         self._manual_card = _ManualTextCard()
@@ -1205,22 +1209,18 @@ class TtsTaskWindow(TaskWindowBase):
 
         text_layout.addLayout(content_row, 1)
 
-        # 情绪行：[定制按钮][摘要] … [多音字标注提示（中文场景显示）]
-        emo_row = QHBoxLayout()
-        emo_row.setContentsMargins(0, 0, 0, 0)
-        self._emo_button = QPushButton(tr("tts.emo_customize"))
-        self._emo_button.clicked.connect(self._on_emotion_clicked)
-        self._emo_summary = QLabel(tr("tts.emo_follow_all"))
-        self._emo_summary.setStyleSheet("color: #6B7280;")
+        # 编辑行：[编辑按钮] … [多音字标注提示（中文场景显示）]
+        edit_row = QHBoxLayout()
+        edit_row.setContentsMargins(0, 0, 0, 0)
+        self._edit_button = QPushButton(tr("tts.edit"))
+        self._edit_button.clicked.connect(self._on_edit_clicked)
         self._polyphone_hint = QLabel(tr("tts.polyphone_hint"))
         self._polyphone_hint.setStyleSheet("color: #6B7280;")
         self._polyphone_hint.hide()
-        emo_row.addWidget(self._emo_button)
-        emo_row.addSpacing(8)
-        emo_row.addWidget(self._emo_summary)
-        emo_row.addStretch(1)
-        emo_row.addWidget(self._polyphone_hint)
-        text_layout.addLayout(emo_row)
+        edit_row.addWidget(self._edit_button)
+        edit_row.addStretch(1)
+        edit_row.addWidget(self._polyphone_hint)
+        text_layout.addLayout(edit_row)
         layout.addWidget(self._text_card, 2)
 
         # ---- 参考音频卡：选择/拖入 + 试听 ----
@@ -1275,11 +1275,9 @@ class TtsTaskWindow(TaskWindowBase):
             cfg.output_format, cfg.output_dir,
         )
         self._emotions = dict(cfg.emotions or {})
-        self._sync_emotion_summary()
-        # 恢复为手动输入形态：情绪行/任务名字段复位（文件列表不还原，
+        # 恢复为手动输入形态：任务名字段复位（文件列表不还原，
         # 文本内容直接进输入框）
-        self._emo_button.setVisible(True)
-        self._emo_summary.setVisible(True)
+        self._edit_button.setVisible(True)
         self._task_settings.set_task_name_enabled(True)
 
     # ------------------------------------------------------------------ 文本源切换
@@ -1345,13 +1343,12 @@ class TtsTaskWindow(TaskWindowBase):
         self._lang_timer.start()
 
     def _on_txt_files_changed(self) -> None:
-        """文件列表变化：情绪行切换、任务名联动、开始按钮文案刷新。"""
+        """文件列表变化：编辑行切换、任务名联动、开始按钮文案刷新。"""
         has_files = bool(self._file_card.files())
-        # 文件模式：表格独占整行（隐藏右栏手动输入卡）；情绪按文件在
-        # 表格中逐个定制，全局定制行隐藏
+        # 文件模式：表格独占整行（隐藏右栏手动输入卡）；句子与情绪按文件
+        # 在表格中逐个编辑，全局编辑行隐藏
         self._manual_card.setVisible(not has_files)
-        self._emo_button.setVisible(not has_files)
-        self._emo_summary.setVisible(not has_files)
+        self._edit_button.setVisible(not has_files)
         self._sync_task_name_field()
         self._sync_polyphone_hint()
         if self._current_item() is None:
@@ -1399,7 +1396,6 @@ class TtsTaskWindow(TaskWindowBase):
         # 文本修改后句子可能改写：情绪映射按当前句子集合剔除失配项
         valid = set(sentences)
         self._emotions = {k: v for k, v in self._emotions.items() if k in valid}
-        self._sync_emotion_summary()
         self._lang_timer.start()
 
     def _current_source_text(self) -> str:
@@ -1451,43 +1447,51 @@ class TtsTaskWindow(TaskWindowBase):
         self._ref_label.setToolTip(str(path))
         self._audio_player.set_source(str(path))
 
-    # ------------------------------------------------------------------ 情绪定制
+    # ------------------------------------------------------------------ 编辑
 
-    def _on_emotion_clicked(self) -> None:
-        """打开情绪定制对话框（分句与合成单位一致）。"""
+    def _on_edit_clicked(self) -> None:
+        """打开编辑对话框（手动输入模式）：改句 / 选情绪 / 删句。
+
+        确定后重组文本回写输入框（\n 连接）；情绪映射同步为新句子集合。
+        """
         sentences = split_sentences(self._text_edit.toPlainText())
         if not sentences:
-            self._panel.log(tr("tts.no_text_for_emo"))
+            self._panel.log(tr("tts.no_text_for_edit"))
             return
-        from app.ui.dialogs.tts_emotion_dialog import TtsEmotionDialog
+        from app.ui.dialogs.tts_edit_dialog import TtsEditDialog
 
-        dialog = TtsEmotionDialog(sentences, self._emotions, self)
+        dialog = TtsEditDialog(sentences, self._emotions, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._emotions = dialog.get_emotions()
-            self._sync_emotion_summary()
+            kept, emotions = dialog.get_result()
+            if not kept:
+                self._panel.log(tr("tts.no_text_for_edit"))
+                return
+            # 先回写文本（textChanged 会按新句子剔除旧情绪映射），再整体
+            # 覆盖为对话框返回的映射
+            self._text_edit.setPlainText("\n".join(kept))
+            self._emotions = emotions
 
-    def _on_file_emotion(self, path: str) -> None:
-        """表格情绪按钮：打开该文件的情绪定制对话框（分句与合成单位一致）。"""
+    def _on_file_edit(self, path: str) -> None:
+        """表格编辑按钮：打开该文件的编辑对话框（改句 / 选情绪 / 删句）。
+
+        确定后更新内存缓存文本（磁盘 TXT 不回写）与该文件的情绪映射。
+        """
         sentences = split_sentences(self._file_card.text(path))
         if not sentences:
-            self._panel.log(tr("tts.no_text_for_emo"))
+            self._panel.log(tr("tts.no_text_for_edit"))
             return
-        from app.ui.dialogs.tts_emotion_dialog import TtsEmotionDialog
+        from app.ui.dialogs.tts_edit_dialog import TtsEditDialog
 
-        dialog = TtsEmotionDialog(sentences, self._file_card.emotions(path), self)
+        dialog = TtsEditDialog(
+            sentences, self._file_card.emotions(path), self,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._file_card.set_emotions(path, dialog.get_emotions())
-
-    def _sync_emotion_summary(self) -> None:
-        """刷新情绪摘要文案（跟随参考音频 / N 句已定制）。"""
-        if self._emotions:
-            self._emo_summary.setText(
-                tr("tts.emo_custom_count", count=len(self._emotions))
-            )
-            self._emo_summary.setStyleSheet("color: #0D9488; font-weight: 600;")
-        else:
-            self._emo_summary.setText(tr("tts.emo_follow_all"))
-            self._emo_summary.setStyleSheet("color: #6B7280;")
+            kept, emotions = dialog.get_result()
+            if not kept:
+                self._panel.log(tr("tts.no_text_for_edit"))
+                return
+            self._file_card.set_text(path, "\n".join(kept))
+            self._file_card.set_emotions(path, emotions)
 
     # ------------------------------------------------------------------ 启动校验
 
@@ -1596,6 +1600,10 @@ class TtsTaskWindow(TaskWindowBase):
             output_format=self._task_settings.output_format(),
             device=self._manager.device,
             emotions=emotions,
+            auto_accept_reviews=(
+                self._auto_accept_check is not None
+                and self._auto_accept_check.isChecked()
+            ),
             tts_model_dir=resource_manager.get_resource_path("tts") or "",
         )
 
@@ -1615,19 +1623,6 @@ class TtsTaskWindow(TaskWindowBase):
         if cfg.generate_srt:
             paths.append(str(item.workspace.tts_srt_path(cfg.lang_code)))
         return [p for p in paths if Path(p).is_file()]
-
-    def _on_stage_clicked(self, step_id: str) -> None:
-        """点击已完成的流程步骤：打开对应阶段的产物目录。"""
-        item = self._current_item()
-        if item is None:
-            return
-        if step_id == STAGE_TTS_MUX:
-            # 成品（音频 + 可选 SRT）在 03_封装输出 夹内
-            target = item.workspace.stage_dir(STAGE_TTS_MUX)
-        else:
-            target = item.workspace.stage_dir(step_id)
-        if Path(target).is_dir():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _release_resources(self) -> None:
         # 释放音频文件句柄（QMediaPlayer 停止后仍持有音源），

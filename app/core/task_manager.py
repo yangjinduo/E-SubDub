@@ -9,6 +9,11 @@ TaskManager 运行在主线程，持有当前 PipelineRunner（QThread）的引�
 runner 的信号经队列转发（带 task_id），主窗口任务列表与各任务窗口
 按 id 过滤刷新。窗口注册表（task_id → TaskWindow）用于审核对话框
 定位父窗口与任务窗口去重。
+
+任务列表持久化到用户配置目录的 tasks.json（队列快照，与工作夹内的
+manifest.json 职责不同）：队列结构/状态/进度每次变化即写盘；启动时
+restore_tasks() 恢复列表，上次运行中/排队中的任务标记"已中断"
+（终态，不自动执行，等待主窗口"继续执行"批量重入列）。
 """
 
 from __future__ import annotations
@@ -22,6 +27,12 @@ from PySide6.QtCore import QObject, Signal
 
 from app.core.i18n import tr
 from app.core.runner import PipelineRunner, ReviewResult, TaskConfig
+from app.core.task_store import (
+    item_to_record,
+    load_tasks,
+    record_to_item_data,
+    save_tasks,
+)
 from app.core.tts_runner import TtsRunner, TtsTaskConfig
 from app.core.workspace import STAGE_EXTRACT, STAGE_TTS_TEXT, Workspace
 
@@ -37,10 +48,13 @@ class TaskState:
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"  # 上次会话运行/排队中，应用退出遗留
 
     @classmethod
     def is_terminal(cls, state: str) -> bool:
-        return state in (cls.DONE, cls.FAILED, cls.CANCELLED)
+        return state in (
+            cls.DONE, cls.FAILED, cls.CANCELLED, cls.INTERRUPTED,
+        )
 
 
 @dataclass
@@ -89,6 +103,13 @@ class TaskManager(QObject):
         # 推理设备（"cuda"/"mps"/"cpu"，主窗口检测后更新；
         # 任务窗口构造 TaskConfig 时读取）
         self.device: str = "cpu"
+        # 队列快照持久化：结构/状态/进度/流程每次变化即写盘
+        # （日志不持久化；task_id 参数仅用于路由，写盘取全量列表）
+        for signal in (
+            self.task_added, self.task_removed, self.task_state_changed,
+            self.task_progress_changed, self.task_step_changed,
+        ):
+            signal.connect(lambda *_args: self._persist())
 
     # ------------------------------------------------------------------ 查询
 
@@ -138,6 +159,142 @@ class TaskManager(QObject):
     def has_active_tasks(self) -> bool:
         """是否有未终结任务（排队中/运行中/取消中）。"""
         return any(not TaskState.is_terminal(item.state) for item in self._tasks)
+
+    def has_resumable_tasks(self) -> bool:
+        """是否有可"继续执行"的任务（已中断/失败/已取消）。"""
+        return any(
+            item.state in (
+                TaskState.INTERRUPTED, TaskState.FAILED, TaskState.CANCELLED,
+            )
+            for item in self._tasks
+        )
+
+    # ------------------------------------------------------------------ 持久化/恢复
+
+    def _persist(self) -> None:
+        """把当前任务列表写入 tasks.json（队列快照）。"""
+        save_tasks([item_to_record(item) for item in self._tasks])
+
+    def restore_tasks(self) -> int:
+        """启动时从 tasks.json 恢复任务列表，返回恢复条数。
+
+        上次"运行中/排队中/取消中"的任务标记"已中断"（终态，不自动
+        执行，等待"继续执行"按钮批量重入列）；已完成/失败/已取消的
+        任务按原状态恢复（可双击查看结果或重试）。源媒体文件已不
+        存在的任务正常恢复，执行到对应阶段再报错。
+        """
+        restored = 0
+        for record in load_tasks():
+            data = record_to_item_data(record)
+            if data is None:
+                continue
+            config = data["config"]
+            state = data["state"]
+            if state in (
+                TaskState.QUEUED, TaskState.RUNNING, TaskState.CANCELLING,
+            ):
+                state = TaskState.INTERRUPTED
+            elif not TaskState.is_terminal(state):
+                continue  # 未知状态：忽略该条
+            if isinstance(config, TtsTaskConfig):
+                workspace = Workspace(
+                    config.output_dir, config.task_name,
+                    category=config.task_category, stem=config.task_name,
+                )
+            else:
+                workspace = Workspace(
+                    config.output_dir, config.media_path,
+                    category=config.task_category,
+                )
+            item = TaskItem(
+                id=f"task-{next(self._id_counter)}",
+                config=config, workspace=workspace, state=state,
+                progress=data["progress"], current_stage=data["current_stage"],
+                last_error=data["last_error"],
+            )
+            self._tasks.append(item)
+            self.task_added.emit(item.id)
+            restored += 1
+        if restored:
+            self._persist()  # 回写"已中断"等终态
+            logger.info("已恢复 %d 个任务（%s）", restored, self._tasks_file())
+        return restored
+
+    @staticmethod
+    def _tasks_file() -> str:
+        from app.core.task_store import tasks_json_path
+
+        return str(tasks_json_path())
+
+    def resume_unfinished(self) -> int:
+        """继续执行全部未完成任务（已中断/失败/已取消）：刷新资源路径后
+        批量重新入列（manifest 断点复用，已完成阶段自动跳过）。"""
+        resumed = 0
+        for item in list(self._tasks):
+            if item.state not in (
+                TaskState.INTERRUPTED, TaskState.FAILED, TaskState.CANCELLED,
+            ):
+                continue
+            self._refresh_config_resources(item)
+            item.state = TaskState.QUEUED
+            item.progress = 0
+            item.current_stage = ""
+            item.last_error = ""
+            self.task_state_changed.emit(item.id)
+            resumed += 1
+        if resumed:
+            self._start_next()
+        return resumed
+
+    def stop_queue(self) -> None:
+        """停止整个队列：取消全部排队任务并请求取消当前运行任务
+        （当前任务结束后不再自动开始后续；任务窗口的停止按钮仅停止单个
+        任务、队列继续，两者语义不同）。"""
+        for item in list(self._tasks):
+            if item.state == TaskState.QUEUED:
+                item.state = TaskState.CANCELLED
+                self.task_state_changed.emit(item.id)
+        current = self._current
+        if current is not None and current.state == TaskState.RUNNING:
+            current.state = TaskState.CANCELLING
+            self.task_state_changed.emit(current.id)
+            runner = self._runner
+            if runner is not None:
+                runner.cancel()
+
+    def _refresh_config_resources(self, item: TaskItem) -> None:
+        """按资源管理器当前状态刷新任务配置中的资源路径字段。
+
+        恢复的任务可能因资源目录迁移/重装导致快照中的 gguf/
+        llama-server/模型目录路径失效；仅在有新值时覆盖（资源缺失时
+        保留旧路径，执行到对应阶段自然报错）。设备统一跟随当前检测。
+        """
+        from app.pipeline.llm_engine import resolve_llama_server_exe
+        from app.resources.model import get_resource_manager
+
+        resource_manager = get_resource_manager()
+        cfg = item.config
+        cfg.device = self.device
+        updates = {
+            "asr_model_dir": resource_manager.get_resource_path("transcribe"),
+            "tts_model_dir": resource_manager.get_resource_path("tts"),
+        }
+        if isinstance(cfg, TaskConfig):
+            llm_dir = Path(resource_manager.get_resource_path("translate") or "")
+            gguf = next(llm_dir.glob("*.gguf"), None) if llm_dir.is_dir() else None
+            if gguf is not None:
+                updates["llm_model_path"] = str(gguf)
+            server = resolve_llama_server_exe()
+            if server:
+                updates["llm_server_exe"] = server
+            homura_dir = resource_manager.get_resource_path("homura") or ""
+            if homura_dir:
+                found = next(Path(homura_dir).glob("*.gguf"), None)
+                if found is not None:
+                    updates["homura_model_path"] = str(found)
+        for key, value in updates.items():
+            if value and hasattr(cfg, key):
+                setattr(cfg, key, value)
 
     # ------------------------------------------------------------------ 窗口注册表
 
@@ -197,6 +354,7 @@ class TaskManager(QObject):
         item = self.get_task(task_id)
         if item is None or not TaskState.is_terminal(item.state):
             return
+        self._refresh_config_resources(item)
         item.state = TaskState.QUEUED
         item.progress = 0
         item.current_stage = ""
@@ -232,10 +390,12 @@ class TaskManager(QObject):
             item.workspace.clean_temp()
 
     def shutdown(self) -> None:
-        """应用退出前停止当前 runner（排队任务保留在列表中不再执行）。"""
+        """应用退出前停止当前 runner 并同步保存队列快照（排队任务保留
+        在列表中不再执行，下次启动按"已中断"恢复）。"""
         runner = self._runner
         self._runner = None
         self._current = None
+        self._persist()
         if runner is None or not runner.isRunning():
             return
         runner.cancel()
@@ -275,10 +435,10 @@ class TaskManager(QObject):
         runner.log_emitted.connect(
             lambda message, it=item: self.task_log_emitted.emit(it.id, message)
         )
-        if isinstance(runner, PipelineRunner):
-            runner.review_requested.connect(
-                lambda payload, it=item: self._on_review_requested(it, payload)
-            )
+        # 人工审核/复核暂停点（PipelineRunner 与 TtsRunner 均支持）
+        runner.review_requested.connect(
+            lambda payload, it=item: self._on_review_requested(it, payload)
+        )
         runner.finished_ok.connect(
             lambda result, it=item: self._on_finished_ok(it, result)
         )
@@ -371,6 +531,7 @@ class TaskManager(QObject):
         from app.ui.dialogs.asr_review_dialog import AsrReviewDialog
         from app.ui.dialogs.translation_review_dialog import TranslationReviewDialog
         from app.ui.dialogs.tts_review_dialog import TtsReviewDialog
+        from app.ui.dialogs.tts_voice_review_dialog import TtsVoiceReviewDialog
         from app.ui.dialogs.voice_manage_dialog import VoiceManageDialog
 
         runner = self._runner
@@ -394,6 +555,13 @@ class TaskManager(QObject):
             # regen_hook：对话框内即时重生成回调（runner 线程阻塞等待，engine 空闲可安全调用）
             dialog = TtsReviewDialog(
                 payload.segments, parent=parent, regen_hook=payload.regen_hook,
+            )
+        elif payload.kind == "tts_voice":
+            # 文本转语音复核：rows 的 file 为工作夹相对路径，传目录解析；
+            # regen_hook 同上（runner 线程阻塞等待，引擎可安全复用）
+            dialog = TtsVoiceReviewDialog(
+                payload.segments, ws_dir=str(item.workspace.dir),
+                parent=parent, regen_hook=payload.regen_hook,
             )
         else:
             runner.submit_review(None)

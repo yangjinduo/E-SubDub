@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from platformdirs import user_config_dir
@@ -199,6 +200,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # 文本转语音任务的步骤
         "step.tts_text": "文本处理",
         "step.tts_synth": "语音合成",
+        "step.tts_voice_review": "语音复核",
         "step.tts_mux": "封装输出",
         # ---- 设置窗口 ----
         "settings.title": "设置",
@@ -317,6 +319,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "queue.state.done": "已完成",
         "queue.state.failed": "失败",
         "queue.state.cancelled": "已取消",
+        "queue.state.interrupted": "已中断",
+        "queue.resume": "继续",
+        "queue.stop": "停止",
+        "queue.resume_title": "继续执行",
+        "queue.resume_confirm": (
+            "将把 {count} 个未完成的任务重新入列执行（已完成的流程自动跳过）。"
+            "确定继续吗？"
+        ),
+        "queue.resume_started": "已入列 {count} 个任务，等待执行。",
+        "queue.resume_none": "没有可继续执行的任务。",
         "queue.menu.cancel": "取消排队",
         "queue.menu.retry": "重试任务",
         "queue.menu.cleanup": "清理中间文件",
@@ -369,13 +381,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts.format.mp3": "MP3 通用",
         "tts.format.m4a": "M4A（AAC）",
         "tts.format.flac": "FLAC 无损",
-        "tts.emo_customize": "情绪定制…",
+        "tts.edit": "编辑…",
+        "tts.col.edit": "编辑",
         "tts.emo_follow_all": "跟随参考音频",
         "tts.emo_custom_count": "{count} 句已定制",
-        "tts.emo_edit_tip": "点击修改该文件的情绪定制",
+        "tts.edit_tip": "点击编辑该文件的句子与情绪",
         "tts.polyphone_hint": "多音字可用 <文字|发音> 标注，如 <行|XING2>",
         "tts.name_follow_files": "多文件模式下任务名跟随文件名，不可手动输入",
-        "tts.no_text_for_emo": "请先输入文本（分句后为空）。",
+        "tts.no_text_for_edit": "请先输入文本（分句后为空）。",
         "tts.name_required": "请填写任务名。",
         "tts.text_required": "请输入需要合成语音的文本。",
         "tts.ref_required": "请选择参考音频（声音克隆的音色来源）。",
@@ -399,12 +412,18 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "emo.disgusted": "厌恶",
         "emo.melancholic": "低落",
         "emo.surprised": "惊讶",
-        # ---- 情绪定制对话框 ----
-        "emo_dialog.title": "情绪定制",
-        "emo_dialog.tip": "逐句选择合成情绪（默认跟随参考音频的语气情绪）；各情绪以不同颜色显示。",
-        "emo_dialog.col.index": "序号",
-        "emo_dialog.col.text": "内容",
-        "emo_dialog.col.emotion": "情绪",
+        # ---- 编辑对话框（文本转语音：改句 / 选情绪 / 删句） ----
+        "edit_dialog.title": "编辑",
+        "edit_dialog.tip": (
+            "直接修改内容列文本可改写句子；逐句选择合成情绪（默认跟随参考音频）；"
+            "不需要的句子点删除移出（可再点恢复）。"
+        ),
+        "edit_dialog.col.index": "序号",
+        "edit_dialog.col.text": "内容",
+        "edit_dialog.col.emotion": "情绪",
+        "edit_dialog.col.delete": "删除",
+        "edit_dialog.restore": "恢复",
+        "edit_dialog.deleted": "（已删除）",
         # ---- 文本转语音流程引擎 ----
         "tts_runner.started": "开始文本转语音：{name}",
         "tts_runner.no_text": "文本分句后为空，无法合成。",
@@ -418,6 +437,33 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts_runner.ffmpeg_missing": "未找到内置 FFmpeg，无法转换输出格式。",
         "tts_runner.format_failed": "转换 {fmt} 失败：{error}",
         "tts_runner.audio_done": "音频已生成：{path}（约 {seconds} 秒）",
+        "tts_runner.review_start": "语音复核：试听全部语音，可删除或重生成不满意的句子。",
+        "tts_runner.review_auto": "已勾选自动通过人工审核，跳过语音复核。",
+        "tts_runner.review_done": "语音复核完成：保留 {kept} 句，删除 {deleted} 句。",
+        "tts_runner.all_deleted": "全部句子已在复核中删除，没有可生成的成品。",
+        # ---- 语音复核对话框（文本转语音） ----
+        "tts_voice_review.title": "复核语音",
+        "tts_voice_review.heading": "复核语音",
+        "tts_voice_review.tip": "试听各句合成结果；不满意的句子可重生成，或点击情绪列直接更换情绪（自动重新生成该句），不需要的句子可删除（不进入成品）。已删除的句子可再点恢复。",
+        "tts_voice_review.column_index": "序号",
+        "tts_voice_review.column_time": "时间",
+        "tts_voice_review.column_content": "内容",
+        "tts_voice_review.column_emotion": "情绪",
+        "tts_voice_review.column_listen": "试听",
+        "tts_voice_review.column_delete": "删除",
+        "tts_voice_review.column_regen": "重生成",
+        "tts_voice_review.listen": "试听",
+        "tts_voice_review.continuous_listen": "连续试听",
+        "tts_voice_review.restore": "恢复",
+        "tts_voice_review.regenerate_this": "重新生成",
+        "tts_voice_review.emotion_tooltip": "点击更换情绪（自动重新生成该句）",
+        "tts_voice_review.regen_waiting": "等待重生成",
+        "tts_voice_review.regen_running": "生成中…",
+        "tts_voice_review.regen_progress": "生成中… {percent}%",
+        "tts_voice_review.regen_failed_title": "重生成失败",
+        "tts_voice_review.regen_failed": "第 {index} 句重生成失败：{error}",
+        "tts_voice_review.regen_unavailable": "TTS 引擎不可用，无法重生成",
+        "tts_voice_review.stats": "共 {total} 句，已删除 {deleted} 句 / 待重生成 {pending} 句",
         # ---- 系统监视栏 ----
         "monitor.cpu": "CPU",
         "monitor.memory": "内存",
@@ -439,6 +485,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "viewer.video.play_error": "视频播放失败：{error}\n请通过“打开文件夹”查看文件。",
         "viewer.tts.original": "原声",
         "viewer.tts.dubbed": "配音",
+        "viewer.continue": "继续",
+        "viewer.continue_title": "继续执行",
+        "viewer.continue_confirm": (
+            "即将从「{stage}」开始重新执行，该流程及其之后生成的内容将被覆盖。"
+            "确定开始吗？"
+        ),
+        "viewer.subtitle_panel": "字幕",
+        "viewer.subtitle_none": "未生成字幕",
+        "viewer.tts.ref_audio": "参考音频",
+        "viewer.tts.change_ref": "更换参考音频",
+        "viewer.tts.change_ref_title": "选择参考音频文件",
+        "viewer.tts.ref_changed": "参考音频已更换：下次执行时将从头重新合成。",
+        "viewer.tts.final_audio": "成品音频",
+        "viewer.tts.lang": "语言：{lang}",
         # ---- 音频试听条 ----
         "player.play": "试听",
         "player.stop": "停止",
@@ -618,6 +678,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # Steps of the text-to-speech task
         "step.tts_text": "Text processing",
         "step.tts_synth": "Synthesize speech",
+        "step.tts_voice_review": "Voice review",
         "step.tts_mux": "Mux output",
         # ---- Settings dialog ----
         "settings.title": "Settings",
@@ -736,6 +797,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "queue.state.done": "Done",
         "queue.state.failed": "Failed",
         "queue.state.cancelled": "Cancelled",
+        "queue.state.interrupted": "Interrupted",
+        "queue.resume": "Resume",
+        "queue.stop": "Stop",
+        "queue.resume_title": "Resume tasks",
+        "queue.resume_confirm": (
+            "Re-queue {count} unfinished task(s) (finished stages are skipped "
+            "automatically). Continue?"
+        ),
+        "queue.resume_started": "{count} task(s) re-queued, waiting to run.",
+        "queue.resume_none": "No tasks to resume.",
         "queue.menu.cancel": "Cancel queueing",
         "queue.menu.retry": "Retry",
         "queue.menu.cleanup": "Clean up temp files",
@@ -788,13 +859,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts.format.mp3": "MP3 general",
         "tts.format.m4a": "M4A (AAC)",
         "tts.format.flac": "FLAC lossless",
-        "tts.emo_customize": "Customize emotions…",
+        "tts.edit": "Edit…",
+        "tts.col.edit": "Edit",
         "tts.emo_follow_all": "Follow reference audio",
         "tts.emo_custom_count": "{count} sentences customized",
-        "tts.emo_edit_tip": "Click to customize emotions for this file",
+        "tts.edit_tip": "Click to edit sentences and emotions of this file",
         "tts.polyphone_hint": "Mark polyphones with <text|pinyin>, e.g. <行|XING2>",
         "tts.name_follow_files": "In multi-file mode task names follow file names",
-        "tts.no_text_for_emo": "Please enter some text first (sentence split is empty).",
+        "tts.no_text_for_edit": "Please enter some text first (sentence split is empty).",
         "tts.name_required": "Please enter a task name.",
         "tts.text_required": "Please enter the text to synthesize.",
         "tts.ref_required": "Please choose reference audio (the voice source for cloning).",
@@ -818,12 +890,19 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "emo.disgusted": "Disgusted",
         "emo.melancholic": "Melancholic",
         "emo.surprised": "Surprised",
-        # ---- Emotion customization dialog ----
-        "emo_dialog.title": "Customize emotions",
-        "emo_dialog.tip": "Pick the emotion per sentence (default: follow the reference audio); emotions are color-coded.",
-        "emo_dialog.col.index": "No.",
-        "emo_dialog.col.text": "Text",
-        "emo_dialog.col.emotion": "Emotion",
+        # ---- Edit dialog (text to speech: edit text / pick emotion / delete) ----
+        "edit_dialog.title": "Edit",
+        "edit_dialog.tip": (
+            "Edit the text column to rewrite a sentence; pick the emotion per "
+            "sentence (default: follow the reference audio); delete sentences "
+            "you do not need (click again to restore)."
+        ),
+        "edit_dialog.col.index": "No.",
+        "edit_dialog.col.text": "Text",
+        "edit_dialog.col.emotion": "Emotion",
+        "edit_dialog.col.delete": "Delete",
+        "edit_dialog.restore": "Restore",
+        "edit_dialog.deleted": "(deleted)",
         # ---- Text-to-speech pipeline engine ----
         "tts_runner.started": "Text-to-speech started: {name}",
         "tts_runner.no_text": "Sentence split is empty; nothing to synthesize.",
@@ -837,6 +916,33 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts_runner.ffmpeg_missing": "Built-in FFmpeg not found; cannot convert the output format.",
         "tts_runner.format_failed": "Failed to convert to {fmt}: {error}",
         "tts_runner.audio_done": "Audio generated: {path} (about {seconds}s)",
+        "tts_runner.review_start": "Voice review: listen to each sentence; regenerate or delete the ones you are not satisfied with.",
+        "tts_runner.review_auto": "Auto-accept reviews is checked; voice review skipped.",
+        "tts_runner.review_done": "Voice review done: {kept} kept, {deleted} deleted.",
+        "tts_runner.all_deleted": "All sentences were deleted during review; nothing to generate.",
+        # ---- Voice review dialog (text to speech) ----
+        "tts_voice_review.title": "Review speech",
+        "tts_voice_review.heading": "Review speech",
+        "tts_voice_review.tip": "Listen to each sentence; regenerate the unsatisfactory ones, click the Emotion cell to change its emotion (the sentence is regenerated automatically), and delete the ones you do not need (they will not enter the final output). Deleted sentences can be restored.",
+        "tts_voice_review.column_index": "No.",
+        "tts_voice_review.column_time": "Time",
+        "tts_voice_review.column_content": "Text",
+        "tts_voice_review.column_emotion": "Emotion",
+        "tts_voice_review.column_listen": "Listen",
+        "tts_voice_review.column_delete": "Delete",
+        "tts_voice_review.column_regen": "Regenerate",
+        "tts_voice_review.listen": "Listen",
+        "tts_voice_review.continuous_listen": "Play all",
+        "tts_voice_review.restore": "Restore",
+        "tts_voice_review.regenerate_this": "Regenerate",
+        "tts_voice_review.emotion_tooltip": "Click to change the emotion (regenerates this sentence)",
+        "tts_voice_review.regen_waiting": "Waiting",
+        "tts_voice_review.regen_running": "Generating…",
+        "tts_voice_review.regen_progress": "Generating… {percent}%",
+        "tts_voice_review.regen_failed_title": "Regeneration failed",
+        "tts_voice_review.regen_failed": "Sentence {index} failed to regenerate: {error}",
+        "tts_voice_review.regen_unavailable": "TTS engine unavailable; cannot regenerate",
+        "tts_voice_review.stats": "{total} sentences, {deleted} deleted / {pending} pending regeneration",
         # ---- System monitor bar ----
         "monitor.cpu": "CPU",
         "monitor.memory": "Memory",
@@ -858,6 +964,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "viewer.video.play_error": "Video playback failed: {error}\nUse \"Open folder\" to view the file.",
         "viewer.tts.original": "Original speech",
         "viewer.tts.dubbed": "Dubbing",
+        "viewer.continue": "Continue",
+        "viewer.continue_title": "Continue task",
+        "viewer.continue_confirm": (
+            "The task will re-run from \"{stage}\"; this stage and everything "
+            "after it will be overwritten. Continue?"
+        ),
+        "viewer.subtitle_panel": "Subtitles",
+        "viewer.subtitle_none": "No subtitles generated",
+        "viewer.tts.ref_audio": "Reference audio",
+        "viewer.tts.change_ref": "Change reference audio",
+        "viewer.tts.change_ref_title": "Choose a reference audio file",
+        "viewer.tts.ref_changed": "Reference audio changed: the task will synthesize from scratch next time.",
+        "viewer.tts.final_audio": "Final audio",
+        "viewer.tts.lang": "Language: {lang}",
         # ---- Audio player bar ----
         "player.play": "Play",
         "player.stop": "Stop",
@@ -872,9 +992,40 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
 _current_language: str = DEFAULT_LANGUAGE
 
 
+_legacy_migrated = False
+
+
+def _config_dir() -> Path:
+    """用户配置目录（Windows %LOCALAPPDATA%/MinimSubDub、
+    macOS ~/Library/Application Support/MinimSubDub）。
+
+    appauthor=False：platformdirs 在 Windows 上默认把 appname 当作
+    appauthor 再拼一层目录（MinimSubDub/MinimSubDub），显式关闭。
+    首次调用时把旧版双层目录里的 settings.json / tasks.json 迁移上来。
+    """
+    global _legacy_migrated
+    root = Path(user_config_dir(APP_NAME, appauthor=False))
+    if not _legacy_migrated:
+        _legacy_migrated = True
+        legacy = root / APP_NAME
+        if legacy.is_dir():
+            for name in ("settings.json", "tasks.json"):
+                src, dst = legacy / name, root / name
+                if src.is_file() and not dst.is_file():
+                    try:
+                        os.replace(src, dst)
+                    except OSError as exc:
+                        logger.warning("迁移旧配置 %s 失败：%s", src, exc)
+            try:
+                legacy.rmdir()  # 仅当已清空时删除
+            except OSError:
+                pass
+    return root
+
+
 def _settings_path() -> Path:
     """用户配置文件路径（跨平台用户配置目录）。"""
-    return Path(user_config_dir(APP_NAME)) / "settings.json"
+    return _config_dir() / "settings.json"
 
 
 def _load_language() -> str:

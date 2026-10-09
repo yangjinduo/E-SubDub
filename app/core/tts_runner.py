@@ -8,12 +8,16 @@
 02 语音合成 → IndexTTS-2.5 逐句克隆合成（自由时长：不向原片时长对齐，
     只裁首尾静音），句级断点续跑（synthesis.json 已有且 WAV 存在的句子
     直接复用）；情绪按句定制（emo_vector），语速经 duration_factor=1/语速；
-03 格式转换 → 拼接句间静音（200ms）→ ffmpeg 转 WAV/MP3/M4A/FLAC →
-    写 SRT 字幕（时间轴 = 逐句实际时长累计，绝不漂移）。
+03 语音复核 → 独立人工暂停点：试听逐句结果，可删除句子（不进成品，
+    WAV 保留可恢复）与即时重生成（复用已加载的 TTS 引擎）；结果存
+    03_语音复核/reviewed.json；
+04 封装输出 → 拼接复核保留句与句间静音（200ms）→ ffmpeg 转
+    WAV/MP3/M4A/FLAC → 写 SRT 字幕（时间轴 = 逐句实际时长累计，绝不漂移）。
 
-成品在工作夹根目录：{任务名}.{格式} 与 {任务名}.{语种大写}.srt。
-设置快照（manifest 标记）：文本/语言/语速/情绪/参考音频任一变化 →
-三阶段全部重跑；仅输出格式 / SRT 开关变化 → 只重跑格式转换。
+成品在 04_封装输出 夹：{任务名}.{格式} 与 {任务名}.{语种大写}.srt。
+设置快照（manifest 标记）：文本/语速/情绪/参考音频/模型任一变化，或
+实际合成语言变化 → 四阶段全部重跑；仅输出格式 / SRT 开关变化 →
+只重跑封装输出。
 """
 
 from __future__ import annotations
@@ -30,11 +34,14 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from app.core.i18n import tr
+from app.core.runner import ReviewPayload, ReviewResult
 from app.core.segment import Segment
 from app.core.workspace import (
     STAGE_TTS_MUX,
     STAGE_TTS_SYNTH,
     STAGE_TTS_TEXT,
+    STAGE_TTS_VOICE_REVIEW,
+    TTS_TASK_STAGE_ORDER,
     Workspace,
 )
 from app.pipeline.base import ProgressCallback
@@ -61,6 +68,10 @@ INTERVAL_SILENCE_SEC = 0.2
 # TTS 输出采样率（IndexTTS-2.5 固定 22050Hz PCM16）
 TTS_SAMPLE_RATE = 22050
 
+# TTS 流程布局版本：2 = 四阶段（新增 03_语音复核，封装输出 03→04）；
+# 旧版（三阶段）工作夹在 _execute 开头全量重跑（产物目录已变）
+TTS_FLOW_VERSION = 2
+
 
 def emotion_vector(key: str | None) -> list[float] | None:
     """情绪 key → 8 维 one-hot 权重向量；None/未知 key 返回 None（跟随参考音频）。"""
@@ -69,6 +80,38 @@ def emotion_vector(key: str | None) -> list[float] | None:
     vector = [0.0] * len(EMOTION_KEYS)
     vector[EMOTION_KEYS.index(key)] = 1.0
     return vector
+
+
+def normalize_ref_audio(src: Path, out: Path) -> None:
+    """参考音频规范化为 22050Hz 单声道 PCM16 WAV（ffmpeg 优先，回退 librosa）。
+
+    runner 的文本处理阶段与流程查看窗口的"更换参考音频"共用。
+    """
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    from app.core.ffmpeg import get_ffmpeg_path
+
+    ffmpeg = get_ffmpeg_path()
+    if ffmpeg:
+        cmd = [
+            ffmpeg, "-y", "-i", str(src),
+            "-ac", "1", "-ar", str(TTS_SAMPLE_RATE),
+            "-sample_fmt", "s16", str(out),
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, timeout=120, check=False,
+        )
+        if proc.returncode == 0 and out.is_file():
+            return
+        logger.warning("ffmpeg 参考音频规范化失败，回退 librosa: %s",
+                      proc.stderr[-300:] if proc.stderr else "")
+
+    # 回退：librosa 解码重采样（ffmpeg 不可用/失败时）
+    import librosa
+    import soundfile as sf
+
+    wav, _sr = librosa.load(str(src), sr=TTS_SAMPLE_RATE, mono=True)
+    sf.write(str(out), wav, TTS_SAMPLE_RATE, subtype="PCM_16")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -98,6 +141,7 @@ class TtsTaskConfig:
     device: str                  # "cuda"/"mps"/"cpu"
     task_category: str = "文本转语音"  # 工作夹名后缀（固定中文）
     emotions: dict = field(default_factory=dict)  # {句子文本: 情绪 key}
+    auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
     tts_model_dir: str = ""
 
 
@@ -115,12 +159,18 @@ class _TtsCancelled(Exception):
 
 
 class TtsRunner(QThread):
-    """文本转语音编排线程（信号接口与 PipelineRunner 一致，无审核暂停点）。
+    """文本转语音编排线程（信号接口与 PipelineRunner 一致）。
+
+    语音复核为独立人工暂停点：runner 在工作线程发射 review_requested 后
+    阻塞在 threading.Event，UI 线程弹对话框并调用 submit_review() 回传
+    结果；回传 None / accepted=False 视为取消，已完成阶段的产物保留
+    （manifest 记录），下次运行自动复用。
 
     信号：
         step_state_changed(str, str): 步骤状态变化（step_id, active/done）
         progress_changed(int): 总进度 0-100
         log_emitted(str): 追加日志
+        review_requested(object): 请求语音复核（ReviewPayload，kind=tts_voice）
         finished_ok(object): 全部完成（TtsRunResult）
         failed(str): 出错（错误消息）
         cancelled(): 用户取消
@@ -129,6 +179,7 @@ class TtsRunner(QThread):
     step_state_changed = Signal(str, str)
     progress_changed = Signal(int)
     log_emitted = Signal(str)
+    review_requested = Signal(object)
     finished_ok = Signal(object)
     failed = Signal(str)
     cancelled = Signal()
@@ -144,11 +195,14 @@ class TtsRunner(QThread):
             category=config.task_category, stem=config.task_name,
         )
         self._cancel = threading.Event()
-        # 进度权重（固定三阶段）
+        self._review_event = threading.Event()
+        self._review_result: ReviewResult | None = None
+        # 进度权重（固定四阶段）
         self._weights: list[tuple[str, float]] = [
             (STAGE_TTS_TEXT, 2.0),
             (STAGE_TTS_SYNTH, 90.0),
-            (STAGE_TTS_MUX, 8.0),
+            (STAGE_TTS_VOICE_REVIEW, 1.0),
+            (STAGE_TTS_MUX, 7.0),
         ]
         self._total_weight = sum(w for _s, w in self._weights)
         self._progress_base = 0.0
@@ -156,9 +210,16 @@ class TtsRunner(QThread):
 
     # ------------------------------------------------------------------ 对外
 
+    def submit_review(self, result: ReviewResult | None) -> None:
+        """UI 线程回传复核结果；None 或 accepted=False 取消任务。"""
+        self._review_result = result
+        self._review_event.set()
+
     def cancel(self) -> None:
-        """请求取消（合成中的引擎在进度回调检查点退出，worker 随 unload 结束）。"""
+        """请求取消（合成中的引擎在进度回调检查点退出，worker 随 unload 结束；
+        复核暂停中同时唤醒等待，按已取消收场）。"""
         self._cancel.set()
+        self._review_event.set()
 
     @property
     def workspace(self) -> Workspace:
@@ -181,17 +242,27 @@ class TtsRunner(QThread):
 
     # ------------------------------------------------------------------ 主流程
 
-    def _execute(self) -> TtsRunResult:  # noqa: C901 - 三阶段主流程
+    def _execute(self) -> TtsRunResult:  # noqa: C901 - 四阶段主流程
         cfg = self._cfg
         self._log(tr("tts_runner.started", name=cfg.task_name))
 
-        # 设置快照对比：影响合成结果的输入变化 → 三阶段全量重跑
+        # 流程布局版本：三阶段（03_封装输出）→ 四阶段（03_语音复核 +
+        # 04_封装输出）后旧工作夹全量重跑（产物目录已变）
+        if self._ws.stage_flag("tts_flow_version") != TTS_FLOW_VERSION:
+            self._ws.reset_stages(list(TTS_TASK_STAGE_ORDER))
+            self._ws.set_stage_flag("tts_flow_version", TTS_FLOW_VERSION)
+
+        # 设置快照对比：影响合成结果的输入变化 → 四阶段全量重跑。
+        # 语言单独对比（auto 识别结果回写 cfg 后与原始选择不一致，不能
+        # 直接进指纹）：实际合成语言变化同样全量重跑
         fp = self._input_fingerprint()
         if self._ws.stage_flag("tts_input_fp") != fp:
-            self._ws.reset_stages([
-                STAGE_TTS_TEXT, STAGE_TTS_SYNTH, STAGE_TTS_MUX,
-            ])
+            self._ws.reset_stages(list(TTS_TASK_STAGE_ORDER))
             self._ws.set_stage_flag("tts_input_fp", fp)
+        lang_effective = self._effective_lang()
+        recorded_lang = self._ws.stage_flag("tts_synth_lang")
+        if lang_effective and recorded_lang and lang_effective != recorded_lang:
+            self._ws.reset_stages(list(TTS_TASK_STAGE_ORDER))
         # 仅影响成品形态的设置变化 → 只重跑封装输出
         if self._ws.stage_flag("tts_output_fmt") != cfg.output_format:
             self._ws.reset_stages([STAGE_TTS_MUX])
@@ -224,28 +295,48 @@ class TtsRunner(QThread):
                     for s in sentences
                 ],
             })
+            self._ws.set_stage_flag("tts_synth_lang", lang)
             self._ws.mark_done(STAGE_TTS_TEXT)
             self._stage_end(STAGE_TTS_TEXT)
         self._check()
         self._log(tr("tts_runner.sentences", count=len(sentences),
                      lang=self._lang_name(lang)))
 
-        # 2. 语音合成（逐句克隆，断点按句粒度复用）
+        # 2. 语音合成（逐句克隆，断点按句粒度复用；引擎保持加载供复核复用）
         self._stage_begin(STAGE_TTS_SYNTH)
+        tts_ctx: dict = {}
         if self._ws.is_done(STAGE_TTS_SYNTH):
             data = self._read_json(self._ws.tts_synth_json)
             entries = data.get("entries") or []
             self._skip_stage(STAGE_TTS_SYNTH)
         else:
-            entries = self._run_synth(sentences, lang)
-            self._write_json(self._ws.tts_synth_json, {"entries": entries})
-            self._ws.mark_done(STAGE_TTS_SYNTH)
-            self._stage_end(STAGE_TTS_SYNTH)
+            entries, tts_ctx = self._run_synth(sentences, lang)
         self._check()
         if len(entries) != len(sentences):
             raise RuntimeError(tr("tts_runner.synth_incomplete"))
 
-        # 3. 封装输出：拼接 + 静音 + 转码 + SRT，成品直落 03_封装输出 夹
+        # 3. 语音复核（试听/删除/重生成，独立暂停点；产物存 03_语音复核）
+        self._stage_begin(STAGE_TTS_VOICE_REVIEW)
+        if self._ws.is_done(STAGE_TTS_VOICE_REVIEW):
+            reviewed = self._read_json(
+                self._ws.tts_voice_reviewed_json,
+            ).get("entries") or []
+            self._skip_stage(STAGE_TTS_VOICE_REVIEW)
+        else:
+            reviewed = self._run_voice_review(sentences, entries, tts_ctx, lang)
+            # 复核改过删除标记/重生成时长：封装输出产物失效重跑
+            if any(
+                bool(row.get("deleted"))
+                or float(row.get("duration") or 0.0)
+                != float(entries[i].get("duration") or 0.0)
+                for i, row in enumerate(reviewed)
+            ):
+                self._ws.reset_stages([STAGE_TTS_MUX])
+        self._check()
+        # 复核阶段结束：TTS 引擎统一释放（合成与复核两阶段共用）
+        self._release_tts_engine(tts_ctx)
+
+        # 4. 封装输出：拼接复核保留句 + 静音 + 转码 + SRT，成品直落 04_封装输出 夹
         self._stage_begin(STAGE_TTS_MUX)
         srt_out = ""
         if self._ws.is_done(STAGE_TTS_MUX):
@@ -255,7 +346,10 @@ class TtsRunner(QThread):
                 srt_out = str(self._ws.tts_srt_path(lang))
             self._skip_stage(STAGE_TTS_MUX)
         else:
-            audio_out, srt_out = self._run_mux(sentences, entries, lang)
+            kept = [r for r in reviewed if not r.get("deleted")]
+            if not kept:
+                raise RuntimeError(tr("tts_runner.all_deleted"))
+            audio_out, srt_out = self._run_mux(kept, lang)
         self._check()
 
         self.progress_changed.emit(100)
@@ -291,37 +385,16 @@ class TtsRunner(QThread):
         return detected
 
     def _normalize_ref_audio(self) -> None:
-        """参考音频规范化为 22050Hz 单声道 PCM16 WAV（ffmpeg 优先，缺失回退 librosa）。"""
-        src = Path(self._cfg.ref_audio_path)
-        out = self._ws.tts_ref_audio
-        out.parent.mkdir(parents=True, exist_ok=True)
+        """参考音频规范化（模块级 normalize_ref_audio 的薄封装）。"""
+        normalize_ref_audio(Path(self._cfg.ref_audio_path), self._ws.tts_ref_audio)
 
-        from app.core.ffmpeg import get_ffmpeg_path
+    def _run_synth(self, sentences: list[dict], lang: str) -> tuple[list[dict], dict]:
+        """逐句合成（自由时长），返回 (逐句结果, 复核上下文)；句级断点复用。
 
-        ffmpeg = get_ffmpeg_path()
-        if ffmpeg:
-            cmd = [
-                ffmpeg, "-y", "-i", str(src),
-                "-ac", "1", "-ar", str(TTS_SAMPLE_RATE),
-                "-sample_fmt", "s16", str(out),
-            ]
-            proc = subprocess.run(
-                cmd, capture_output=True, timeout=120, check=False,
-            )
-            if proc.returncode == 0 and out.is_file():
-                return
-            logger.warning("ffmpeg 参考音频规范化失败，回退 librosa: %s",
-                          proc.stderr[-300:] if proc.stderr else "")
-
-        # 回退：librosa 解码重采样（ffmpeg 不可用/失败时）
-        import librosa
-        import soundfile as sf
-
-        wav, _sr = librosa.load(str(src), sr=TTS_SAMPLE_RATE, mono=True)
-        sf.write(str(out), wav, TTS_SAMPLE_RATE, subtype="PCM_16")
-
-    def _run_synth(self, sentences: list[dict], lang: str) -> list[dict]:
-        """逐句合成（自由时长），返回 [{file, duration}]；句级断点复用。"""
+        合成完成后引擎保持加载（语音复核的即时重生成复用，避免重复
+        加载 10GB 级模型），由复核阶段结束后统一释放；异常/取消时就地
+        卸载后上抛。
+        """
         from app.pipeline.tts import TTSEngine, TTSLoadMemoryError
 
         cfg = self._cfg
@@ -420,22 +493,29 @@ class TtsRunner(QThread):
                 engine.load(cfg.tts_model_dir, device="cpu",
                             progress=_load_progress)
                 _synth_all(engine)
-        finally:
-            engine.unload()  # 纯 TTS 任务无复核阶段：合完即释放
+            result = [
+                {
+                    "file": (wav_dir / f"{i:04d}.wav")
+                    .relative_to(self._ws.dir).as_posix(),
+                    "duration": durations[i],
+                }
+                for i in range(total)
+            ]
+            self._write_json(self._ws.tts_synth_json, {"entries": result})
+            self._ws.mark_done(STAGE_TTS_SYNTH)
+            self._stage_end(STAGE_TTS_SYNTH)
+            # 引擎保持加载：语音复核的即时重生成复用（复核阶段结束后释放）
+            return result, {"engine": engine}
+        except BaseException:
+            engine.unload()  # 合成中断：引擎无人接手释放，就地卸载
+            raise
 
-        return [
-            {
-                "file": (wav_dir / f"{i:04d}.wav")
-                .relative_to(self._ws.dir).as_posix(),
-                "duration": durations[i],
-            }
-            for i in range(total)
-        ]
+    def _run_mux(self, rows: list[dict], lang: str) -> tuple[str, str]:
+        """拼接句间静音 → 转码到目标格式 → 写 SRT；成品直落 04_封装输出 夹。
 
-    def _run_mux(
-        self, sentences: list[dict], entries: list[dict], lang: str,
-    ) -> tuple[str, str]:
-        """拼接句间静音 → 转码到目标格式 → 写 SRT；成品直落 03_封装输出 夹。"""
+        rows 为语音复核保留的句子（已过滤删除标记，含 file/duration/text）；
+        时间轴 = 各句实际时长顺序累计（绝不漂移）。
+        """
         import numpy as np
         import soundfile as sf
 
@@ -450,9 +530,9 @@ class TtsRunner(QThread):
         silence = np.zeros(int(INTERVAL_SILENCE_SEC * TTS_SAMPLE_RATE),
                            dtype="float32")
         cursor = 0.0
-        for i, entry in enumerate(entries):
+        for i, row in enumerate(rows):
             wav, sr = sf.read(
-                str(self._ws.dir / entry["file"]), dtype="float32",
+                str(self._ws.dir / row["file"]), dtype="float32",
                 always_2d=True,
             )
             if sr != TTS_SAMPLE_RATE:
@@ -462,7 +542,7 @@ class TtsRunner(QThread):
             timeline.append((cursor, cursor + duration))
             pieces.append(piece)
             cursor += duration + INTERVAL_SILENCE_SEC
-            if i < len(entries) - 1:
+            if i < len(rows) - 1:
                 pieces.append(silence)
         full = np.concatenate(pieces) if pieces else np.zeros(0, "float32")
 
@@ -496,8 +576,8 @@ class TtsRunner(QThread):
         if cfg.generate_srt:
             srt_out = str(self._ws.tts_srt_path(lang))
             segs = []
-            for sent, (start, end) in zip(sentences, timeline):
-                text = sent["text"]
+            for row, (start, end) in zip(rows, timeline):
+                text = row["text"]
                 segs.append(Segment(
                     start=round(start, 3), end=round(end, 3),
                     text=text, target_text=text,
@@ -517,20 +597,147 @@ class TtsRunner(QThread):
         self._stage_end(STAGE_TTS_MUX)
         return str(final_audio), srt_out
 
+    # ------------------------------------------------------------------ 语音复核
+
+    def _run_voice_review(
+        self, sentences: list[dict], entries: list[dict],
+        tts_ctx: dict, lang: str,
+    ) -> list[dict]:
+        """语音复核（独立暂停点）：试听全部句子，可删除与即时重生成。
+
+        复核行 = 分句 + 合成记录（text/emo/file/duration/deleted）；重生成
+        覆盖原 WAV 并回写新时长。引擎与合成阶段共用：合成后保持加载，
+        合成被跳过（复用产物）时按需加载；复核未决期间 runner 线程阻塞
+        等待结果，对话框后台线程经 regen_hook 使用引擎不会并发。复核
+        标记被重置后重入：合成结果未变时保留上次的删除标记。删除句的
+        WAV 保留（可恢复），仅不进入成品。结果存 03_语音复核/reviewed.json。
+        """
+        from app.pipeline.tts import TTSEngine, tts_runtime_ready
+
+        cfg = self._cfg
+        prev_deleted = self._load_prev_deletions(sentences, entries)
+        rows = [
+            {
+                "text": sent["text"],
+                "emo": sent["emo"],
+                "file": str(entry["file"]),
+                "duration": float(entry["duration"] or 0.0),
+                "deleted": bool(prev_deleted.get(str(entry["file"]), False)),
+            }
+            for sent, entry in zip(sentences, entries)
+        ]
+
+        if cfg.auto_accept_reviews:
+            self._log(tr("tts_runner.review_auto"))
+        else:
+            engine = tts_ctx.get("engine")
+            if engine is None:
+                # 复核可能即时重生成：预加载引擎（复核期间保持加载）
+                ok, detail = tts_runtime_ready()
+                if not ok:
+                    raise RuntimeError(tr("runner.tts_env_missing", detail=detail))
+                engine = TTSEngine()
+                try:
+                    engine.load(cfg.tts_model_dir, device=cfg.device,
+                                progress=self._log_progress())
+                except Exception as exc:
+                    if cfg.device == "cpu" or isinstance(exc, _TtsCancelled):
+                        raise
+                    self._log(tr("runner.device_fallback",
+                                 stage=tr("step.tts_synth"), error=exc))
+                    engine.load(cfg.tts_model_dir, device="cpu",
+                                progress=self._log_progress())
+                tts_ctx["engine"] = engine
+
+            self._log(tr("tts_runner.review_start"))
+
+            def _regen_one(local_idx: int, progress=None) -> float:
+                """对话框内即时重生成一句（覆盖原 WAV，回写新时长）。"""
+                row = rows[local_idx]
+                duration, _ratio = engine.synthesize(
+                    row["text"], str(self._ws.tts_ref_audio), 0.0,
+                    str(self._ws.dir / row["file"]),
+                    lang=lang,
+                    emo_vector=emotion_vector(row["emo"]),
+                    duration_factor=1.0 / max(cfg.speed, 0.1),
+                    progress=progress,
+                )
+                row["duration"] = round(duration, 3)
+                return row["duration"]
+
+            try:
+                self._pause_for_review(ReviewPayload(
+                    kind="tts_voice", segments=rows, regen_hook=_regen_one,
+                ))
+            except BaseException:
+                self._release_tts_engine(tts_ctx)
+                raise
+
+        kept = sum(1 for row in rows if not row["deleted"])
+        self._log(tr("tts_runner.review_done",
+                     kept=kept, deleted=len(rows) - kept))
+        self._write_json(self._ws.tts_voice_reviewed_json, {"entries": rows})
+        self._ws.mark_done(STAGE_TTS_VOICE_REVIEW)
+        self._stage_end(STAGE_TTS_VOICE_REVIEW)
+        return rows
+
+    def _load_prev_deletions(
+        self, sentences: list[dict], entries: list[dict],
+    ) -> dict[str, bool]:
+        """重入复核（标记被重置）时保留上次的删除标记。
+
+        仅当逐句合成结果未变（文件/时长/文本一致）时复用；合成重跑后
+        上次复核不再适用，按全部未删除处理。
+        """
+        try:
+            prev = self._read_json(
+                self._ws.tts_voice_reviewed_json,
+            ).get("entries") or []
+        except (OSError, ValueError):
+            return {}
+        if len(prev) != len(entries):
+            return {}
+        for sent, entry, old in zip(sentences, entries, prev):
+            if (
+                str(old.get("file") or "") != str(entry["file"])
+                or str(old.get("text") or "") != str(sent["text"])
+                or round(float(old.get("duration") or 0.0), 3)
+                != round(float(entry["duration"] or 0.0), 3)
+            ):
+                return {}
+        return {str(p.get("file") or ""): bool(p.get("deleted")) for p in prev}
+
     # ------------------------------------------------------------------ 快照/工具
 
     def _input_fingerprint(self) -> str:
-        """合成输入指纹：文本/语言/语速/情绪/参考音频/模型目录任一变化即失效。"""
+        """合成输入结构指纹：文本/语速/情绪/参考音频/模型目录任一变化即失效。
+
+        语言不进指纹（auto 识别结果会回写 cfg.lang_code，重试同一配置
+        对象时与原始选择不一致），由 _effective_lang 与 tts_synth_lang
+        标记单独对比。
+        """
         cfg = self._cfg
         payload = json.dumps({
             "text": cfg.text,
-            "lang": cfg.lang_code,
             "speed": float(cfg.speed),
             "emotions": {k: v for k, v in sorted(cfg.emotions.items())},
             "ref": str(Path(cfg.ref_audio_path).resolve()),
             "model": cfg.tts_model_dir,
         }, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _effective_lang(self) -> str:
+        """实际合成语言：显式选择优先；auto 时取既有识别缓存（无则空）。"""
+        if self._cfg.lang_code != "auto":
+            return self._cfg.lang_code
+        try:
+            if self._ws.tts_sentences_json.is_file():
+                return str(
+                    self._read_json(self._ws.tts_sentences_json).get("lang") or ""
+                )
+        except (OSError, ValueError):
+            pass
+        return ""
 
     def _lang_name(self, code: str) -> str:
         from app.core.langid_util import language_display_name
@@ -547,7 +754,27 @@ class TtsRunner(QThread):
             encoding="utf-8",
         )
 
-    # ------------------------------------------------------------------ 进度/取消
+    # ------------------------------------------------------------------ 暂停/取消
+
+    @staticmethod
+    def _release_tts_engine(tts_ctx: dict) -> None:
+        """释放复核上下文中保持加载的 TTS 引擎（无引擎时无操作）。"""
+        engine = tts_ctx.get("engine")
+        if engine is not None:
+            engine.unload()
+            tts_ctx["engine"] = None
+
+    def _pause_for_review(self, payload: ReviewPayload) -> ReviewResult:
+        """发射复核请求并阻塞等待 UI 回传；取消时抛 _TtsCancelled。"""
+        self._review_event.clear()
+        self._review_result = None
+        self.review_requested.emit(payload)
+        self._review_event.wait()
+        self._check()  # cancel() 唤醒时在此抛出
+        result = self._review_result
+        if result is None or not result.accepted:
+            raise _TtsCancelled()
+        return result
 
     def _check(self) -> None:
         """取消检查点。"""
@@ -590,6 +817,17 @@ class TtsRunner(QThread):
             )
             if message and message != runner._last_log_message:
                 runner._last_log_message = message
+                runner.log_emitted.emit(message)
+
+        return _callback
+
+    def _log_progress(self) -> ProgressCallback:
+        """转发日志消息、不影响进度条的回调（复核前引擎加载可见状态）。"""
+        runner = self
+
+        def _callback(_fraction: float, message: str) -> None:
+            runner._check()
+            if message:
                 runner.log_emitted.emit(message)
 
         return _callback
