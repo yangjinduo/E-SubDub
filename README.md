@@ -149,7 +149,7 @@ app/
 **关键设计**：
 
 - **阶段化落盘 + manifest 断点续跑**：每阶段产物固定子夹 + 完成标记，重复执行同文件任务时跳过已完成阶段；人工修改内容后由 runner 显式失效下游阶段。
-- **任务列表持久化**：tasks.json 以原子写保存于用户配置目录（Windows `%LOCALAPPDATA%\MinimSubDub\`、macOS `~/Library/Application Support/MinimSubDub/`，与 settings.json 同目录）；启动时恢复任务列表，上次运行中 / 排队中的任务标记为"已中断"，等待手动继续。
+- **任务列表持久化**：tasks.json 以原子写保存于用户配置目录（Windows `%LOCALAPPDATA%\MinimSubDub\`、macOS `~/Library/Application Support/MinimSubDub/`），任务列表与全局设置（界面语言、声音克隆授权）共用这一个文件；启动时恢复任务列表，上次运行中 / 排队中的任务标记为"已中断"，等待手动继续。
 - **TTS 独立虚拟环境**：IndexTTS-2.5 与 MOSS-Transcribe-Diarize 所依赖的 transformers 版本不兼容，故 TTS 运行于独立的 `.venv-tts` 子进程中，经 `tts_worker` 通信；模型跨「生成 / 复核」两阶段复用，复核结束统一释放。
 - **LLM 推理外置**：翻译经 llama.cpp 的 llama-server（HTTP）推理，取消任务时立即终止服务进程。
 - **线程安全退出**：任务线程退出确认后才释放引用，避免 QThread 提前析构导致的崩溃。

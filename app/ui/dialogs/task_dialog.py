@@ -664,7 +664,7 @@ class MediaTaskWindowBase(TaskWindowBase):
             self._panel.log(tr("main.log.llm_server_missing"))
             return False
 
-        # 4. 声音克隆使用授权（仅首次询问，记忆在 settings.json）
+        # 4. 声音克隆使用授权（仅首次询问，记忆在 tasks.json 顶层键）
         if dubbing and get_setting("voice_clone_ack") is not True:
             box = QMessageBox(self)
             box.setWindowTitle(tr("main.voice_clone_title"))
@@ -1526,7 +1526,7 @@ class TtsTaskWindow(TaskWindowBase):
             self._panel.log(tr("runner.tts_env_missing", detail=detail))
             return False
 
-        # 4. 声音克隆使用授权（仅首次询问，记忆在 settings.json）
+        # 4. 声音克隆使用授权（仅首次询问，记忆在 tasks.json 顶层键）
         if get_setting("voice_clone_ack") is not True:
             box = QMessageBox(self)
             box.setWindowTitle(tr("main.voice_clone_title"))

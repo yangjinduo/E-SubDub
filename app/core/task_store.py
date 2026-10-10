@@ -2,14 +2,17 @@
 """任务列表持久化：tasks.json 保存任务配置与队列状态快照。
 
 存于用户配置目录（platformdirs；Windows %LOCALAPPDATA%/MinimSubDub、
-macOS ~/Library/Application Support/MinimSubDub，与 settings.json 同目录）。与工作夹内的
-manifest.json 职责不同、互不替代：manifest 是工作区阶段真值（断点
-复用的依据，保留在工作夹），tasks.json 只是主窗口任务列表的队列
-快照（配置序列化 + 状态/进度/当前流程），队列每次变化即写盘。
+macOS ~/Library/Application Support/MinimSubDub）。全局设置（界面语言、
+声音克隆授权等）同存于该文件的顶层键（由 i18n 读写），任务列表只占
+"tasks" 一个键。与工作夹内的 manifest.json 职责不同、互不替代：
+manifest 是工作区阶段真值（断点复用的依据，保留在工作夹），tasks.json
+是主窗口任务列表的队列快照（配置序列化 + 状态/进度/当前流程），队列
+每次变化即写盘。
 
-写盘为原子操作（临时文件 + os.replace）；解析失败时重命名为
-tasks.json.bad 并忽略，不阻塞启动。manifest 里的阶段完成标记由
-工作夹自身维护，恢复后重入列时自动跳过已完成阶段。
+写盘为原子操作（临时文件 + os.replace），且保留 language /
+voice_clone_ack 等其它顶层键；解析失败时重命名为 tasks.json.bad 并
+忽略，不阻塞启动。manifest 里的阶段完成标记由工作夹自身维护，恢复
+后重入列时自动跳过已完成阶段。
 """
 
 from __future__ import annotations
@@ -18,15 +21,17 @@ import json
 import logging
 import os
 from dataclasses import asdict, fields
+from pathlib import Path
 
-from app.core.i18n import _config_dir
+from app.core.i18n import APP_STATE_VERSION, _config_dir, _write_app_state
 from app.core.runner import TaskConfig
 from app.core.tts_runner import TtsTaskConfig
 
 logger = logging.getLogger(__name__)
 
-# 队列快照结构版本：结构不兼容时旧文件整体忽略（列表为空重新开始）
-TASKS_SCHEMA_VERSION = 1
+# 队列快照结构版本：与全局状态文件共用顶层 version（i18n 定义）；
+# 结构不兼容时旧文件整体忽略（列表为空重新开始）
+TASKS_SCHEMA_VERSION = APP_STATE_VERSION
 
 # 配置类型标记（TaskConfig / TtsTaskConfig 反序列化分流）
 _TYPE_MEDIA = "media"
@@ -34,7 +39,7 @@ _TYPE_TTS = "tts"
 
 
 def tasks_json_path() -> Path:
-    """任务列表持久化文件路径（用户配置目录，与 settings.json 同目录）。"""
+    """任务列表持久化文件路径（用户配置目录，含全局设置顶层键）。"""
     return _config_dir() / "tasks.json"
 
 
@@ -67,22 +72,12 @@ def _config_from_record(record) -> TaskConfig | TtsTaskConfig | None:
 
 
 def save_tasks(records: list[dict]) -> None:
-    """把任务记录列表写入 tasks.json（原子写；失败仅记日志不抛出）。"""
-    path = tasks_json_path()
-    payload = {
+    """把任务记录列表写入 tasks.json 顶层 tasks 键（原子写；保留
+    language / voice_clone_ack 等其它顶层键；失败仅记日志不抛出）。"""
+    _write_app_state({
         "version": TASKS_SCHEMA_VERSION,
         "tasks": records,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(tmp, path)
-    except OSError as exc:
-        logger.warning("任务列表写盘失败（%s）：%s", path, exc)
+    })
 
 
 def load_tasks() -> list[dict]:

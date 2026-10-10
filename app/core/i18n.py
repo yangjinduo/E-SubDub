@@ -3,8 +3,8 @@
 设计说明：
 - 不使用 Qt Linguist（.ts/.qm）体系，改用 Python 字典，便于在 PyInstaller
   打包中零成本内置，且流水线等非 UI 模块也能直接调用 tr()；
-- 语言偏好保存到用户配置目录（platformdirs），路径：
-  <user_config_dir>/MinimSubDub/settings.json；
+- 全局设置（界面语言、声音克隆授权等）与任务列表同存于用户配置目录
+  （platformdirs）的 tasks.json 顶层键，不再使用独立的 settings.json；
 - tr() 查找顺序：当前语言 → zh-CN 兜底 → 返回 key 本身（便于发现漏译）。
 """
 
@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 APP_NAME = "MinimSubDub"  # 配置目录标识（无空格）；显示名见 AppConfig.APP_NAME
 DEFAULT_LANGUAGE = "zh-CN"
+
+# 全局状态文件（tasks.json）结构版本：任务列表与全局设置共用的顶层
+# 版本号；task_store 的 TASKS_SCHEMA_VERSION 与之保持一致
+APP_STATE_VERSION = 1
 
 # 支持的语言：代码 → 原生名称（原生名称不翻译，始终以其语言本身显示）
 SUPPORTED_LANGUAGES: dict[str, str] = {
@@ -89,6 +93,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "runner.tts_no_ref": "说话人 {spk} 的句子无可用参考音频，跳过该句配音",
         "runner.tts_progress": "配音生成 {done}/{total} 句",
         "runner.tts_progress_pct": "配音生成 {done}/{total} 句（{pct}%）",
+        "runner.tts_cache_reused": "配音生成：{count}/{total} 句已有缓存，直接复用（只补合成缺失句子）",
         "runner.tts_review_needed": "配音复核：共 {count} 句，可试听、修改译文并即时重生成",
         "runner.srt_synced": "配音复核修改了 {count} 句译文，已同步重新生成字幕",
         "runner.mix_overlay": "叠加原声混音：对白时段用新配音，句间保留原声（含语气词）",
@@ -565,6 +570,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "runner.tts_no_ref": "No usable reference audio for a segment of speaker {spk}; skipped",
         "runner.tts_progress": "Generating dubbing {done}/{total}",
         "runner.tts_progress_pct": "Generating dubbing {done}/{total} ({pct}%)",
+        "runner.tts_cache_reused": "Dubbing cache: reusing {count}/{total} existing segments (only missing ones will be synthesized)",
         "runner.tts_review_needed": "Dubbing review: {count} segments; listen, edit translations, and regenerate on the spot",
         "runner.srt_synced": "{count} translations edited during dubbing review; subtitles regenerated",
         "runner.mix_overlay": "Mixing over the original audio: dialogues use the new dub, gaps keep the original (interjections preserved)",
@@ -1001,7 +1007,8 @@ def _config_dir() -> Path:
 
     appauthor=False：platformdirs 在 Windows 上默认把 appname 当作
     appauthor 再拼一层目录（MinimSubDub/MinimSubDub），显式关闭。
-    首次调用时把旧版双层目录里的 settings.json / tasks.json 迁移上来。
+    首次调用时把旧版双层目录里的 settings.json / tasks.json 迁移上来，
+    并把旧 settings.json 的键合并进 tasks.json 后删除。
     """
     global _legacy_migrated
     root = Path(user_config_dir(APP_NAME, appauthor=False))
@@ -1020,18 +1027,41 @@ def _config_dir() -> Path:
                 legacy.rmdir()  # 仅当已清空时删除
             except OSError:
                 pass
+        _merge_legacy_settings(root)
     return root
 
 
-def _settings_path() -> Path:
-    """用户配置文件路径（跨平台用户配置目录）。"""
-    return _config_dir() / "settings.json"
+def _merge_legacy_settings(root: Path) -> None:
+    """一次性把旧 settings.json 的顶层键合并进 tasks.json 后删除。
+
+    全局设置与任务列表共用 tasks.json 后不再有独立设置文件；旧文件
+    读取失败时保留原样（下次启动重试）。
+    """
+    old = root / "settings.json"
+    if not old.is_file():
+        return
+    try:
+        data = json.loads(old.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("旧 settings.json 读取失败，跳过合并：%s", exc)
+        return
+    if isinstance(data, dict) and data:
+        _write_app_state(dict(data))
+    try:
+        old.unlink()
+    except OSError as exc:
+        logger.warning("旧 settings.json 删除失败：%s", exc)
+
+
+def _app_state_path() -> Path:
+    """全局状态文件路径：tasks.json（任务列表 + 全局设置顶层键）。"""
+    return _config_dir() / "tasks.json"
 
 
 def _load_language() -> str:
     """启动时读取持久化的语言偏好，缺失或非法时回退默认语言。"""
     try:
-        path = _settings_path()
+        path = _app_state_path()
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             lang = data.get("language")
@@ -1047,41 +1077,46 @@ def get_language() -> str:
     return _current_language
 
 
-def _read_settings() -> dict:
-    """读取整个设置字典，损坏/缺失时返回空 dict。"""
+def _read_app_state() -> dict:
+    """读取 tasks.json 全部顶层键，损坏/缺失时返回空 dict。"""
     try:
-        path = _settings_path()
+        path = _app_state_path()
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
     except (OSError, ValueError) as e:
-        logger.warning("读取设置文件失败: %s", e)
+        logger.warning("读取全局状态文件失败: %s", e)
     return {}
 
 
-def _write_settings(updates: dict) -> None:
-    """合并写入设置键（保留其它既有键）。"""
-    data = _read_settings()
+def _write_app_state(updates: dict) -> None:
+    """合并写入 tasks.json 顶层键（保留 tasks 等其它既有键；原子写）。
+
+    文件缺失/损坏时以骨架 {"version", "tasks": []} 重建后合并。
+    """
+    data = _read_app_state() or {"version": APP_STATE_VERSION, "tasks": []}
     data.update(updates)
     try:
-        path = _settings_path()
+        path = _app_state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        os.replace(tmp, path)
     except OSError as e:
-        logger.warning("设置保存失败: %s", e)
+        logger.warning("全局状态保存失败: %s", e)
 
 
 def get_setting(key: str, default=None):
-    """读取一个持久化设置键（与界面语言同一 settings.json）。"""
-    return _read_settings().get(key, default)
+    """读取一个持久化全局设置键（tasks.json 顶层键）。"""
+    return _read_app_state().get(key, default)
 
 
 def set_setting(key: str, value) -> None:
-    """持久化一个设置键（合并写入）。"""
-    _write_settings({key: value})
+    """持久化一个全局设置键（合并写入 tasks.json 顶层）。"""
+    _write_app_state({key: value})
 
 
 def set_language(language: str) -> None:
@@ -1092,7 +1127,7 @@ def set_language(language: str) -> None:
     if language == _current_language:
         return
     _current_language = language
-    _write_settings({"language": language})
+    _write_app_state({"language": language})
 
 
 def tr(key: str, **kwargs) -> str:

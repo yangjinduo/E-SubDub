@@ -18,8 +18,8 @@ import bisect
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QFontMetrics
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QTextLayout, QTextOption
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -47,9 +47,17 @@ QTableWidget::item {
 }
 """
 
-# 行高自适应：最小行高与内容换行上下的留白（对齐 TtsVoiceReviewDialog）
+# 行高自适应：最小行高（对齐 TtsVoiceReviewDialog）与安全余量；文本
+# 高度自算时的宽度内缩与上下补白。宽度内缩必须显著大于 delegate 绘制
+# 的全部水平内缩（QSS ::item 左右 padding 12 + 焦点边距 6 + 杂项）：
+# 若只小 1~2px，临界词换行落入差异窗口时自算行数比实际绘制少一行，
+# 最后一行（双语第二语言行）就被省略号截断 —— 列宽缩放中省略号断续
+# 出现/消失正是该窗口被断续命中；取 40 确保计算换行宽度恒窄于绘制，
+# 行数只多不少，宁高勿截。
 _MIN_ROW_HEIGHT = 42
-_CELL_V_PAD = 16
+_ROW_HEIGHT_MARGIN = 4
+_TEXT_WIDTH_INSET = 86
+_CELL_V_PAD = 24
 
 # 列号与时间列宽（"01:23.4 - 01:25.9" 级别的起止区间）
 _COL_TIME, _COL_TEXT = 0, 1
@@ -184,6 +192,12 @@ class SubtitlePanel(QFrame):
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._on_tick)
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # 首次/再次显示时列宽才随布局最终确定，补一次行高计算
+        if self._cues:
+            self._height_timer.start()
+
     # -------------------------------------------------------------- 公开接口
 
     def set_players(self, players: list) -> None:
@@ -237,20 +251,45 @@ class SubtitlePanel(QFrame):
         self._table.setVisible(loaded)
         self._hint_label.setVisible(not loaded)
 
-    def _wrapped_height(self, text: str, width: int) -> int:
-        """估算文本按给定宽度自动换行后所需的高度（像素）。"""
-        fm = QFontMetrics(self._table.font())
-        avail = max(width - 16, 30)
-        rect = fm.boundingRect(QRect(0, 0, avail, 100000), Qt.TextFlag.TextWordWrap, text)
-        return rect.height()
+    def _text_height(self, text: str, width: int) -> int:
+        """QTextLayout 按给定宽度布局文本，返回所需内容高度（像素）。
+
+        与 delegate 绘制用同一布局引擎（WordWrap + 显式 \n 硬换行），
+        双语 cue 的第二行与自动换行的末行都能算全 —— delegate 的
+        sizeHint 对含 \n 的文本会低估高度（第二行被省略号截断）。
+        """
+        layout = QTextLayout(text, self._table.font())
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WordWrap)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        height = 0.0
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            height += line.height()
+        layout.endLayout()
+        return int(height + 0.5)
 
     def _update_all_row_heights(self) -> None:
-        """按当前字幕列宽重算全部行高（列宽变化/首次加载后调用）。"""
-        width = self._table.columnWidth(_COL_TEXT)
-        for row, (_start, _end, text) in enumerate(self._cues):
-            height = max(_MIN_ROW_HEIGHT,
-                         self._wrapped_height(text, width) + _CELL_V_PAD)
-            self._table.setRowHeight(row, height)
+        """按当前列宽自适应全部行高（列宽变化/加载/显示后调用）。
+
+        双保险：先 resizeRowsToContents（delegate sizeHint，含 QSS
+        padding），再对字幕列逐行用 QTextLayout 自算高度取更大者 ——
+        delegate 对含显式换行的双语文本会低估，仅靠它会截断第二行。
+        """
+        self._table.resizeRowsToContents()
+        width = max(self._table.columnWidth(_COL_TEXT) - _TEXT_WIDTH_INSET, 30)
+        for row in range(self._table.rowCount()):
+            height = self._table.rowHeight(row) + _ROW_HEIGHT_MARGIN
+            item = self._table.item(row, _COL_TEXT)
+            if item is not None and item.text():
+                height = max(height,
+                             self._text_height(item.text(), width)
+                             + _CELL_V_PAD + _ROW_HEIGHT_MARGIN)
+            self._table.setRowHeight(row, max(_MIN_ROW_HEIGHT, height))
 
     def _on_tick(self) -> None:
         position = None

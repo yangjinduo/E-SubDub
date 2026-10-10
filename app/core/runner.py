@@ -15,7 +15,10 @@ UI 线程弹对话框并调用 submit_review() 回传结果；回传 None / acce
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
 import shutil
 import threading
 from dataclasses import dataclass, field
@@ -87,6 +90,59 @@ def _retire_old_audio(seg, new_out: Path) -> None:
             Path(old).unlink()
         except OSError:
             pass
+
+
+# 句级配音缓存文件（07_配音生成/tts/tts_cache.json）：断点续跑依据
+_TTS_CACHE_FILE = "tts_cache.json"
+
+
+def _tts_cache_path(ws) -> Path:
+    """句级配音缓存路径（与配音 WAV 同目录）。"""
+    return ws.tts_dir / _TTS_CACHE_FILE
+
+
+def _load_tts_cache(ws) -> dict:
+    """读取句级配音缓存 {wav 文件名: {"text", "ref", "ratio"}}；损坏返回空。
+
+    text = 合成时的完整译文（文件名中的译文有截断，靠全文判等兜底）；
+    ref = 参考音频内容指纹（换参考音色/重切人声后缓存失效）；
+    ratio = 伸缩比（复用句恢复 needs_review 标记用）。
+    """
+    try:
+        data = json.loads(_tts_cache_path(ws).read_text(encoding="utf-8"))
+        entries = data.get("entries") if isinstance(data, dict) else None
+        if isinstance(entries, dict):
+            return {
+                str(k): v for k, v in entries.items() if isinstance(v, dict)
+            }
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def _save_tts_cache(ws, entries: dict) -> None:
+    """原子写入句级配音缓存（失败仅记日志，不影响主流程）。"""
+    path = _tts_cache_path(ws)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"entries": entries}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning("句级配音缓存写盘失败（%s）：%s", path, exc)
+
+
+def _file_sig(path: str | None) -> str:
+    """文件内容指纹（sha1 前 16 位；缺失返回空串）——缓存失效判断用。"""
+    if not path:
+        return ""
+    try:
+        return hashlib.sha1(Path(path).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
 
 
 def detect_language_code(segments: list) -> str:
@@ -633,10 +689,15 @@ class PipelineRunner(QThread):
         句子回退说话人级参考。配音文件以 开始时间-结束时间-说话人ID-译文
         命名，与源切片一一对应。
 
-        返回 {"engine": 已加载的 TTSEngine, "seg_refs": {索引: 参考音频},
-        "todo": [(索引, 分段), …]}；合成完成后引擎保持加载（配音复核的
-        即时重生成复用，避免重复加载 10GB 级模型），由复核阶段结束后释放。
-        异常/取消时在本地释放后再上抛。
+        句级断点续跑（与文本转语音任务一致）：tts/ 夹内已生成的 WAV 经
+        tts_cache.json（完整译文 + 参考音频指纹 + 伸缩比）校验后直接复用，
+        只补合成缺失的句子——上次中断后继续时不再从头重生成；阶段成功
+        收尾时清掉不在本次待合成集合内的残留旧文件。
+
+        返回 {"engine": 已加载的 TTSEngine（全部命中缓存时为 None）,
+        "seg_refs": {索引: 参考音频}, "todo": [(索引, 分段), …]}；
+        合成完成后引擎保持加载（配音复核的即时重生成复用，避免重复加载
+        10GB 级模型），由复核阶段结束后释放。异常/取消时在本地释放后再上抛。
         """
         from app.pipeline.tts import (
             STRETCH_REVIEW_HIGH,
@@ -653,11 +714,6 @@ class PipelineRunner(QThread):
             raise RuntimeError(tr("runner.tts_env_missing", detail=detail))
 
         self._ws.tts_dir.mkdir(parents=True, exist_ok=True)
-        for old in self._ws.tts_dir.glob("*.wav"):
-            try:  # 清空旧配音，文件夹与本次待合成集合一致
-                old.unlink()
-            except OSError:
-                pass
         todo = [
             (i, seg) for i, seg in enumerate(segments)
             if not seg.deleted and str(seg.target_text).strip()
@@ -681,9 +737,44 @@ class PipelineRunner(QThread):
         )
         self._log(tr("runner.seg_ref_ready", own=own_cnt, fallback=fb_cnt))
 
-        def _synth(i: int, seg: Segment, engine, idx: int, total: int) -> None:
-            """合成单句并记录路径/伸缩比/待复核标记；句内进度按 10%
-            档位打日志，进度条按句粒度推进（与 TTS 任务一致）。"""
+        # 句级缓存复用：WAV 存在且 译文/参考音频指纹 与缓存记录一致
+        # （译文改过 → 文件名不同；参考音色换过 → 指纹不同）的直接复用，
+        # 只补合成缺失的句子
+        cache = _load_tts_cache(self._ws)
+        pending: list[tuple[int, Segment]] = []
+        reused = 0
+        for i, seg in todo:
+            out = _tts_out_path(self._ws, seg)
+            entry = cache.get(out.name)
+            if (
+                entry
+                and out.is_file()
+                and entry.get("text") == str(seg.target_text)
+                and entry.get("ref") == _file_sig(seg_refs.get(i))
+            ):
+                seg.tts_audio_path = str(out)
+                ratio = float(entry.get("ratio") or 1.0)
+                seg.stretch_ratio = ratio
+                seg.needs_review = not (
+                    STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH
+                )
+                reused += 1
+            else:
+                pending.append((i, seg))
+        if reused:
+            self._log(tr("runner.tts_cache_reused",
+                         count=reused, total=len(todo)))
+        total = len(pending)
+        grand_total = len(todo)
+        # 句子在本次应合成集合中的绝对序号（1 基）：断点续跑补合成时，
+        # 日志序号与首次生成保持同一坐标系（如 2/10、6/10、…、10/10），
+        # 而非按剩余句重新从 1 计
+        overall_no = {i: pos + 1 for pos, (i, _s) in enumerate(todo)}
+
+        def _synth(i: int, seg: Segment, engine, done: int, overall: int) -> None:
+            """合成单句并记录路径/伸缩比/待复核标记 + 写入句级缓存；
+            句内进度按 10% 档位打日志（序号 = 全任务绝对序号 / 应合成
+            总数），进度条按本次待补句推进（与 TTS 任务一致）。"""
             ref = seg_refs.get(i)
             if not ref:
                 self._log(tr("runner.tts_no_ref", spk=seg.spk))
@@ -693,15 +784,16 @@ class PipelineRunner(QThread):
             def _msg(frac: float) -> str:
                 pct = int(frac * 100) // 10 * 10
                 if pct <= 0:
-                    return tr("runner.tts_progress", done=idx + 1, total=total)
+                    return tr("runner.tts_progress",
+                              done=overall, total=grand_total)
                 return tr("runner.tts_progress_pct",
-                          done=idx + 1, total=total, pct=pct)
+                          done=overall, total=grand_total, pct=pct)
 
             _raw_dur, ratio = engine.synthesize(
                 seg.target_text, ref, seg.duration, str(out),
                 lang=cfg.target_lang_code,
                 progress=lambda frac, _desc="": _synth_progress(
-                    idx / total,
+                    done / total,
                     _msg(frac),
                 ),
             )
@@ -709,66 +801,79 @@ class PipelineRunner(QThread):
             seg.tts_audio_path = str(out)
             seg.stretch_ratio = ratio
             seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
+            # 逐句落缓存：中断后重入时已完成的句子直接复用
+            cache[out.name] = {
+                "text": str(seg.target_text),
+                "ref": _file_sig(ref),
+                "ratio": float(ratio),
+            }
+            _save_tts_cache(self._ws, cache)
 
-        engine = TTSEngine()
+        engine: TTSEngine | None = None
         try:
-            try:
-                engine.load(cfg.tts_model_dir, device=cfg.device,
-                            progress=_load_progress)
-                total = len(todo)
-                done = 0
-                for pos, (i, seg) in enumerate(todo):
-                    self._check()
-                    # 句开始即打日志（确认任务已开工）；句内 10% 档位消息
-                    # 经 synthesize 回调逐级显示，0% 档与句开始消息相同
-                    # 被去重机制吞掉
-                    _synth_progress(
-                        pos / total,
-                        tr("runner.tts_progress", done=pos + 1, total=total),
-                    )
-                    _synth(i, seg, engine, pos, total)
-                    done += 1
-                    # 句完成补 100% 档（与句内 90% 档衔接成完整序列）
-                    _synth_progress(
-                        done / total,
-                        tr("runner.tts_progress_pct",
-                           done=done, total=total, pct=100),
-                    )
-            except Exception as exc:
-                # GPU 失败换 CPU 重试；内存不足与用户取消不重试（直接上抛）
-                if cfg.device == "cpu" or isinstance(
-                    exc, (TTSLoadMemoryError, _PipelineCancelled)
-                ):
-                    raise
-                self._log(tr("runner.device_fallback", stage=tr("step.tts"), error=exc))
-                engine.unload()
-                engine.load(cfg.tts_model_dir, device="cpu",
-                            progress=_load_progress)
-                done = 0
-                for i, seg in todo:
-                    self._check()
-                    if seg.tts_audio_path and Path(seg.tts_audio_path).is_file():
+            if pending:
+                engine = TTSEngine()
+
+                def _synth_pending() -> None:
+                    """逐句合成待补句子（GPU 失败换 CPU 重试时跳过已生成的）。"""
+                    done = 0
+                    for i, seg in pending:
+                        self._check()
+                        # 句开始即打日志（确认任务已开工）；句内 10% 档位
+                        # 消息经 synthesize 回调逐级显示，0% 档与句开始
+                        # 消息相同被去重机制吞掉
+                        if seg.tts_audio_path and Path(seg.tts_audio_path).is_file():
+                            done += 1
+                            continue  # 已在失败前生成
+                        _synth_progress(
+                            done / total,
+                            tr("runner.tts_progress",
+                               done=overall_no[i], total=grand_total),
+                        )
+                        _synth(i, seg, engine, done, overall_no[i])
                         done += 1
-                        continue  # 已在失败前生成
-                    _synth_progress(
-                        done / total,
-                        tr("runner.tts_progress", done=done + 1, total=total),
-                    )
-                    _synth(i, seg, engine, done, total)
-                    done += 1
-                    # 句完成补 100% 档（与句内 90% 档衔接成完整序列）
-                    _synth_progress(
-                        done / total,
-                        tr("runner.tts_progress_pct",
-                           done=done, total=total, pct=100),
-                    )
+                        # 句完成补 100% 档（与句内 90% 档衔接成完整序列）
+                        _synth_progress(
+                            done / total,
+                            tr("runner.tts_progress_pct",
+                               done=overall_no[i], total=grand_total, pct=100),
+                        )
+
+                try:
+                    engine.load(cfg.tts_model_dir, device=cfg.device,
+                                progress=_load_progress)
+                    _synth_pending()
+                except Exception as exc:
+                    # GPU 失败换 CPU 重试；内存不足与用户取消不重试（直接上抛）
+                    if cfg.device == "cpu" or isinstance(
+                        exc, (TTSLoadMemoryError, _PipelineCancelled)
+                    ):
+                        raise
+                    self._log(tr("runner.device_fallback", stage=tr("step.tts"), error=exc))
+                    engine.unload()
+                    engine.load(cfg.tts_model_dir, device="cpu",
+                                progress=_load_progress)
+                    _synth_pending()
 
             self._ws.save_segments(self._ws.tts_json, segments)
             self._ws.mark_done(STAGE_TTS)
             self._stage_end(STAGE_TTS)
+            # 清掉不在本次待合成集合内的旧配音（改文/删句的残留），
+            # 缓存同步收窄到当前集合
+            expected = {_tts_out_path(self._ws, seg).name for _i, seg in todo}
+            for old in self._ws.tts_dir.glob("*.wav"):
+                if old.name not in expected:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+            _save_tts_cache(
+                self._ws, {k: v for k, v in cache.items() if k in expected},
+            )
             return {"engine": engine, "seg_refs": seg_refs, "todo": todo}
         except BaseException:
-            engine.unload()  # 合成中断：引擎无人接手释放，就地卸载
+            if engine is not None:
+                engine.unload()  # 合成中断：引擎无人接手释放，就地卸载
             raise
 
     def _review_tts(self, segments: list, tts_ctx: dict) -> None:
@@ -853,6 +958,14 @@ class PipelineRunner(QThread):
                 seg.tts_audio_path = str(out)
                 seg.stretch_ratio = ratio
                 seg.needs_review = not (STRETCH_REVIEW_LOW <= ratio <= STRETCH_REVIEW_HIGH)
+                # 同步句级缓存：复核重生成的句子在 TTS 阶段重入时可直接复用
+                entries = _load_tts_cache(self._ws)
+                entries[out.name] = {
+                    "text": str(seg.target_text),
+                    "ref": _file_sig(ref),
+                    "ratio": float(ratio),
+                }
+                _save_tts_cache(self._ws, entries)
                 return ratio
 
             # 复核可能改译文/换配音文件：有变化时下游混音/封装失效重跑
