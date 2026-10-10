@@ -328,10 +328,55 @@ class TaskWindowBase(QDialog):
                 return
             if item.state == TaskState.CANCELLING:
                 return
-            # 终态任务：解除绑定，作为新任务重新开始
-            self._manager.unregister_window(item.id)
-            self._task_id = None
+            # 终态任务：本条任务重新开始（任务列表不新增任务）
+            self._restart_task(item)
+            return
         self._start_new_task()
+
+    def _restart_task(self, item: TaskItem) -> None:
+        """终态任务重新开始：回写窗口当前设置，沿用本条任务重新入列。
+
+        输入源变化（换文件/改任务名/改输出目录，工作夹随之不同）时，
+        原任务保留在列表中，新输入按新任务入列并由本窗口接管。
+        """
+        configs = self._collect_configs()
+        if not configs:
+            return
+        first = configs[0]
+        self._launch_log(first)
+        self._reset_pipeline_steps()
+        try:
+            target = self._manager.restart(item.id, first)
+        except ValueError as exc:
+            self._panel.log(str(exc))
+            return
+        if target is None:
+            return
+        if target.id != item.id:
+            # 输入源已更换：新任务接管窗口，原任务保留在列表中
+            self._manager.unregister_window(item.id)
+            self._task_id = target.id
+            self._manager.register_window(target.id, self)
+            self._batch_ids = [target.id]
+            self.setWindowTitle(target.display_name)
+        else:
+            self._batch_ids = [item.id]
+        # 批量（多文件）：导入区其余文件按相同设置入列主窗口任务队列；
+        # 导入区与流程进度区仅跟踪本窗口当前任务
+        if len(configs) > 1:
+            self._panel.log(tr("main.log.batch_started", count=len(configs)))
+            for config in configs[1:]:
+                try:
+                    batch_item = self._manager.enqueue(config)
+                except ValueError as exc:
+                    self._panel.log(str(exc))
+                    continue
+                self._batch_ids.append(batch_item.id)
+            self._panel.log(tr(
+                "main.log.batch_queued", count=len(self._batch_ids) - 1,
+            ))
+            self._after_batch_queued(first)
+        self._sync_controls()
 
     def _start_new_task(self) -> None:
         configs = self._collect_configs()

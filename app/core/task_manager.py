@@ -34,7 +34,12 @@ from app.core.task_store import (
     save_tasks,
 )
 from app.core.tts_runner import TtsRunner, TtsTaskConfig
-from app.core.workspace import STAGE_EXTRACT, STAGE_TTS_TEXT, Workspace
+from app.core.workspace import (
+    STAGE_EXTRACT,
+    STAGE_TTS_TEXT,
+    Workspace,
+    workspace_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +80,19 @@ class TaskItem:
         if isinstance(self.config, TtsTaskConfig):
             return f"{self.config.task_name}_{self.config.task_category}"
         return f"{Path(self.config.media_path).stem}_{self.config.task_category}"
+
+
+def _config_workspace_dir(config: TaskConfig | TtsTaskConfig) -> Path:
+    """按任务配置计算工作夹路径（与 enqueue 的 Workspace 构造规则一致，
+    不创建目录）。"""
+    if isinstance(config, TtsTaskConfig):
+        return workspace_dir(
+            config.output_dir, config.task_name,
+            category=config.task_category, stem=config.task_name,
+        )
+    return workspace_dir(
+        config.output_dir, config.media_path, category=config.task_category,
+    )
 
 
 class TaskManager(QObject):
@@ -361,6 +379,25 @@ class TaskManager(QObject):
         item.last_error = ""
         self.task_state_changed.emit(item.id)
         self._start_next()
+
+    def restart(
+        self, task_id: str, config: TaskConfig | TtsTaskConfig,
+    ) -> TaskItem | None:
+        """终态任务重新开始：回写窗口当前设置后沿用原任务重新入列
+        （manifest 断点复用，已完成阶段跳过，任务列表不新增行）。
+
+        任务窗口"重新开始"入口。输入源变化导致工作夹不同（换文件/
+        改任务名/改输出目录）时，原任务保留在列表中，新输入按新任务
+        入列（完全重复的未终结任务抛 ValueError）。
+        """
+        item = self.get_task(task_id)
+        if item is None or not TaskState.is_terminal(item.state):
+            return None
+        if _config_workspace_dir(config) != item.workspace.dir:
+            return self.enqueue(config)
+        item.config = config
+        self.retry(task_id)
+        return item
 
     def remove(self, task_id: str) -> None:
         """把终态任务移出列表（产物文件不受影响）。"""

@@ -129,6 +129,25 @@ def _sanitize(name: str) -> str:
     return cleaned or "task"
 
 
+def workspace_dir(
+    output_dir: str | Path,
+    media_path: str | Path,
+    category: str = "",
+    stem: str = "",
+) -> Path:
+    """按 Workspace 的目录命名规则计算工作夹路径（不创建目录、不读
+    manifest）。
+
+    TaskManager.restart 用它对比窗口当前配置与原任务是否指向同一
+    工作夹，避免仅为比较而构造 Workspace（构造会建目录、加载
+    manifest）。参数与命名规则须与 Workspace.__init__ 保持同步。
+    """
+    base = _sanitize(stem) if stem else _sanitize(Path(media_path).stem)
+    if category:
+        return Path(output_dir) / f"{base}_{_sanitize(category)}"
+    return Path(output_dir) / base
+
+
 # ---------------------------------------------------------------- 流程顺序表
 # 流程查看窗口"继续"按钮用：从某流程重跑时按顺序重置该阶段及全部下游
 # manifest 标记。步骤 ID 与 pipeline_panel 步骤一致；proofread 步骤的
@@ -187,10 +206,7 @@ class Workspace:
         """
         self.media_path = Path(media_path)
         self._stem = _sanitize(stem) if stem else _sanitize(self.media_path.stem)
-        if category:
-            self.dir = Path(output_dir) / f"{self._stem}_{_sanitize(category)}"
-        else:
-            self.dir = Path(output_dir) / self._stem
+        self.dir = workspace_dir(output_dir, media_path, category, stem)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.dir / "manifest.json"
         self._manifest: dict = self._load_manifest()
