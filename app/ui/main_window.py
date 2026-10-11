@@ -1,4 +1,4 @@
-"""主窗口：顶部资源状态栏 + 中部任务列表 + 底部系统监视栏。
+"""主窗口：顶部资源状态栏 + 中部任务列表 + 底部系统监视栏与页脚。
 
 任务配置与执行监控移入独立的任务窗口（点任务列表"＋"创建）；
 本窗口只承担队列总览：任务状态/进度一览、双击打开任务窗口。
@@ -29,6 +29,7 @@ from app.ui.dialogs.task_dialog import (
     TaskWindowBase,
     TtsTaskWindow,
 )
+from app.ui.widgets.footer_bar import FooterBar
 from app.ui.widgets.resource_bar import ResourceStatusBar
 from app.ui.widgets.system_monitor import SystemMonitorBar
 from app.ui.widgets.task_list import TaskListPanel
@@ -118,6 +119,9 @@ class MainWindow(QMainWindow):
         # ------------------------------ 底部：系统监视栏 ------------------------------
         self._monitor = SystemMonitorBar()
 
+        # ------------------------------ 最底部：页脚（合规提示 + 意见反馈） ------------------------------
+        self._footer = FooterBar()
+
         # ------------------------------ 总装 ------------------------------
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -126,6 +130,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._resource_bar)
         layout.addWidget(self._task_list, 1)
         layout.addWidget(self._monitor)
+        layout.addWidget(self._footer)
         self.setCentralWidget(central)
 
     # ------------------------------------------------------------------ 设备 / 环境

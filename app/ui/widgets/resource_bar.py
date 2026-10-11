@@ -9,9 +9,11 @@
 该窗口的"运行环境"行）。
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from app.core.config import AppConfig
 from app.core.hardware import DeviceInfo
 from app.core.i18n import tr
 from app.resources.model import ResourceInfo, ResourceManager, ResourceStatus
@@ -162,11 +164,14 @@ class ResourceStatusBar(QFrame):
 
         layout.addStretch(0)
 
-        # 统一设置按钮（所有资源卡片的右侧）
-        self._settings_button = QPushButton(tr("common.settings"))
+        # 统一设置按钮（所有资源卡片的右侧，纯图标 + tooltip 说明用途）
+        self._settings_button = QPushButton()
         self._settings_button.setObjectName("cardSettingButton")
+        self._settings_button.setIcon(QIcon(str(AppConfig.ICONS_DIR / "settings.svg")))
+        self._settings_button.setIconSize(QSize(20, 20))
+        self._settings_button.setFixedSize(36, 36)
+        self._settings_button.setToolTip(tr("common.settings"))
         self._settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._settings_button.setFixedHeight(32)
         self._settings_button.clicked.connect(self.settings_requested.emit)
         layout.addWidget(self._settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
 

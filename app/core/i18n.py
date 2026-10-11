@@ -73,11 +73,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.cleanup_keep": "留作备用",
         "main.cleanup_done": "临时文件已清理，成品保留在工作目录。",
         "main.voice_clone_title": "声音克隆使用授权",
-        "main.voice_clone_text": (
-            "您即将使用声音克隆功能生成配音。请确认您拥有原音频中声音的合法使用权利，"
-            "且生成的配音仅用于合法用途。"
-        ),
+        "main.voice_clone_text": "请确认您拥有原音频中声音的合法使用权利，且生成的配音仅用于合法用途。",
         "main.voice_clone_agree": "我已确认拥有授权",
+        "main.feedback": "意见反馈：517382364@qq.com",
         # ---- 流程引擎 ----
         "runner.started": "开始处理：{name}",
         "runner.stage_skipped": "跳过{stage}（复用已有产物）",
@@ -208,8 +206,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "step.tts_voice_review": "语音复核",
         "step.tts_mux": "封装输出",
         # ---- 设置窗口 ----
-        "settings.title": "设置",
-        "settings.language": "界面语言",
         "settings.language_hint": "切换后立即生效",
         "settings.resources": "资源管理",
         "settings.builtin": "内置工具",
@@ -549,12 +545,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.cleanup_keep": "Keep for later",
         "main.cleanup_done": "Temporary files cleaned; outputs kept in the work directory.",
         "main.voice_clone_title": "Voice cloning notice",
-        "main.voice_clone_text": (
-            "You are about to use voice cloning to generate dubbing. Please confirm you "
-            "have the legal right to use the voice in the original audio and that the "
-            "generated dubbing is for lawful use only."
-        ),
+        "main.voice_clone_text": "Please confirm you have the legal right to use the voice in the original audio and that the generated dubbing is for lawful use only.",
         "main.voice_clone_agree": "I confirm I have the right",
+        "main.feedback": "Feedback: 517382364@qq.com",
         # ---- Pipeline engine ----
         "runner.started": "Processing started: {name}",
         "runner.stage_skipped": "Skipped {stage} (reusing existing outputs)",
@@ -687,8 +680,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "step.tts_voice_review": "Voice review",
         "step.tts_mux": "Mux output",
         # ---- Settings dialog ----
-        "settings.title": "Settings",
-        "settings.language": "Interface language",
         "settings.language_hint": "Applied immediately",
         "settings.resources": "Resources",
         "settings.builtin": "Built-in",

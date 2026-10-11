@@ -96,11 +96,10 @@ QPushButton#linkButton:hover {
     text-decoration: underline;
 }
 
-/* 小尺寸设置按钮（资源卡片右侧） */
+/* 小尺寸设置按钮（资源状态栏右侧，纯图标） */
 QPushButton#cardSettingButton {
-    padding: 3px 12px;
-    font-size: 12px;
-    border-radius: 6px;
+    padding: 0;
+    border-radius: 8px;
 }
 
 /* ------------------------------ 输入控件 ------------------------------ */
@@ -435,6 +434,16 @@ QLabel#monitorSub {
 }
 QFrame#sparkline {
     background: transparent;
+}
+
+/* ------------------------------ 主窗口页脚（合规提示 / 意见反馈） ------------------------------ */
+QLabel#footerText {
+    color: #9CA3AF;
+    font-size: 11px;
+}
+QLabel#footerFeedback {
+    color: #6B7280;
+    font-size: 11px;
 }
 
 /* ------------------------------ 流程结果查看窗口 ------------------------------ */

@@ -22,6 +22,9 @@ class AppConfig:
     # LOGO 目录：app/resources/logo（Windows 用 .ico，macOS 用 .icns）
     LOGO_DIR: Path = RESOURCES_DIR / "logo"
 
+    # 图标目录：app/resources/icons（界面控件用 SVG 图标，如设置齿轮）
+    ICONS_DIR: Path = RESOURCES_DIR / "icons"
+
     # 输出目录（任务产物默认输出到此处，可在任务设置中修改）
     OUTPUT_DIR: Path = APP_ROOT / "output"
 

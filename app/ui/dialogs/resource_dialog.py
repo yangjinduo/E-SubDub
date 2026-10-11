@@ -91,7 +91,7 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------ 构建
 
     def _build_ui(self) -> None:  # noqa: C901 - 多为布局代码
-        self.setWindowTitle(tr("settings.title"))
+        self.setWindowTitle(tr("common.settings"))
         self.setMinimumWidth(780)
 
         layout = QVBoxLayout(self)
@@ -101,7 +101,8 @@ class SettingsDialog(QDialog):
         # ---- 界面语言 ----
         lang_row = QHBoxLayout()
         lang_row.setSpacing(10)
-        self._lang_label = QLabel(tr("settings.language"))
+        # 标签双语写死（不随界面语言翻译）：无论用户懂哪种语言，都能认出此处修改界面语言
+        self._lang_label = QLabel("语言 / Language")
         self._lang_combo = QComboBox()
         for code, native in SUPPORTED_LANGUAGES.items():
             self._lang_combo.addItem(native, code)
@@ -276,7 +277,7 @@ class SettingsDialog(QDialog):
         """环境搭建结束：日志 + 失败弹窗 + 刷新运行环境行。"""
         self.log_requested.emit(detail)
         if not ok:
-            QMessageBox.warning(self, tr("settings.title"), detail)
+            QMessageBox.warning(self, tr("common.settings"), detail)
         self._rebuild_resource_rows()
 
     def _on_env_cancelled(self) -> None:
@@ -364,9 +365,8 @@ class SettingsDialog(QDialog):
         self.language_changed.emit(code)
 
     def _retranslate(self) -> None:
-        """语言切换后刷新本窗口内的静态文案（资源行整体重建）。"""
-        self.setWindowTitle(tr("settings.title"))
-        self._lang_label.setText(tr("settings.language"))
+        """语言切换后刷新本窗口内的静态文案（语言标签双语写死无需刷新；资源行整体重建）。"""
+        self.setWindowTitle(tr("common.settings"))
         self._lang_hint.setText(tr("settings.language_hint"))
         self._resources_title.setText(tr("settings.resources"))
         self._rebuild_resource_rows()
@@ -442,7 +442,7 @@ class SettingsDialog(QDialog):
         info = self._manager.get(key)
         self.log_requested.emit(tr("settings.download_failed", name=info.model_name, error=error))
         QMessageBox.warning(
-            self, tr("settings.title"), tr("settings.download_failed", name=info.model_name, error=error)
+            self, tr("common.settings"), tr("settings.download_failed", name=info.model_name, error=error)
         )
         self._rebuild_resource_rows()
 
