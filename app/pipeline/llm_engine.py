@@ -27,7 +27,7 @@ def resolve_llama_server_exe() -> str:
     - Windows: 内置 tools/llama.cpp/llama-server.exe；
     - macOS/Linux: 内置 tools/llama.cpp/llama-server → PATH（如 brew 安装）。
     """
-    root = AppConfig.APP_ROOT / "tools" / "llama.cpp"
+    root = AppConfig.TOOLS_DIR / "llama.cpp"
     if os.name == "nt":
         candidate = root / "llama-server.exe"
         if candidate.is_file():

@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
-"""运行环境搭建：TTS 独立虚拟环境（.venv-tts）+ llama-server 可执行文件。
+"""运行环境搭建：ML 推理环境（.venv-ml）+ TTS 独立环境（.venv-tts）+ llama-server。
 
 设置窗口"运行环境"行 / 资源栏推理设备卡对应的后台逻辑：
+- ML 环境（人声分离 demucs + MOSS ASR）：ASR 的 remote code 需要
+  transformers 5.x，与 TTS 所需 4.x 冲突，两个 venv 严禁合并；冻结态
+  （Nuitka 安装包）主程序无 Python 运行时，ML 推理跑在独立的 .venv-ml
+  （自装 torch + transformers 5.x + demucs）。开发态直接复用主环境
+  （worker 用当前解释器运行，不搭建 .venv-ml）。
 - TTS 环境：检测复用 app.pipeline.tts.tts_runtime_ready()；搭建步骤复刻
-  已手工验证的流程——venv 以 --system-site-packages 创建并写 .pth 共享
-  主环境 torch（避免重复安装 3GB CUDA torch）、IndexTTS 源码克隆到
-  third_party/index-tts、核心依赖 --no-deps 安装（防止 pip 把共享 torch
-  降级）、torchaudio 2.8 装完后剥离其 C 扩展（与共享 torch 2.14 二进制
-  不兼容，纯 Python 层完整可用）。
+  已手工验证的流程——venv 创建并写 .pth 共享 torch/numpy（开发态共享
+  主环境；冻结态共享 .venv-ml，方向单一：.venv-tts 只借不外借）、
+  IndexTTS 源码克隆到 third_party/index-tts、核心依赖 --no-deps 安装
+  （防止 pip 把共享 torch 降级）、transformers 4.52 自装以遮蔽共享方的
+  5.x（.venv-tts 自身 site-packages 优先级更高）、torchaudio 2.8 装完
+  后剥离其 C 扩展（与共享 torch 2.14 二进制不兼容，纯 Python 层完整可用）。
 - LLAMA 服务：llama.cpp 预编译版只在 GitHub Releases 发布，经 gh-proxy.com
   加速下载（直连兜底），按平台/设备选包（Windows：有 N 卡选 CUDA 构建，
   否则 CPU 构建；macOS：arm64 / x64），解压到 tools/llama.cpp/。CUDA 构建
   需一并下载 cudart 伴随包（cublas/cudart 运行库，ggml-cuda.dll 动态链接
   它们；缺失时 llama-server 静默回退 CPU）。
+
+冻结态的 venv 创建基础解释器：安装包内嵌便携 CPython
+（runtime/python，python-build-standalone），开发态用当前解释器。
 
 所有步骤幂等：已完成部分（venv 齐备、源码在位、llama-server 在位）自动
 跳过，失败或取消后重跑只补缺失部分。
@@ -36,10 +45,15 @@ from pathlib import Path
 import requests
 from PySide6.QtCore import QObject, QThread, Signal
 
-from app.core.config import AppConfig
+from app.core.config import AppConfig, is_frozen
 from app.core.hardware import DeviceInfo
 from app.core.i18n import tr
 from app.pipeline.llm_engine import resolve_llama_server_exe
+from app.pipeline.ml_client import (
+    ML_VENV_DIR,
+    get_ml_venv_python,
+    ml_runtime_ready,
+)
 from app.pipeline.tts import (
     INDEX_REPO_DIR,
     TTS_VENV_DIR,
@@ -54,7 +68,33 @@ GH_PROXY = "https://gh-proxy.com/"
 
 INDEXTTS_REPO = "https://github.com/index-tts/index-tts.git"
 LLAMA_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
-LLAMA_TOOLS_DIR = AppConfig.APP_ROOT / "tools" / "llama.cpp"
+LLAMA_TOOLS_DIR = AppConfig.TOOLS_DIR / "llama.cpp"
+
+# ---------------------------------------------------------------- ML 依赖清单
+# .venv-ml（冻结态）：ASR/demucs 推理环境。transformers 必须为 5.x
+# （MOSS remote code 按其编写）；torch 版本与 .venv-tts 共享方一致，
+# GPU 装 PyPI 默认版（自带 CUDA），无 N 卡走 pytorch 官方 CPU 源（小得多）
+_ML_TORCH = "torch==2.14.0"
+_ML_TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+# torch/numpy 用 constraints 锁死（pip 装 demucs 等时不得重解析/升降级）
+_ML_CONSTRAINTS = ["torch==2.14.0", "numpy==2.5.3"]
+# 其余依赖：正常带依赖安装（constraints 保证共享的 torch/numpy 不被动）
+_ML_PACKAGES = [
+    "transformers==5.17.0",
+    "accelerate==1.15.0",
+    "demucs==4.1.0",
+    "silero-vad==6.2.3",
+    "soundfile==0.14.0",
+    "numpy==2.5.3",
+]
+
+# .venv-ml 内执行的导入冒烟测试（transformers 必须为 5.x）
+_ML_SMOKE_IMPORTS = (
+    "import torch, numpy, soundfile, transformers, accelerate, silero_vad, "
+    "demucs; "
+    "import sys; sys.exit(0 if int(transformers.__version__.split('.')[0]) >= 5 "
+    "else 3)"
+)
 
 # ---------------------------------------------------------------- 依赖清单
 # 版本与手工验证通过的现场环境完全一致（.venv-tts 逐一核对 dist-info）
@@ -138,9 +178,12 @@ class _Cancelled(Exception):
 # ---------------------------------------------------------------- 状态查询
 
 def environment_status() -> dict:
-    """当前运行环境状态：TTS 虚拟环境 + llama-server（均只做文件级检查，毫秒级）。"""
+    """当前运行环境状态：ML + TTS 虚拟环境 + llama-server（均只做文件级检查，毫秒级）。"""
+    ml_ok, ml_detail = ml_runtime_ready()
     tts_ok, tts_detail = tts_runtime_ready()
     return {
+        "ml_ready": ml_ok,
+        "ml_detail": ml_detail,
         "tts_ready": tts_ok,
         "tts_detail": tts_detail,
         "llama_ready": _llama_runtime_ready(),
@@ -168,8 +211,50 @@ def _llama_runtime_ready() -> bool:
 
 
 def _main_site_packages() -> Path:
-    """主环境（当前解释器）site-packages 绝对路径。"""
+    """torch/numpy 共享方 site-packages（.venv-tts 经 .pth 借用）。
+
+    - 开发态：主环境（当前解释器）site-packages；
+    - 冻结态：.venv-ml 的 site-packages（主程序无 Python 运行时，
+      torch 只存在于 .venv-ml；.venv-tts 自装 transformers 4.52 遮蔽
+      共享方 5.x，机制与开发态遮蔽主环境 5.x 一致）。
+    """
+    if is_frozen():
+        if os.name == "nt":
+            return ML_VENV_DIR / "Lib" / "site-packages"
+        lib = ML_VENV_DIR / "lib"
+        for p in lib.glob("python*/site-packages"):
+            if p.is_dir():
+                return p
+        return lib / "site-packages"
     return Path(sysconfig.get_paths()["purelib"])
+
+
+def _ml_venv_site_packages() -> Path:
+    """定位 .venv-ml 的 site-packages 目录（跨平台）。"""
+    if os.name == "nt":
+        return ML_VENV_DIR / "Lib" / "site-packages"
+    lib = ML_VENV_DIR / "lib"
+    for p in lib.glob("python*/site-packages"):
+        if p.is_dir():
+            return p
+    return lib / "site-packages"
+
+
+def _bootstrap_python() -> Path:
+    """创建两个 venv 的基础解释器。
+
+    开发态：当前解释器（主环境，--system-site-packages 才有意义）；
+    冻结态：安装包内嵌的便携 CPython（runtime/python）——冻结可执行中
+    ``sys.executable -m venv`` 无法工作（无标准库 venv 模块与 ensurepip）。
+    """
+    if not is_frozen():
+        return Path(sys.executable)
+    py = AppConfig.runtime_python_exe()
+    if not py.is_file():
+        raise RuntimeError(
+            f"安装包缺少内置 Python 运行时（{py}），无法创建虚拟环境"
+        )
+    return py
 
 
 def _venv_site_packages() -> Path:
@@ -224,6 +309,16 @@ class _EnvSetupThread(QThread):
         try:
             results: dict = {}
 
+            # ---- ML 推理环境（冻结态搭建 .venv-ml；开发态主环境即就绪） ----
+            self.step_changed.emit(tr("env.step.check_ml"))
+            ml_ok, _ = ml_runtime_ready()
+            if not ml_ok and is_frozen():
+                self._setup_ml()
+                ml_ok, detail = ml_runtime_ready()
+                if not ml_ok:
+                    raise RuntimeError(f"ML 环境搭建后仍未通过检查：{detail}")
+            results["ml_ready"] = ml_ok
+
             # ---- TTS 虚拟环境 ----
             self.step_changed.emit(tr("env.step.check_tts"))
             tts_ok, _ = tts_runtime_ready()
@@ -246,16 +341,80 @@ class _EnvSetupThread(QThread):
             logger.exception("环境搭建失败")
             self.failed.emit(f"{type(e).__name__}: {e}")
 
+    # ------------------------------------------------------------------ ML
+
+    def _setup_ml(self) -> None:
+        """搭建 .venv-ml（冻结态；全部步骤幂等，已存在的自动跳过）。
+
+        transformers 5.x 与 TTS 所需 4.x 冲突，故本环境完全独立
+        （不共享任何 site-packages）；torch/numpy 与 .venv-tts 共享方
+        版本一致——.venv-tts 的 .pth 指到这里借 torch/numpy。
+        """
+        # 1. 创建虚拟环境（便携 CPython 基础上，完全独立）
+        if not get_ml_venv_python().is_file():
+            self.step_changed.emit(tr("env.step.ml_venv"))
+            self._run([str(_bootstrap_python()), "-m", "venv", str(ML_VENV_DIR)])
+
+        site_packages = _ml_venv_site_packages()
+
+        # 2. 安装 torch：有 N 卡装 PyPI 默认版（自带 CUDA，约 3GB）；
+        #    无 N 卡走 pytorch 官方 CPU 源（约 200MB）
+        if not (site_packages / "torch").is_dir():
+            has_cuda = self._device is not None and self._device.device == "cuda"
+            step = tr("env.step.ml_torch_cuda" if has_cuda else "env.step.ml_torch_cpu")
+            cmd = [
+                str(get_ml_venv_python()), "-m", "pip", "install",
+                "--disable-pip-version-check", _ML_TORCH,
+            ]
+            if not has_cuda:
+                cmd += ["--index-url", _ML_TORCH_CPU_INDEX]
+            self._run(cmd, step)
+
+        # 3. 写 constraints（锁 torch/numpy，后续安装不得重解析共享件）
+        constraints = ML_VENV_DIR / "constraints.txt"
+        constraints.write_text(
+            "\n".join(_ML_CONSTRAINTS) + "\n", encoding="utf-8"
+        )
+
+        # 4. 安装其余依赖（transformers 5.x / demucs / silero-vad 等）
+        self._pip_install(
+            _ML_PACKAGES, tr("env.step.ml_pip"),
+            no_deps=False, python=get_ml_venv_python(),
+            constraints=constraints,
+        )
+
+        # 5. 导入冒烟测试（transformers 必须 5.x）
+        self.step_changed.emit(tr("env.step.ml_verify"))
+        proc = subprocess.run(
+            [str(get_ml_venv_python()), "-c", _ML_SMOKE_IMPORTS],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+            cwd=str(AppConfig.DATA_ROOT),
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip()[-600:]
+            raise RuntimeError(f"ML 依赖导入验证失败：\n{tail}")
+
     # ------------------------------------------------------------------ TTS
 
     def _setup_tts(self) -> None:
         """搭建 .venv-tts（全部步骤幂等，已存在的自动跳过）。"""
-        # 1. 创建虚拟环境（--system-site-packages 使基础解释器的标准库扩展可见）
+        # 1. 创建虚拟环境：开发态以 --system-site-packages 建在主环境上
+        #    （标准库扩展可见）；冻结态基于便携 CPython（无包可共享，纯靠
+        #    第 2 步的 .pth 借 .venv-ml 的 torch/numpy）
         if not get_tts_venv_python().is_file():
             self.step_changed.emit(tr("env.step.venv"))
-            self._run([sys.executable, "-m", "venv", "--system-site-packages", str(TTS_VENV_DIR)])
+            cmd = [str(_bootstrap_python()), "-m", "venv"]
+            if not is_frozen():
+                cmd.append("--system-site-packages")
+            cmd.append(str(TTS_VENV_DIR))
+            self._run(cmd)
 
-        # 2. 写 .pth 共享主环境 site-packages（torch 2.14 / numpy 等免重复安装）
+        # 2. 写 .pth 共享 torch/numpy（开发态=主环境；冻结态=.venv-ml）
         self.step_changed.emit(tr("env.step.pth"))
         site_packages = _venv_site_packages()
         site_packages.mkdir(parents=True, exist_ok=True)
@@ -299,7 +458,7 @@ class _EnvSetupThread(QThread):
             encoding="utf-8",
             errors="replace",
             timeout=600,
-            cwd=str(AppConfig.APP_ROOT),
+            cwd=str(AppConfig.DATA_ROOT),
             env={**os.environ, "PYTHONUTF8": "1"},
         )
         if proc.returncode != 0:
@@ -513,9 +672,24 @@ class _EnvSetupThread(QThread):
 
     # ------------------------------------------------------------------ 子进程
 
-    def _pip_install(self, packages: list[str], step_text: str, no_deps: bool) -> None:
-        """在 .venv-tts 内执行 pip install。"""
-        cmd = [str(get_tts_venv_python()), "-m", "pip", "install", "--disable-pip-version-check"]
+    def _pip_install(
+        self,
+        packages: list[str],
+        step_text: str,
+        no_deps: bool,
+        python: Path | None = None,
+        constraints: Path | None = None,
+    ) -> None:
+        """在指定虚拟环境内执行 pip install（默认 .venv-tts）。
+
+        constraints 提供时用 -c 锁定共享依赖版本（防 pip 重解析 torch）。
+        """
+        py = python or get_tts_venv_python()
+        cmd = [
+            str(py), "-m", "pip", "install", "--disable-pip-version-check",
+        ]
+        if constraints is not None:
+            cmd += ["-c", str(constraints)]
         if no_deps:
             cmd.append("--no-deps")
         cmd.extend(packages)
@@ -533,7 +707,7 @@ class _EnvSetupThread(QThread):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=str(AppConfig.APP_ROOT),
+                cwd=str(AppConfig.DATA_ROOT),
                 creationflags=_CREATION_FLAGS,
             )
         except FileNotFoundError as e:
@@ -602,8 +776,13 @@ class EnvSetupManager(QObject):
     # ------------------------------------------------------------------ 结果
 
     def _on_done(self, results: dict) -> None:
-        ok = bool(results.get("tts_ready")) and bool(results.get("llama_ready"))
+        ok = (
+            bool(results.get("ml_ready"))
+            and bool(results.get("tts_ready"))
+            and bool(results.get("llama_ready"))
+        )
         detail = (
+            f"{tr('bar.env_ml')}：{_status_text(results.get('ml_ready'))}；"
             f"{tr('bar.env_tts')}：{_status_text(results.get('tts_ready'))}；"
             f"{tr('bar.env_llama')}：{_status_text(results.get('llama_ready'))}"
         )

@@ -124,11 +124,13 @@ class DeviceCard(QFrame):
         color = "#DC2626" if device.is_slow else "#059669"
         self._device_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
-    def set_env_state(self, tts_ready: bool, llama_ready: bool) -> None:
-        """更新运行环境徽标：TTS 虚拟环境与 LLAMA 服务均就绪才显示已就绪。"""
-        self._badge.setText(_badge_text(tts_ready and llama_ready))
-        self._badge.setObjectName("readyBadge" if (tts_ready and llama_ready) else "notReadyBadge")
+    def set_env_state(self, ml_ready: bool, tts_ready: bool, llama_ready: bool) -> None:
+        """更新运行环境徽标：全部环境就绪才显示已就绪（悬停见逐项状态）。"""
+        all_ready = ml_ready and tts_ready and llama_ready
+        self._badge.setText(_badge_text(all_ready))
+        self._badge.setObjectName("readyBadge" if all_ready else "notReadyBadge")
         self._badge.setToolTip(
+            f"{tr('bar.env_ml')}：{_badge_text(ml_ready)}\n"
             f"{tr('bar.env_tts')}：{_badge_text(tts_ready)}\n"
             f"{tr('bar.env_llama')}：{_badge_text(llama_ready)}"
         )
@@ -188,6 +190,6 @@ class ResourceStatusBar(QFrame):
         """更新推理设备显示。"""
         self._device_card.set_device(device)
 
-    def set_env_state(self, tts_ready: bool, llama_ready: bool) -> None:
-        """更新运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态显示。"""
-        self._device_card.set_env_state(tts_ready, llama_ready)
+    def set_env_state(self, ml_ready: bool, tts_ready: bool, llama_ready: bool) -> None:
+        """更新运行环境（ML / TTS 虚拟环境 / LLAMA 服务）就绪状态显示。"""
+        self._device_card.set_env_state(ml_ready, tts_ready, llama_ready)

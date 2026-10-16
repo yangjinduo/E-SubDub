@@ -45,17 +45,76 @@ _WIN_GPU_CLASS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11c
 
 
 def detect_device() -> DeviceInfo:
-    """基于 torch 的精确设备检测。
+    """精确设备检测。优先级：NVIDIA CUDA > macOS MPS > CPU（慢速）。
 
-    优先级：NVIDIA CUDA > macOS MPS > CPU（慢速）。
-    torch 延迟导入，任何导入或查询异常均安全回退到 CPU。
+    - 开发态：当前解释器延迟导入 torch，任何异常安全回退 CPU；
+    - 冻结态（Nuitka 安装包）：主程序无 torch，改用 .venv-ml 的 Python
+      跑探测脚本（未搭建环境时退回注册表粗检，不阻塞启动）。
     """
+    from app.core.config import is_frozen
+
+    if is_frozen():
+        return _detect_device_via_ml_venv()
     try:
         import torch  # 延迟导入：仅在调用时加载
     except Exception:
         # torch 未安装或导入失败，回退 CPU
         return _CPU_SLOW
+    return _detect_with_torch(torch)
 
+
+def _detect_device_via_ml_venv() -> DeviceInfo:
+    """冻结态设备探测：用 .venv-ml 的 Python 执行 torch 探测脚本。
+
+    输出两行：设备类型（cuda/mps/cpu）与显卡名（仅 CUDA）。
+    """
+    import subprocess
+
+    try:
+        from app.pipeline.ml_client import get_ml_venv_python
+    except Exception:
+        return detect_device_standalone()
+
+    py = get_ml_venv_python()
+    if not py.is_file():
+        return detect_device_standalone()
+
+    script = (
+        "import torch\n"
+        "if torch.cuda.is_available():\n"
+        "    print('cuda')\n"
+        "    print(torch.cuda.get_device_name(0))\n"
+        "elif (sys.platform == 'darwin'\n"
+        "      and torch.backends.mps.is_available()):\n"
+        "    print('mps')\n"
+        "else:\n"
+        "    print('cpu')\n"
+    )
+    script = script.replace("sys.platform", "__import__('sys').platform")
+    try:
+        proc = subprocess.run(
+            [str(py), "-c", script],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=90,
+        )
+        lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        if proc.returncode == 0 and lines:
+            kind = lines[0]
+            if kind == "cuda":
+                return DeviceInfo(
+                    device="cuda", is_slow=False,
+                    name=lines[1] if len(lines) > 1 else "",
+                )
+            if kind == "mps":
+                return DeviceInfo(device="mps", is_slow=False)
+            return _CPU_SLOW
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return detect_device_standalone()
+
+
+def _detect_with_torch(torch) -> DeviceInfo:
+    """基于已导入的 torch 做设备检测（开发态路径）。"""
     try:
         if torch.cuda.is_available():
             name = torch.cuda.get_device_name(0)
@@ -70,7 +129,7 @@ def detect_device() -> DeviceInfo:
         ):
             return DeviceInfo(device="mps", is_slow=False)
     except Exception:
-        # 检测过程中出现异常，保守回退 CPU
+        # 检测过程中出现异常，保守回退到 CPU
         return _CPU_SLOW
 
     return _CPU_SLOW

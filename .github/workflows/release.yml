@@ -1,0 +1,91 @@
+# Minim SubDub Windows 发行构建
+# ====================================================================
+# 触发：推送 v* 标签（如 v0.1.0）或手动 workflow_dispatch。
+# 流程：Nuitka standalone 编译（不含 torch 等推理大件，主程序仅
+#       数百 MB）→ 内嵌便携 CPython → Inno Setup 出安装包 →
+#       上传至 GitHub Release（tag 触发时）。
+# 说明：Windows runner 可用磁盘约 14 GB；因方案 C 不打包 torch /
+#       transformers / demucs（应用内 .venv-ml 按需搭建），
+#       构建依赖仅 PySide6 / librosa 等小件，磁盘富余。
+# ====================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 安装构建依赖（最小集，不含 torch / transformers / demucs）
+        run: |
+          pip install -r build/requirements-freeze.txt
+          # Nuitka 必须钉 4.2.2：4.3 在 PySide6 6.9.3 冻结态触发确定性
+          # access violation（启动即崩，详见 build.ps1 头部注释）
+          pip install nuitka==4.2.2
+
+      - name: 缓存便携 CPython（python-build-standalone）
+        uses: actions/cache@v4
+        with:
+          path: build/runtime
+          key: pbs-cpython-3.13.5-20250723-x86_64-win
+
+      # build.ps1 不再自动下载便携 CPython（本地构建由用户手动放置，
+      # 缺失时打印下载链接中止）；CI 用固定 URL 拉取同一发行包
+      - name: 准备便携 CPython（缓存未命中时下载）
+        shell: pwsh
+        run: |
+          $py = 'build/runtime/python/python.exe'
+          if (Test-Path $py) {
+            Write-Host '便携 CPython 缓存命中'
+          } else {
+            $url = 'https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz'
+            New-Item -ItemType Directory -Force -Path 'build/runtime' | Out-Null
+            curl.exe -L -o cpython.tar.gz $url
+            if ($LASTEXITCODE -ne 0) { throw '下载便携 CPython 失败' }
+            tar -xzf cpython.tar.gz -C 'build/runtime'
+            if ($LASTEXITCODE -ne 0) { throw '解压便携 CPython 失败' }
+            Remove-Item cpython.tar.gz
+            if (-not (Test-Path $py)) { throw "解压后布局异常：未找到 $py" }
+          }
+
+      - name: 确保 Inno Setup 可用
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ISCC -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          } else {
+            Write-Host "ISCC 已预装：$((Get-Command ISCC).Source)"
+          }
+
+      - name: 构建（Nuitka + Inno Setup）
+        shell: pwsh
+        run: ./build/build.ps1
+
+      - name: 上传安装包到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/dist/*.exe
+
+      - name: 归档 onedir 发行目录（供手动触发时下载验证）
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinimSubDub-onedir-${{ github.run_number }}
+          path: build/dist/MinimSubDub
+          if-no-files-found: error

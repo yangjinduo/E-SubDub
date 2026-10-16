@@ -91,8 +91,9 @@ class ResourceMeta:
 
 # ---------------------------------------------------------------- 模型根目录
 
-# 默认模型根目录：APP_ROOT/models；可被环境变量 SUBDUB_MODELS_ROOT 覆盖
-MODELS_ROOT: Path = AppConfig.APP_ROOT / "models"
+# 默认模型根目录：开发态=项目根/models，冻结态=用户数据目录/models；
+# 可被环境变量 SUBDUB_MODELS_ROOT 覆盖
+MODELS_ROOT: Path = AppConfig.MODELS_DIR
 
 
 def get_models_root() -> Path:

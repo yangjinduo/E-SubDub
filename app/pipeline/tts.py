@@ -49,10 +49,31 @@ STRETCH_REVIEW_LOW = 0.7    # 下限
 # 生成时长与目标偏差在该比例内直接使用，不做 time-stretch
 STRETCH_TOLERANCE = 0.10
 
-# 独立运行环境布局（项目根相对路径）
-TTS_VENV_DIR = AppConfig.APP_ROOT / ".venv-tts"
-INDEX_REPO_DIR = AppConfig.APP_ROOT / "third_party" / "index-tts"
-_WORKER_PATH = Path(__file__).with_name("tts_worker.py")
+# 独立运行环境布局（开发态=项目根；冻结态=用户数据目录，见 AppConfig.DATA_ROOT）
+TTS_VENV_DIR = AppConfig.DATA_ROOT / ".venv-tts"
+INDEX_REPO_DIR = AppConfig.THIRD_PARTY_DIR / "index-tts"
+
+# worker 脚本：开发态为源码文件；冻结态为随包分发的数据文件
+# （Nuitka 编译后 __file__ 指向虚拟路径，需回退到可执行文件同级的分发目录）
+_WORKER_NAME = "tts_worker.py"
+
+
+def _worker_script() -> Path:
+    """定位 tts_worker.py 脚本磁盘路径。"""
+    candidate = Path(__file__).with_name(_WORKER_NAME)
+    if candidate.is_file():
+        return candidate
+    # 冻结态：脚本随包分发在 <exe 目录>/app/pipeline/ 下
+    import sys
+
+    frozen_candidate = (
+        Path(sys.executable).resolve().parent / "app" / "pipeline" / _WORKER_NAME
+    )
+    if frozen_candidate.is_file():
+        return frozen_candidate
+    raise FileNotFoundError(
+        f"找不到 tts_worker.py（尝试过 {candidate} 与 {frozen_candidate}）"
+    )
 
 # 子进程单句合成最长等待（秒）：IndexTTS 长句低显存分片可能较慢
 _SYNTH_TIMEOUT_SEC = 1800.0
@@ -169,7 +190,7 @@ class TTSEngine:
             raise FileNotFoundError(f"IndexTTS-2.5 模型目录无效（缺 config.yaml）: {model_dir}")
 
         cmd = [
-            str(get_tts_venv_python()), str(_WORKER_PATH),
+            str(get_tts_venv_python()), str(_worker_script()),
             "--model-dir", str(model_dir),
             "--device", device,
         ]
@@ -180,6 +201,10 @@ class TTSEngine:
         env = {
             **os.environ,
             "PYTHONUTF8": "1",
+            # 冻结态 third_party 不在 worker 脚本推导的项目根下，显式指路
+            "MINIM_INDEX_REPO": str(INDEX_REPO_DIR),
+            # 冻结态 torchaudio 垫片等兜底资源的所在目录
+            "MINIM_DATA_ROOT": str(AppConfig.DATA_ROOT),
             # 强制 IndexTTS 辅助模型（w2v-bert/campplus/bigvgan 等）走魔搭下载：
             # 国内网络对 huggingface.co 常见 TCP 可通但 TLS 证书校验失败，
             # IndexTTS 的 need_proxy() 会误判为可直连；此开关使其改走
@@ -195,7 +220,7 @@ class TTSEngine:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            cwd=str(AppConfig.APP_ROOT),
+            cwd=str(AppConfig.DATA_ROOT),
             env=env,
         )
         self._stdout_queue = queue.Queue()

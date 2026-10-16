@@ -10,6 +10,8 @@
   移除记录。
 """
 
+import logging
+
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
@@ -32,6 +34,11 @@ from PySide6.QtWidgets import (
 from app.core.i18n import tr
 from app.core.task_manager import TaskItem, TaskManager, TaskState
 from app.core.tts_runner import TtsTaskConfig
+
+# 启动期里程碑日志：冻结态无控制台，启动日志是唯一诊断出口
+# （冻结构建曾出现 TaskListPanel 构造期原生访问违例：根因是 Nuitka
+# 4.3 与 PySide6 互操作缺陷，构建须钉 nuitka==4.2.2，见 build.ps1）
+logger = logging.getLogger(__name__)
 
 # 任务状态 → i18n key（RUNNING 不在此表：_status_text 单独处理，显示当前流程名）
 _STATE_KEYS = {
@@ -142,6 +149,7 @@ class TaskListPanel(QFrame):
         self._row_by_id: dict[str, int] = {}
         # 行删除按钮（task_id → 按钮，随整表重建刷新）
         self._delete_buttons: dict[str, QPushButton] = {}
+        logger.info("任务列表：基础属性初始化完成")
 
         title = QLabel(tr("queue.title"))
         title.setObjectName("sectionTitle")
@@ -155,6 +163,7 @@ class TaskListPanel(QFrame):
         self._resume_button = QPushButton(tr("queue.resume"))
         self._resume_button.setObjectName("continueButton")
         self._resume_button.clicked.connect(self._on_queue_button_clicked)
+        logger.info("任务列表：标题与操作按钮创建完成")
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -163,6 +172,7 @@ class TaskListPanel(QFrame):
         for kind, key, object_name in self._ADD_BUTTONS:
             button = QPushButton(tr(key))
             button.setObjectName(object_name)
+            logger.info("任务列表：新建按钮就绪（%s），开始连接点击信号", kind)
             button.clicked.connect(
                 lambda _checked=False, k=kind: self.add_requested.emit(k)
             )
@@ -172,20 +182,24 @@ class TaskListPanel(QFrame):
 
         self._table = QTableWidget(0, 6)
         self._table.setObjectName("taskTable")
+        logger.info("任务列表：表格已创建")
         self._table.setHorizontalHeaderLabels([
             tr("queue.col.index"), tr("queue.col.name"),
             tr("queue.col.category"), tr("queue.col.status"),
             tr("queue.col.progress"), tr("queue.col.delete"),
         ])
+        logger.info("任务列表：表头标签已设置")
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         # 扩展选择：支持 Shift 连选、Ctrl 多选、鼠标拖拽框选
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        logger.info("任务列表：表格行为配置完成")
         self._table.customContextMenuRequested.connect(self._show_menu)
         self._table.cellDoubleClicked.connect(self._on_double_clicked)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        logger.info("任务列表：表格信号已连接")
         header_view = self._table.horizontalHeader()
         header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -194,28 +208,35 @@ class TaskListPanel(QFrame):
         header_view.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self._table.verticalHeader().setDefaultSectionSize(38)
+        logger.info("任务列表：列宽模式配置完成")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
         layout.addLayout(header)
         layout.addWidget(self._table, 1)
+        logger.info("任务列表：布局总装完成")
 
         # 队列事件 → 表格刷新
         manager.task_added.connect(lambda _tid: self._rebuild())
         manager.task_removed.connect(lambda _tid: self._rebuild())
+        logger.info("任务列表：增删信号已连接")
         manager.task_state_changed.connect(self._on_state_changed)
         manager.task_progress_changed.connect(self._on_progress_changed)
         # 流程步骤变化 → 状态列显示当前流程名（提取音频…/翻译…）
         manager.task_step_changed.connect(self._on_step_changed)
+        logger.info("任务列表：状态/进度信号已连接")
         # 队列结构/状态变化 → "继续执行"按钮可用性
         manager.task_added.connect(lambda _tid: self._update_resume_button())
         manager.task_removed.connect(lambda _tid: self._update_resume_button())
         manager.task_state_changed.connect(
             lambda _tid: self._update_resume_button()
         )
+        logger.info("任务列表：双态按钮信号已连接")
         self._update_resume_button()
+        logger.info("任务列表：双态按钮已刷新")
         self._rebuild()
+        logger.info("任务列表：整表重建完成")
 
     # ------------------------------------------------------------------ 行操作
 

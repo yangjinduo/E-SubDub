@@ -10,6 +10,7 @@ _StartupProbe 守护线程中执行：窗口先用快速粗检测结果立即显
 探测完成后经信号回主线程刷新设备卡与徽标，期间窗口始终可操作。
 """
 
+import logging
 import threading
 
 from PySide6.QtCore import QObject, Signal
@@ -33,6 +34,9 @@ from app.ui.widgets.footer_bar import FooterBar
 from app.ui.widgets.resource_bar import ResourceStatusBar
 from app.ui.widgets.system_monitor import SystemMonitorBar
 from app.ui.widgets.task_list import TaskListPanel
+
+# 启动期里程碑日志：冻结态无控制台，启动日志是唯一诊断出口
+logger = logging.getLogger(__name__)
 
 
 class _StartupProbe(QObject):
@@ -74,9 +78,9 @@ class MainWindow(QMainWindow):
         # 当前显示的设备信息：启动时为不依赖 torch 的快速粗检测结果，
         # _StartupProbe 完成精确检测后经信号替换
         self._device: DeviceInfo = device_info or detect_device_standalone()
-        # 运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态，设备卡徽标用；
+        # 运行环境（ML / TTS 虚拟环境 / LLAMA 服务）就绪状态，设备卡徽标用；
         # 探测完成前按上次缓存（首启为未就绪）显示
-        self._env_state: tuple[bool, bool] = (False, False)
+        self._env_state: tuple[bool, bool, bool] = (False, False, False)
         # 任务队列（挂在主窗口本体上：语言切换重建 central widget 不受影响）
         self._task_manager = TaskManager(parent=self)
         self._task_manager.device = self._device.device
@@ -85,13 +89,17 @@ class MainWindow(QMainWindow):
         self._task_manager.restore_tasks()
         # 环境搭建完成后刷新设备卡徽标（设置窗口触发，窗口关闭后仍生效）
         get_env_setup_manager().environment_changed.connect(self._on_env_changed)
+        logger.info("环境搭建管理器已连接")
         # 打开中的任务窗口（含未开始的空窗口；应用退出时统一销毁）
         self._task_windows: list[TaskWindowBase] = []
         # 启动期后台探测（精确设备 + 运行环境状态），完成后信号刷新
         self._probe = _StartupProbe()
         self._probe.result_ready.connect(self._on_probe_ready)
+        logger.info("开始构建主窗口界面")
         self._build_ui()
+        logger.info("主窗口界面构建完成")
         self._probe.start()
+        logger.info("启动探测线程已发起")
 
     # ------------------------------------------------------------------ 界面构建
 
@@ -110,17 +118,21 @@ class MainWindow(QMainWindow):
         # 环境徽标先按缓存状态显示，探测完成后由 _on_probe_ready 刷新
         self._resource_bar.set_env_state(*self._env_state)
         self._resource_bar.settings_requested.connect(self._open_settings_dialog)
+        logger.info("资源状态栏就绪")
 
         # ------------------------------ 中部：任务列表 ------------------------------
         self._task_list = TaskListPanel(self._task_manager)
         self._task_list.add_requested.connect(self._open_new_task_window)
         self._task_list.task_activated.connect(self._activate_task_window)
+        logger.info("任务列表面板就绪")
 
         # ------------------------------ 底部：系统监视栏 ------------------------------
         self._monitor = SystemMonitorBar()
+        logger.info("系统监视栏就绪")
 
         # ------------------------------ 最底部：页脚（合规提示 + 意见反馈） ------------------------------
         self._footer = FooterBar()
+        logger.info("页脚就绪")
 
         # ------------------------------ 总装 ------------------------------
         central = QWidget()
@@ -138,7 +150,9 @@ class MainWindow(QMainWindow):
     def _on_probe_ready(self, device: DeviceInfo, env: dict) -> None:
         """启动探测完成：刷新设备卡、环境徽标与队列推理设备。"""
         self._device = device
-        self._env_state = (env["tts_ready"], env["llama_ready"])
+        self._env_state = (
+            bool(env.get("ml_ready")), bool(env["tts_ready"]), bool(env["llama_ready"]),
+        )
         self._resource_bar.set_device(self._device)
         self._resource_bar.set_env_state(*self._env_state)
         self._task_manager.device = self._device.device
@@ -146,9 +160,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 运行环境
 
     def _refresh_env_state(self) -> None:
-        """检测运行环境（TTS 虚拟环境 / LLAMA 服务）并刷新设备卡徽标。"""
+        """检测运行环境（ML / TTS 虚拟环境 / LLAMA 服务）并刷新设备卡徽标。"""
         env = environment_status()
-        self._env_state = (env["tts_ready"], env["llama_ready"])
+        self._env_state = (
+            bool(env.get("ml_ready")), bool(env["tts_ready"]), bool(env["llama_ready"]),
+        )
         self._resource_bar.set_env_state(*self._env_state)
 
     def _on_env_changed(self) -> None:

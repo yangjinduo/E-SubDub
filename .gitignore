@@ -1,7 +1,9 @@
 # 虚拟环境（推荐）
+venv/
 .venv/
 .venv-x64/
-.venv-tts
+.venv-tts/
+.venv-ml/
 
 # 大模型
 models/
@@ -17,3 +19,18 @@ output/
 
 # 测试文件
 test/
+
+# 用户部署产物（应用内按需下载/克隆：llama.cpp 预编译、index-tts 源码）
+tools/
+third_party/
+
+# 构建产物（发行目录 / Nuitka 中间目录 / 便携 CPython 暂存）
+build/dist/
+build/work/
+build/runtime/
+*.build/
+*.dist/
+/runtime/
+
+# macOS
+.DS_Store
