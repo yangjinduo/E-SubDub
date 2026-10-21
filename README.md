@@ -10,6 +10,10 @@
 - 平台：Windows / macOS
 - 界面语言：简体中文 / English
 
+### 生成效果演示
+- [演示视频1](https://www.bilibili.com/video/BV19ea76RE1A/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
+- [演示视频2](https://www.bilibili.com/video/BV1t1a767ECH/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
+
 ## 功能特性
 
 - **三类任务入口**：任务列表顶部提供三个独立入口——**＋配音与字幕**（完整流程）、**＋生成字幕**（仅到译文审核）、**＋文本转语音**（纯 TTS）。
