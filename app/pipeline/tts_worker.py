@@ -39,17 +39,17 @@ import sys
 from pathlib import Path
 
 # 项目根（app/pipeline/tts_worker.py → 上两级）；third_party 官方仓库。
-# 冻结态（Nuitka 安装包）third_party 位于用户数据目录而非脚本推导的项目
-# 根，由父进程经 MINIM_INDEX_REPO 环境变量显式指路（见 tts.py 的 load）
+# 冻结态（Nuitka 安装包）third_party 位于安装目录而非脚本推导的项目
+# 根，由父进程经 ESUBDUB_INDEX_REPO 环境变量显式指路（见 tts.py 的 load）
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_INDEX_REPO = Path(os.environ.get("MINIM_INDEX_REPO") or _PROJECT_ROOT / "third_party" / "index-tts")
+_INDEX_REPO = Path(os.environ.get("ESUBDUB_INDEX_REPO") or _PROJECT_ROOT / "third_party" / "index-tts")
 sys.path.insert(0, str(_INDEX_REPO))
 # 项目根放末尾（不遮蔽 .venv-tts site-packages 里的真 torchaudio）。
 # 冻结态脚本以数据文件方式随包分发于安装目录 → _PROJECT_ROOT=安装目录，
-# 随包的 torchaudio 垫片在此；MINIM_DATA_ROOT（用户数据目录）若设置也
+# 随包的 torchaudio 垫片在此；ESUBDUB_DATA_ROOT（数据根目录）若设置也
 # 一并 append——两处垫片均只作未安装真包时的兜底
 sys.path.append(str(_PROJECT_ROOT))
-_data_root = os.environ.get("MINIM_DATA_ROOT")
+_data_root = os.environ.get("ESUBDUB_DATA_ROOT")
 if _data_root:
     sys.path.append(_data_root)
 

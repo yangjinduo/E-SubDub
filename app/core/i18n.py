@@ -19,7 +19,7 @@ from platformdirs import user_config_dir
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = "MinimSubDub"  # 配置目录标识（无空格）；显示名见 AppConfig.APP_NAME
+APP_NAME = "ESubDub"  # 配置目录标识（无空格无连字符）；显示名见 AppConfig.APP_NAME
 DEFAULT_LANGUAGE = "zh-CN"
 
 # 全局状态文件（tasks.json）结构版本：任务列表与全局设置共用的顶层
@@ -46,8 +46,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.delete": "删除",
         "common.download": "开始下载",
         "common.model_homepage": "模型主页",
+        "common.log_hint": "详细日志：{path}",
         # ---- 主窗口 ----
-        "main.title": "Minim SubDub",
+        "main.title": "E-SubDub",
         "main.start": "开始处理",
         "main.start_batch": "开始批量处理",
         "main.log.batch_started": "开始批量处理：共 {count} 个文件",
@@ -123,17 +124,23 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "env.step.ml_venv": "创建 ML 推理虚拟环境 .venv-ml…",
         "env.step.ml_torch_cuda": "安装 PyTorch（CUDA 版约 3GB，请耐心等待）…",
         "env.step.ml_torch_cpu": "安装 PyTorch（CPU 版）…",
+        "env.step.ml_torchaudio": "安装 torchaudio 兼容层（demucs 依赖，适配 torch 2.14）…",
         "env.step.ml_pip": "安装 ML 推理依赖（transformers 5.x / demucs / silero-vad）…",
         "env.step.ml_verify": "验证 ML 依赖导入…",
+        "env.step.ml_torch_repair": "torch 安装异常（疑似 DLL 被篡改 / 损坏），自动强制重装修复…",
+        "env.step.pip_retry": "{step}（下载源失败，切换备用源重试…）",
+        "env.dll_failure_hint": "已自动等待重试并重装 torch 仍不通过。常见原因：① 杀毒软件实时防护拦截新释放的 DLL（将安装目录加入信任区或暂时关闭实时防护后重试）；② CPU 过旧、缺少新版本 torch 所需指令集（老旧 CPU / 虚拟机环境常见，请对照部署日志中的 CPU 型号确认）。处理后请在设置窗口重新执行部署。",
         "env.step.check_tts": "检查 TTS 运行环境…",
         "env.step.venv": "创建独立虚拟环境 .venv-tts…",
         "env.step.pth": "配置共享依赖（torch 等，指向 ML 环境 / 主环境）…",
-        "env.step.clone": "克隆 IndexTTS 源码（gh-proxy 加速）…",
+        "env.step.clone": "下载 IndexTTS 源码（gh-proxy 加速）…",
         "env.step.pip_core": "安装核心依赖（transformers 4.52 / torchaudio 2.8）…",
         "env.step.pip_runtime": "安装 IndexTTS 运行依赖…",
         "env.step.pip_sub": "安装音频处理子依赖（matplotlib / tensorboard 等）…",
         "env.step.strip": "剥离 torchaudio C 扩展（适配共享 torch）…",
+        "env.step.nltk": "下载 g2p_en 词典数据（cmudict / pos tagger，gh-proxy 加速）…",
         "env.step.verify": "验证依赖导入…",
+        "env.step.repair": "修复损坏的依赖（强制重装）…",
         "env.step.llama_api": "查询 llama.cpp 最新版本…",
         "env.step.llama_download": "下载 llama-server",
         "env.step.llama_extract": "解压 llama-server…",
@@ -215,22 +222,35 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # ---- 设置窗口 ----
         "settings.language_hint": "切换后立即生效",
         "settings.resources": "资源管理",
+        "settings.deploy_all": "一键部署",
+        "settings.deploy_all_started": "一键部署已启动：并行搭建运行环境并下载全部缺失模型，目标位置为软件安装目录。",
+        "settings.deploy_all_running": "部署已在进行中，无需重复启动。",
+        "settings.deploy_all_nothing": "运行环境与全部模型均已就绪，无需部署。",
         "settings.builtin": "内置工具",
         "settings.builtin_hint": "随软件内置，无需下载或删除。",
         "settings.path_unknown": "（未知路径）",
         "settings.need_download": "需下载约 {size} GB",
         "settings.delete_hint": "删除后资源将恢复为未就绪（文件移入 .trash 目录，可找回）。",
-        "settings.choose_download_dir": "选择下载位置",
         "settings.download_started": "开始下载 {name}…",
         "settings.download_done": "{name} 下载完成，已就绪。",
         "settings.download_failed": "{name} 下载失败：{error}",
-        "settings.download_cancelled": "已取消 {name} 的下载，未完成文件移入 .trash。",
+        "settings.download_cancelled": "已取消 {name} 的下载，已完成部分保留，重新下载可续传。",
         "settings.delete_done": "已删除 {name} 的本地文件，状态恢复为未就绪。",
         "settings.delete_nothing": "{name} 没有可删除的本地文件。",
         "settings.delete_builtin": "FFmpeg 为内置工具，不支持删除。",
         "settings.downloading": "下载中 {pct}% · {speed}",
         "settings.confirm_delete_title": "确认删除",
         "settings.confirm_delete": "确定删除 {name} 的本地文件？\n文件将移入同级 .trash 目录，可手动找回。",
+        "settings.confirm_env_delete_title": "删除运行环境",
+        "settings.confirm_env_delete": (
+            "确定删除已部署的运行环境？\n"
+            "（.venv-ml / .venv-tts 虚拟环境、llama-server、IndexTTS 源码）\n"
+            "各组件将移入同级 .trash 目录，可手动找回；删除后可重新一键部署。\n"
+            "请先确保当前没有正在运行的配音任务。"
+        ),
+        "settings.env_delete_done": "运行环境已清除（移入回收目录），可重新一键部署。",
+        "settings.env_delete_nothing": "没有可删除的运行环境。",
+        "settings.env_delete_failed": "删除运行环境失败：{error}",
         # ---- ASR 校对对话框 ----
         "asr_review.title": "校对识别结果",
         "asr_review.heading": "核对识别文本",
@@ -525,8 +545,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.delete": "Delete",
         "common.download": "Download",
         "common.model_homepage": "Model homepage",
+        "common.log_hint": "Detailed log: {path}",
         # ---- Main window ----
-        "main.title": "Minim SubDub",
+        "main.title": "E-SubDub",
         "main.start": "Start",
         "main.start_batch": "Start batch",
         "main.log.batch_started": "Batch started: {count} files in total",
@@ -602,17 +623,23 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "env.step.ml_venv": "Creating the .venv-ml virtual environment…",
         "env.step.ml_torch_cuda": "Installing PyTorch (CUDA build, ~3 GB, please wait)…",
         "env.step.ml_torch_cpu": "Installing PyTorch (CPU build)…",
+        "env.step.ml_torchaudio": "Installing the torchaudio compatibility layer (demucs dependency, for torch 2.14)…",
         "env.step.ml_pip": "Installing ML dependencies (transformers 5.x / demucs / silero-vad)…",
         "env.step.ml_verify": "Verifying ML imports…",
+        "env.step.ml_torch_repair": "torch installation looks corrupted (DLL failure); force-reinstalling automatically…",
+        "env.step.pip_retry": "{step} (download source failed, retrying with a fallback mirror…)",
+        "env.dll_failure_hint": "Automatic waiting, retrying and reinstalling torch all failed. Common causes: ① antivirus real-time protection blocking freshly extracted DLLs (add the installation directory to the antivirus trust zone, or temporarily disable real-time protection, then retry); ② a CPU too old to support the instruction set required by recent torch builds (common on older CPUs / VMs — check the CPU model in the deployment log). After resolving, run the deployment again from the settings window.",
         "env.step.check_tts": "Checking the TTS runtime…",
         "env.step.venv": "Creating the .venv-tts virtual environment…",
         "env.step.pth": "Sharing dependencies (torch etc., from the ML env / main env)…",
-        "env.step.clone": "Cloning IndexTTS sources (via gh-proxy)…",
+        "env.step.clone": "Downloading IndexTTS sources (via gh-proxy)…",
         "env.step.pip_core": "Installing core dependencies (transformers 4.52 / torchaudio 2.8)…",
         "env.step.pip_runtime": "Installing IndexTTS runtime dependencies…",
         "env.step.pip_sub": "Installing audio sub-dependencies (matplotlib / tensorboard etc.)…",
         "env.step.strip": "Stripping torchaudio C extensions (for shared torch)…",
+        "env.step.nltk": "Downloading g2p_en lexicon data (cmudict / pos tagger, via gh-proxy)…",
         "env.step.verify": "Verifying imports…",
+        "env.step.repair": "Repairing corrupted dependency (force reinstall)…",
         "env.step.llama_api": "Fetching the latest llama.cpp release…",
         "env.step.llama_download": "Downloading llama-server",
         "env.step.llama_extract": "Extracting llama-server…",
@@ -696,22 +723,36 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # ---- Settings dialog ----
         "settings.language_hint": "Applied immediately",
         "settings.resources": "Resources",
+        "settings.deploy_all": "Deploy all",
+        "settings.deploy_all_started": "One-click deploy started: setting up the runtime and downloading all missing models in parallel, into the installation directory.",
+        "settings.deploy_all_running": "Deployment is already in progress; no need to start again.",
+        "settings.deploy_all_nothing": "Runtime and all models are ready; nothing to deploy.",
         "settings.builtin": "Built-in",
         "settings.builtin_hint": "Bundled with the app; no download or deletion needed.",
         "settings.path_unknown": "(unknown path)",
         "settings.need_download": "Requires ~{size} GB download",
         "settings.delete_hint": "After deletion the resource becomes not ready (files are moved to a .trash folder and can be recovered).",
-        "settings.choose_download_dir": "Choose download location",
         "settings.download_started": "Downloading {name}…",
         "settings.download_done": "{name} download complete, now ready.",
         "settings.download_failed": "{name} download failed: {error}",
-        "settings.download_cancelled": "Download of {name} cancelled; incomplete files moved to .trash.",
+        "settings.download_cancelled": "Download of {name} cancelled; finished parts are kept and resume on the next download.",
         "settings.delete_done": "Local files of {name} deleted; status is now not ready.",
         "settings.delete_nothing": "{name} has no local files to delete.",
         "settings.delete_builtin": "FFmpeg is built in and cannot be deleted.",
         "settings.downloading": "Downloading {pct}% · {speed}",
         "settings.confirm_delete_title": "Confirm deletion",
         "settings.confirm_delete": "Delete local files of {name}?\nFiles will be moved to a .trash folder next to them and can be recovered manually.",
+        "settings.confirm_env_delete_title": "Delete runtime environment",
+        "settings.confirm_env_delete": (
+            "Delete the deployed runtime environment?\n"
+            "(.venv-ml / .venv-tts virtualenvs, llama-server, IndexTTS source)\n"
+            "Components will be moved to a .trash folder and can be recovered manually; "
+            "you can run one-click deploy again afterwards.\n"
+            "Make sure no dubbing task is currently running."
+        ),
+        "settings.env_delete_done": "Runtime environment cleared (moved to trash); run one-click deploy to rebuild.",
+        "settings.env_delete_nothing": "No runtime environment to delete.",
+        "settings.env_delete_failed": "Failed to delete runtime environment: {error}",
         # ---- ASR review dialog ----
         "asr_review.title": "Review transcription",
         "asr_review.heading": "Check transcribed text",
@@ -1007,11 +1048,11 @@ _legacy_migrated = False
 
 
 def _config_dir() -> Path:
-    """用户配置目录（Windows %LOCALAPPDATA%/MinimSubDub、
-    macOS ~/Library/Application Support/MinimSubDub）。
+    """用户配置目录（Windows %LOCALAPPDATA%/ESubDub、
+    macOS ~/Library/Application Support/ESubDub）。
 
     appauthor=False：platformdirs 在 Windows 上默认把 appname 当作
-    appauthor 再拼一层目录（MinimSubDub/MinimSubDub），显式关闭。
+    appauthor 再拼一层目录（ESubDub/ESubDub），显式关闭。
     首次调用时把旧版双层目录里的 settings.json / tasks.json 迁移上来，
     并把旧 settings.json 的键合并进 tasks.json 后删除。
     """

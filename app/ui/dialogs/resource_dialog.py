@@ -1,11 +1,17 @@
 """统一设置窗口：界面语言切换 + 运行环境搭建 + 全部资源管理。
 
 替代旧的"单资源设置对话框"：一个入口查看五项资源的准备状态与本地路径，
-并直接执行删除（移入 .trash）与下载（魔搭 snapshot_download，含进度与取消）。
+并直接执行删除（移入 .trash）与下载（含进度与取消）。
 
 "运行环境"行位于资源列表最上方（音频提取之上）：检测 TTS 独立虚拟环境
 （.venv-tts）与 llama-server 是否就绪，未就绪时一键搭建（后台 QThread，
-含步骤进度与取消；完成后资源栏的推理设备卡同步刷新）。
+含步骤进度与取消；完成后资源栏的推理设备卡同步刷新）；已部署时提供
+删除按钮（各组件移入 .trash 可找回，与模型删除一致）。
+
+"资源管理"标题行右侧提供"一键部署"按钮：后台并行搭建运行环境与下载
+全部缺失模型（每资源独立下载线程，互不阻塞；环境搭建线程同步进行）。
+下载一律使用软件安装目录下的默认位置，不再让用户选择目标文件夹；
+下载中的资源在状态徽标处显示百分比，完成后才显示"已就绪"。
 
 下载使用全局 ModelDownloader 单例，关闭本窗口后下载仍可在后台继续，
 完成后资源状态栏卡片自动刷新。
@@ -13,15 +19,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QCursor, QDesktopServices
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
-    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -34,13 +37,18 @@ from PySide6.QtWidgets import (
 
 from app.core.hardware import DeviceInfo, detect_device_standalone
 from app.core.i18n import SUPPORTED_LANGUAGES, get_language, set_language, tr
+from app.resources.deploy_log import deploy_log_path
 from app.resources.downloader import get_model_downloader
-from app.resources.env_setup import environment_status, get_env_setup_manager
+from app.resources.env_setup import (
+    delete_runtime_env,
+    environment_status,
+    get_env_setup_manager,
+    runtime_env_components,
+)
 from app.resources.model import (
     RESOURCE_META,
     ResourceInfo,
     ResourceManager,
-    ResourceStatus,
     get_models_root,
 )
 
@@ -124,10 +132,18 @@ class SettingsDialog(QDialog):
         separator.setStyleSheet("background: #E5E7EB;")
         layout.addWidget(separator)
 
-        # ---- 资源管理 ----
+        # ---- 资源管理（标题行右侧：一键部署） ----
+        resources_header = QHBoxLayout()
+        resources_header.setSpacing(10)
         self._resources_title = QLabel(tr("settings.resources"))
         self._resources_title.setObjectName("sectionTitle")
-        layout.addWidget(self._resources_title)
+        resources_header.addWidget(self._resources_title)
+        resources_header.addStretch(1)
+        self._deploy_all_button = QPushButton(tr("settings.deploy_all"))
+        self._deploy_all_button.setObjectName("primaryButton")
+        self._deploy_all_button.clicked.connect(self._on_deploy_all_clicked)
+        resources_header.addWidget(self._deploy_all_button)
+        layout.addLayout(resources_header)
 
         # 资源行容器（状态变化时整体重建）
         self._rows_layout = QVBoxLayout()
@@ -179,10 +195,16 @@ class SettingsDialog(QDialog):
             name_layout.addWidget(model)
             grid.addWidget(name_column, row, 0)
 
-            # 列 1：状态徽标
+            # 列 1：状态徽标（下载中显示百分比，下载完成才显示"已就绪"）
+            downloading = self._is_downloading(info.key)
             badge = QLabel()
-            badge.setObjectName("readyBadge" if info.status.is_ready else "notReadyBadge")
-            badge.setText(tr("common.ready") if info.status.is_ready else tr("common.not_ready"))
+            if downloading:
+                badge.setObjectName("notReadyBadge")
+                badge.setText("0%")
+            else:
+                badge.setObjectName("readyBadge" if info.status.is_ready else "notReadyBadge")
+                badge.setText(tr("common.ready") if info.status.is_ready else tr("common.not_ready"))
+            self._row_refs[info.key] = {"badge": badge}
             grid.addWidget(badge, row, 1)
 
             # 列 2：位置 / 下载信息
@@ -193,6 +215,7 @@ class SettingsDialog(QDialog):
 
         self._rows_host = host
         self._rows_layout.addWidget(host)
+        self._update_deploy_button_state()
 
     def _build_env_row(self, grid: QGridLayout) -> None:
         """运行环境行：检测状态 + 搭建按钮 / 搭建进度 + 取消。"""
@@ -242,7 +265,7 @@ class SettingsDialog(QDialog):
             layout.addWidget(missing)
         grid.addWidget(cell, 0, 2)
 
-        # 列 3：操作（搭建 / 取消）
+        # 列 3：操作（搭建 / 删除 / 取消）
         actions = QWidget()
         actions_layout = QHBoxLayout(actions)
         actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -251,16 +274,55 @@ class SettingsDialog(QDialog):
             cancel_button = QPushButton(tr("common.cancel"))
             cancel_button.clicked.connect(self._env_mgr.cancel)
             actions_layout.addWidget(cancel_button)
-        elif not both_ready:
-            setup_button = QPushButton(tr("settings.env_setup"))
-            setup_button.clicked.connect(self._on_env_setup_clicked)
-            actions_layout.addWidget(setup_button)
+        else:
+            if not both_ready:
+                setup_button = QPushButton(tr("settings.env_setup"))
+                setup_button.clicked.connect(self._on_env_setup_clicked)
+                actions_layout.addWidget(setup_button)
+            # 有已部署组件（.venv-tts / tools / third_party 等）时提供删除，
+            # 与模型行的删除一致：移入 .trash 可找回，重新部署即重建
+            if runtime_env_components():
+                delete_button = QPushButton(tr("common.delete"))
+                delete_button.setObjectName("dangerButton")
+                delete_button.clicked.connect(self._on_env_delete_clicked)
+                actions_layout.addWidget(delete_button)
         actions_layout.addStretch(1)
         grid.addWidget(actions, 0, 3)
 
     def _on_env_setup_clicked(self) -> None:
         """点击"开始搭建"：后台补齐缺失的 TTS 虚拟环境 / llama-server。"""
         self._env_mgr.start_setup(self._device)
+
+    def _on_env_delete_clicked(self) -> None:
+        """清除已部署的运行环境（确认后各组件移入 .trash，可重新一键部署）。
+
+        开发态清除只动 .venv-tts / tools / third_party 等部署产物，
+        主开发环境（项目根 venv/）不受影响。
+        """
+        answer = QMessageBox.question(
+            self,
+            tr("settings.confirm_env_delete_title"),
+            tr("settings.confirm_env_delete"),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            moved = delete_runtime_env()
+        except RuntimeError as e:
+            msg = str(e)
+            path = deploy_log_path()
+            if path is not None:
+                msg += f"\n{tr('common.log_hint', path=path)}"
+            self.log_requested.emit(tr("settings.env_delete_failed", error=msg))
+            QMessageBox.warning(self, tr("common.settings"), msg)
+        else:
+            if moved:
+                self.log_requested.emit(tr("settings.env_delete_done"))
+            else:
+                self.log_requested.emit(tr("settings.env_delete_nothing"))
+            # 通知主窗口（设备卡等）运行环境就绪状态已变化
+            self._env_mgr.environment_changed.emit()
+        self._rebuild_resource_rows()
 
     def _on_env_started(self) -> None:
         """环境搭建开始：记录日志并刷新运行环境行（按钮 → 进度 + 取消）。"""
@@ -298,7 +360,7 @@ class SettingsDialog(QDialog):
         if self._is_downloading(info.key):
             progress = QLabel(tr("settings.downloading", pct="0", speed="…"))
             progress.setStyleSheet("color: #2563EB;")
-            self._row_refs[info.key] = {"progress": progress}
+            self._row_refs.setdefault(info.key, {})["progress"] = progress
             layout.addWidget(progress)
         elif info.status.is_ready:
             path_edit = QLineEdit(info.local_path or tr("settings.path_unknown"))
@@ -369,71 +431,110 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(tr("common.settings"))
         self._lang_hint.setText(tr("settings.language_hint"))
         self._resources_title.setText(tr("settings.resources"))
+        self._deploy_all_button.setText(tr("settings.deploy_all"))
         self._rebuild_resource_rows()
 
     # ------------------------------------------------------------------ 下载
 
-    def _on_download_clicked(self, key: str) -> None:
-        """点击下载：选择位置（默认预填标准目录）后启动后台下载。"""
+    def _start_default_download(self, key: str) -> bool:
+        """按默认位置（软件安装目录下 models/<默认子目录>）启动后台下载。
+
+        返回是否真正发起了下载（已在下载中的资源跳过）。
+        """
         info = self._manager.get(key)
         meta = RESOURCE_META.get(key)
         if meta is None or not meta.repo_id:
             # 内置资源（如 FFmpeg）不提供下载
-            return
-
-        default_target = get_models_root() / meta.default_subdir
-        try:
-            default_target.parent.mkdir(parents=True, exist_ok=True)
-            dialog_dir = str(default_target.parent)
-        except OSError:
-            dialog_dir = str(Path.home())
-
-        chosen = QFileDialog.getExistingDirectory(
-            self, tr("settings.choose_download_dir"), dialog_dir
-        )
-        if not chosen:
-            return
-
-        # 用户选择的是"模型存放文件夹"，模型文件放入以其名称命名的子目录
-        target = Path(chosen) / Path(meta.default_subdir).name
-        if target != default_target:
-            self.log_requested.emit(
-                f"{info.model_name} -> {target}（自定义位置，重启后需重新指定）"
-            )
-
+            return False
+        if self._is_downloading(key):
+            return False
         self._downloader.start_download(
             key=key,
             repo_id=meta.repo_id,
-            target_dir=str(target),
+            target_dir=str(get_models_root() / meta.default_subdir),
             allow_patterns=meta.allow_patterns,
+            source=meta.source,
         )
         self.log_requested.emit(tr("settings.download_started", name=info.model_name))
+        return True
+
+    def _on_download_clicked(self, key: str) -> None:
+        """点击下载：直接下载到默认位置（软件安装目录），不再让用户选择目标。"""
+        self._start_default_download(key)
         self._rebuild_resource_rows()
 
+    def _on_deploy_all_clicked(self) -> None:
+        """一键部署：并行搭建运行环境 + 下载全部缺失模型（目标为软件安装目录）。
+
+        环境搭建一个后台线程、每个模型一个独立下载线程，互不阻塞
+        （支持多任务并行）；已在进行的任务自动跳过（幂等，可重复点击
+        补齐漏项）。
+        """
+        started_any = False
+        running_any = False
+        env = environment_status()
+        if not (env["tts_ready"] and env["llama_ready"] and env["ml_ready"]):
+            if self._env_mgr.is_running():
+                running_any = True
+            else:
+                self._env_mgr.start_setup(self._device)
+                started_any = True
+        if self._env_mgr.is_running():
+            running_any = True
+        for info in self._manager.resources():
+            if info.status.is_ready:
+                continue
+            if self._is_downloading(info.key):
+                running_any = True
+                continue
+            if self._start_default_download(info.key):
+                started_any = True
+        if started_any:
+            self.log_requested.emit(tr("settings.deploy_all_started"))
+        elif running_any:
+            self.log_requested.emit(tr("settings.deploy_all_running"))
+        else:
+            self.log_requested.emit(tr("settings.deploy_all_nothing"))
+        self._rebuild_resource_rows()
+
+    def _update_deploy_button_state(self) -> None:
+        """一键部署按钮：运行环境与全部模型均已就绪（无可部署项）时禁用。"""
+        if getattr(self, "_deploy_all_button", None) is None:
+            return
+        env = environment_status()
+        env_pending = not (env["tts_ready"] and env["llama_ready"] and env["ml_ready"])
+        model_pending = any(
+            meta is not None and bool(meta.repo_id) and not info.status.is_ready
+            for info in self._manager.resources()
+            for meta in (RESOURCE_META.get(info.key),)
+        )
+        self._deploy_all_button.setEnabled(env_pending or model_pending)
+
     def _on_cancel_clicked(self, key: str) -> None:
-        """取消正在进行的下载（等待当前文件写完后清理，见 downloader 说明）。"""
+        """取消正在进行的下载（已完成文件保留，重新下载可续传）。"""
         self._downloader.cancel(key)
         self._rebuild_resource_rows()
 
     def _on_download_progress(self, key: str, percent: float, speed: str) -> None:
-        """更新对应行的下载进度文案。"""
+        """更新对应行的下载进度文案与状态徽标百分比。"""
         refs = self._row_refs.get(key)
-        if refs is not None:
-            refs["progress"].setText(
+        if refs is None:
+            return
+        pct_text = f"{percent * 100:.0f}%"
+        progress = refs.get("progress")
+        if progress is not None:
+            progress.setText(
                 tr("settings.downloading", pct=f"{percent * 100:.0f}", speed=speed)
             )
+        # 状态徽标同步显示百分比（下载完成前不显示"已就绪"）
+        badge = refs.get("badge")
+        if badge is not None:
+            badge.setText(pct_text)
 
     def _on_download_finished(self, key: str, local_path: str) -> None:
-        """下载完成：默认路径按检测结果刷新；自定义位置直接标记就绪。"""
+        """下载完成：下载一律走默认位置，按检测结果刷新状态。"""
         info = self._manager.get(key)
-        meta = RESOURCE_META.get(key)
-        default_target = (
-            get_models_root() / meta.default_subdir if meta and meta.default_subdir else None
-        )
-        if default_target is not None and Path(local_path) == default_target:
-            self._manager.refresh(key)
-        else:
-            self._manager.update_status(key, ResourceStatus.READY, local_path)
+        self._manager.refresh(key)
         self.log_requested.emit(tr("settings.download_done", name=info.model_name))
         self._rebuild_resource_rows()
 

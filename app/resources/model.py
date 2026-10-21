@@ -11,7 +11,8 @@
 - ASR / LLM / TTS：检查模型根目录（get_models_root()，默认 APP_ROOT/models，
   可用环境变量 SUBDUB_MODELS_ROOT 覆盖）下的默认子目录，详见各 _detect_* 函数。
 
-下载元数据（魔搭仓库 id、匹配模式、体积、默认位置）统一见 RESOURCE_META。
+下载元数据（魔搭 / HuggingFace 仓库 id、匹配模式、体积、默认位置）统一见
+RESOURCE_META。
 """
 
 from __future__ import annotations
@@ -74,11 +75,19 @@ class ResourceMeta:
 
     属性：
         key: 资源唯一标识（同 ResourceInfo.key）
-        repo_id: 魔搭社区仓库 id；空串表示不通过魔搭下载（如内置 FFmpeg）
-        allow_patterns: snapshot_download 的文件匹配模式（None 表示整仓下载）
+        repo_id: 仓库 id（魔搭或 HuggingFace 命名空间/仓库名）；空串表示
+            不提供下载（如内置 FFmpeg）
+        allow_patterns: 文件匹配模式（None 表示整仓下载）
         download_size_gb: 预估下载体积（GB，用于进度百分比与 UI 展示）
         homepage_url: 模型主页链接
         default_subdir: 默认存放子目录（相对 get_models_root()）
+        source: 下载源，"modelscope"（魔搭直连）或 "hf"（hf-mirror 镜像）
+        fallback_repo_id: 兜底仓库 id（主仓库失效 / 缺文件时下载器整体
+            切换重跑，见 downloader.py），空串无兜底
+        fallback_patterns: 兜底仓库的文件匹配模式（None 沿用
+            allow_patterns；兜底仓库文件布局不同时必须显式给出）
+        fallback_source: 兜底仓库的下载源（空串 = 与 source 相同；
+            跨源兜底如 主源魔搭 → 兜底 HF 时必填）
     """
 
     key: str
@@ -87,6 +96,10 @@ class ResourceMeta:
     download_size_gb: float = 0.0
     homepage_url: str = ""
     default_subdir: str = ""
+    source: str = "modelscope"
+    fallback_repo_id: str = ""
+    fallback_patterns: list[str] | None = None
+    fallback_source: str = ""
 
 
 # ---------------------------------------------------------------- 模型根目录
@@ -105,8 +118,14 @@ def get_models_root() -> Path:
 # ---------------------------------------------------------------- LLM 档位
 
 # LLM 档位表：档位名 -> 模型名 / 仓库 / 默认子目录 / 体积（GB）。
-# Index 系列 GGUF 仅发布于 HuggingFace（hf-mirror 可直连），魔搭无对应仓库，
-# 应用内下载按钮不可用，需按 homepage_url 手动下载。
+# Index 系列 GGUF 官方未在魔搭发布（IndexTeam 两 GGUF 仓库在魔搭为
+# 空仓库——API 返回 Code=200 但 files=0，不能据此判断可用），只有
+# HuggingFace 与 hf-mirror 有。故 translate 走 HF 源：主仓库
+# mradermacher/Index-Translate-2B-GGUF（量化文件与官方同名同尺寸，
+# 实测布局一致；hf-mirror 镜像了全部 HF 仓库），下载器内 HF 域名
+# 轮换（hf-mirror 优先、huggingface.co 直连兜底）即"主源 hf-mirror、
+# huggingface 备用"；IndexTeam 官方仓库作跨仓库兜底。Q4_K_M 模式
+# 在两仓库均恰好唯一命中（均无 mmproj-Q4_K_M，不误匹配 mmproj）。
 LLM_VARIANTS: dict[str, dict] = {
     "index-translate-2b": {
         "model_name": "Index-Translate-2B",
@@ -114,6 +133,10 @@ LLM_VARIANTS: dict[str, dict] = {
         "default_subdir": "Index-Translate-2B",
         "download_size_gb": 1.3,
         "homepage_url": "https://hf-mirror.com/mradermacher/Index-Translate-2B-GGUF",
+        "source": "hf",
+        "fallback_repo_id": "IndexTeam/Index-Translate-2B-GGUF",
+        "fallback_patterns": ["*Q4_K_M*"],
+        "fallback_source": "hf",
     },
 }
 
@@ -130,6 +153,10 @@ def _llm_meta(variant: str) -> ResourceMeta:
         download_size_gb=spec["download_size_gb"],
         homepage_url=spec["homepage_url"],
         default_subdir=spec["default_subdir"],
+        source=spec["source"],
+        fallback_repo_id=spec.get("fallback_repo_id", ""),
+        fallback_patterns=spec.get("fallback_patterns"),
+        fallback_source=spec.get("fallback_source", ""),
     )
 
 
@@ -141,6 +168,9 @@ _RESOURCE_DEFINITIONS: list[dict] = [
     {"key": "translate", "feature_name": "字幕翻译", "model_name": "Index-Translate-2B"},
     {"key": "homura", "feature_name": "配音时长修正", "model_name": "Index-Homura-2B"},
     {"key": "tts", "feature_name": "声音克隆", "model_name": "IndexTTS-2.5"},
+    {"key": "tts_w2v", "feature_name": "声音克隆辅助 · 语音特征", "model_name": "W2v-BERT 2.0"},
+    {"key": "tts_campplus", "feature_name": "声音克隆辅助 · 说话人特征", "model_name": "CAM++"},
+    {"key": "tts_bigvgan", "feature_name": "声音克隆辅助 · 声码器", "model_name": "BigVGAN v2"},
 ]
 
 # 五项资源的下载元数据表（translate 条目随 set_llm_variant() 重建）
@@ -168,9 +198,54 @@ RESOURCE_META: dict[str, ResourceMeta] = {
         homepage_url="https://modelscope.cn/models/openmoss/MOSS-Transcribe-Diarize",
         default_subdir="asr/MOSS-Transcribe-Diarize",
     ),
+    # 声音克隆辅助模型三件套：IndexTTS-2.5 加载链（infer_v2_5 的
+    # ensure_models_available）要求 {模型目录}/hf_cache/ 下存在
+    # w2v-bert-2.0 / campplus_cn_common.bin / bigvgan，缺失时会现场
+    # 联网下载——国内网络下上游首选 modelscope SDK，而部署闭包不含
+    # modelscope（依赖树过重），加载直接 ModuleNotFoundError（实测
+    # 2026-10-19 独显机）。故辅助模型纳入应用内下载（与主权重同
+    # 机制、落入同一模型目录的 hf_cache/），下载到位后加载不再触发
+    # 联网下载路径；"tts" 资源的就绪判定（_detect_tts）同时要求
+    # 三件套齐全，任务启动校验（get_resource_path("tts")）零改动。
+    "tts_w2v": ResourceMeta(
+        key="tts_w2v",
+        repo_id="facebook/w2v-bert-2.0",
+        allow_patterns=[
+            "config.json", "preprocessor_config.json", "model.safetensors",
+        ],
+        download_size_gb=2.4,
+        homepage_url="https://hf-mirror.com/facebook/w2v-bert-2.0",
+        default_subdir="tts/IndexTTS-2.5/hf_cache/w2v-bert-2.0",
+        source="hf",
+    ),
+    "tts_campplus": ResourceMeta(
+        key="tts_campplus",
+        repo_id="funasr/campplus",
+        allow_patterns=["campplus_cn_common.bin"],
+        download_size_gb=0.02,
+        homepage_url="https://hf-mirror.com/funasr/campplus",
+        default_subdir="tts/IndexTTS-2.5/hf_cache",
+        source="hf",
+    ),
+    "tts_bigvgan": ResourceMeta(
+        key="tts_bigvgan",
+        repo_id="nvidia/bigvgan_v2_22khz_80band_256x",
+        allow_patterns=["config.json", "bigvgan_generator.pt"],
+        download_size_gb=0.45,
+        homepage_url="https://hf-mirror.com/nvidia/bigvgan_v2_22khz_80band_256x",
+        default_subdir="tts/IndexTTS-2.5/hf_cache/bigvgan",
+        source="hf",
+    ),
     "translate": _llm_meta(DEFAULT_LLM_VARIANT),
     # Index-Homura-2B：按目标音节数约束译文的翻译模型（中文源 → en/ja/ar/es），
-    # 配音任务中用于压缩超长译文；可选资源，缺失时跳过时长修正不阻塞任务
+    # 配音任务中用于压缩超长译文；可选资源，缺失时跳过时长修正不阻塞任务。
+    # 官方 IndexTeam 仓库为全量化仓库（Q2_K~f16 + mmproj 共 ~17GB），
+    # 魔搭无镜像（空仓库）。主仓库 Abu-Dju/Index-Homura-2B-Q8_0-GGUF
+    # （单文件 Q8_0：index-homura-2b-q8_0.gguf，1.93GB，文件名全小写），
+    # HF 源（hf-mirror 域名优先、huggingface.co 直连兜底），官方仓库
+    # 作跨仓库兜底。主仓库用 *.gguf（仓库内唯一 gguf 即目标，天然
+    # 免疫文件名大小写）；兜底仓库收窄为 *.Q8_0.gguf（防 17GB 全量
+    # 下载，且不误匹配 mmproj-Q8_0——后者是 "-" 连接）。
     "homura": ResourceMeta(
         key="homura",
         repo_id="Abu-Dju/Index-Homura-2B-Q8_0-GGUF",
@@ -178,13 +253,18 @@ RESOURCE_META: dict[str, ResourceMeta] = {
         download_size_gb=1.9,
         homepage_url="https://hf-mirror.com/Abu-Dju/Index-Homura-2B-Q8_0-GGUF",
         default_subdir="Index-Homura-2B",
+        source="hf",
+        fallback_repo_id="IndexTeam/Index-Homura-2B-GGUF",
+        fallback_patterns=["*.Q8_0.gguf"],
+        fallback_source="hf",
     ),
     # IndexTTS-2.5：零样本声音克隆（GPT 骨干 + flow-matching 解码 + BigVGAN）。
     # 官方依赖 transformers 4.52，与主环境（ASR 所需 5.x）冲突 → 运行于
     # .venv-tts 子进程（见 app/pipeline/tts.py）；源码 third_party/index-tts
     # 免安装直接导入。辅助模型（w2v-bert-2.0 / BigVGAN / CAMPPlus / 语义
     # 编码器）不在本仓库内，首次推理时自动下载到模型目录 hf_cache/
-    # （约 3GB，国内网络自动走魔搭镜像）。
+    # （约 5GB，国内网络自动走魔搭镜像）——download_size_gb 仅统计本
+    # 仓库（下载器下载的部分），不含该自动下载的辅助模型。
     "tts": ResourceMeta(
         key="tts",
         repo_id="IndexTeam/IndexTTS-2.5",
@@ -305,6 +385,47 @@ def _detect_tts() -> Path | None:
         return None
     if dir_size_bytes(d) <= _GB or _has_incomplete_files(d):
         return None
+    # 辅助模型三件套（hf_cache/）与主权重同为本资源的一部分：缺失时
+    # 加载会触发上游联网下载（国内走 modelscope 即失败），就绪判定
+    # 必须一并拦截；任务启动校验（get_resource_path("tts")）零改动
+    if (
+        _detect_tts_w2v() is None
+        or _detect_tts_campplus() is None
+        or _detect_tts_bigvgan() is None
+    ):
+        return None
+    return d
+
+
+def _detect_tts_w2v() -> Path | None:
+    """TTS 辅助：w2v-bert-2.0 目录三文件齐全（ SeamlessM4T 特征 + Wav2Vec2Bert）。"""
+    d = get_models_root() / RESOURCE_META["tts_w2v"].default_subdir
+    need = ("config.json", "preprocessor_config.json", "model.safetensors")
+    if not d.is_dir() or not all((d / f).is_file() for f in need):
+        return None
+    if _has_incomplete_files(d):
+        return None
+    return d
+
+
+def _detect_tts_campplus() -> Path | None:
+    """TTS 辅助：CAM++ 说话人特征模型（单文件）。"""
+    p = (
+        get_models_root()
+        / RESOURCE_META["tts_campplus"].default_subdir
+        / "campplus_cn_common.bin"
+    )
+    return p if p.is_file() else None
+
+
+def _detect_tts_bigvgan() -> Path | None:
+    """TTS 辅助：BigVGAN v2 声码器（config + generator 权重两文件）。"""
+    d = get_models_root() / RESOURCE_META["tts_bigvgan"].default_subdir
+    need = ("config.json", "bigvgan_generator.pt")
+    if not d.is_dir() or not all((d / f).is_file() for f in need):
+        return None
+    if _has_incomplete_files(d):
+        return None
     return d
 
 
@@ -388,6 +509,12 @@ class ResourceManager(QObject):
             path = _detect_homura()
         elif key == "tts":
             path = _detect_tts()
+        elif key == "tts_w2v":
+            path = _detect_tts_w2v()
+        elif key == "tts_campplus":
+            path = _detect_tts_campplus()
+        elif key == "tts_bigvgan":
+            path = _detect_tts_bigvgan()
         else:
             path = None
 

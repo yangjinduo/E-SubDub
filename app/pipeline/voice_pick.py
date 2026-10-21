@@ -104,9 +104,10 @@ def _cut_reference(vocals_wav: str, start: float, duration: float, out_path: Pat
         str(out_path),
     ]
     ret = subprocess.run(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-    ).returncode
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).returncode
     if ret != 0 or not out_path.is_file():
         raise RuntimeError(f"切参考音频失败: {out_path}")
 

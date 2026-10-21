@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """任务列表持久化：tasks.json 保存任务配置与队列状态快照。
 
-存于用户配置目录（platformdirs；Windows %LOCALAPPDATA%/MinimSubDub、
-macOS ~/Library/Application Support/MinimSubDub）。全局设置（界面语言、
+存于用户配置目录（platformdirs；Windows %LOCALAPPDATA%/ESubDub、
+macOS ~/Library/Application Support/ESubDub）。全局设置（界面语言、
 声音克隆授权等）同存于该文件的顶层键（由 i18n 读写），任务列表只占
 "tasks" 一个键。与工作夹内的 manifest.json 职责不同、互不替代：
 manifest 是工作区阶段真值（断点复用的依据，保留在工作夹），tasks.json

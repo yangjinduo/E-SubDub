@@ -48,8 +48,8 @@ def _init_startup_log() -> Path | None:
     """在最早阶段接入启动日志（用户配置目录的 startup日期.log）。
 
     - 目录与 tasks.json 一致（platformdirs + appauthor=False：Windows
-      %LOCALAPPDATA%\\MinimSubDub\\，macOS ~/Library/Application
-      Support/MinimSubDub/），冻结态 / 开发态路径相同；
+      %LOCALAPPDATA%\\ESubDub\\，macOS ~/Library/Application
+      Support/ESubDub/），冻结态 / 开发态路径相同；
     - 文件名带当天日期（如 startup2026-10-16.log）：同一天多次启动
       追加写入同一份，跨天自动切换新文件；
     - 每次启动清理旧日志，磁盘上最多保留 2 份（见 _rotate_old_logs）；
@@ -58,7 +58,7 @@ def _init_startup_log() -> Path | None:
     try:
         from platformdirs import user_config_dir
 
-        log_dir = Path(user_config_dir("MinimSubDub", appauthor=False))
+        log_dir = Path(user_config_dir("ESubDub", appauthor=False))
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"startup{time.strftime('%Y-%m-%d')}.log"
         _rotate_old_logs(log_dir, log_path)
@@ -86,7 +86,7 @@ def _crash_dialog(log_path: Path | None, exc_text: str) -> None:
         tip = f"\n详细日志：{log_path}" if log_path else ""
         QMessageBox.critical(
             None,
-            "Minim SubDub 启动失败",
+            "E-SubDub 启动失败",
             "启动过程中发生错误，程序即将退出。"
             f"{tip}\n\n{exc_text[-1200:]}",
         )

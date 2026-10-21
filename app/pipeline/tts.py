@@ -8,7 +8,7 @@ IndexTTS-2.5（github.com/index-tts/index-tts，魔搭 IndexTeam/IndexTTS-2.5）
 
 - 父进程（本模块）：管理 worker（app/pipeline/tts_worker.py）生命周期，
   经 stdin/stdout JSON Lines 协议逐句请求合成；worker 落盘成品 wav，
-  静音裁剪与时长对齐（time-stretch）在父进程完成（soundfile/librosa）；
+  静音裁剪与时长对齐（time-stretch）在父进程完成（soundfile/soxr/ffmpeg）；
 - 子进程：加载一次 IndexTTS2 常驻服务，进程退出即释放显存；加载期间
   库日志（">> GPT weights restored..." 等）经 stderr 回流到界面日志。
 
@@ -37,7 +37,7 @@ from typing import Optional
 
 import soundfile as sf
 
-from app.core.config import AppConfig
+from app.core.config import AppConfig, sanitized_subprocess_env
 from app.pipeline.base import ProgressCallback, report_progress
 from app.pipeline.mix import stretch_to_duration
 
@@ -52,6 +52,11 @@ STRETCH_TOLERANCE = 0.10
 # 独立运行环境布局（开发态=项目根；冻结态=用户数据目录，见 AppConfig.DATA_ROOT）
 TTS_VENV_DIR = AppConfig.DATA_ROOT / ".venv-tts"
 INDEX_REPO_DIR = AppConfig.THIRD_PARTY_DIR / "index-tts"
+# 冒烟通过哨兵：env_setup._setup_tts 仅在依赖导入冒烟实际通过后写入，
+# tts_runtime_ready() 据此判定"上次冒烟确实通过"——防止冒烟失败后重跑
+# 部署被 run() 的就绪门禁整体跳过、坏环境被误报就绪（实测云主机
+# 2026-10-19 第二次部署 50 秒假成功，sentencepiece 导入仍崩）
+TTS_SMOKE_SENTINEL = TTS_VENV_DIR / ".tts_smoke_ok"
 
 # worker 脚本：开发态为源码文件；冻结态为随包分发的数据文件
 # （Nuitka 编译后 __file__ 指向虚拟路径，需回退到可执行文件同级的分发目录）
@@ -92,6 +97,25 @@ def get_tts_venv_python() -> Path:
     return TTS_VENV_DIR / "bin" / "python"
 
 
+def _shared_pkg_exists(site_packages: Path, name: str) -> bool:
+    """包目录在本地 site-packages 或 .pth 共享目录（.venv-ml 等）存在。
+
+    pip 经共享目录看到同版本包会 "already satisfied" 跳过本地安装
+    （与下方 torchaudio 检查同因，实测见 deploy 日志 2026-10-18）。
+    """
+    if (site_packages / name).is_dir():
+        return True
+    try:
+        share = Path(
+            (site_packages / "_share_main_venv.pth")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+    except OSError:
+        return False
+    return (share / name).is_dir()
+
+
 def tts_runtime_ready() -> tuple[bool, str]:
     """检查 TTS 独立运行环境是否齐备，返回 (就绪, 缺失说明中文)。"""
     py = get_tts_venv_python()
@@ -109,7 +133,47 @@ def tts_runtime_ready() -> tuple[bool, str]:
         )
     if not (site_packages / "transformers").is_dir():
         return False, ".venv-tts 内依赖未安装（transformers 4.52 等）"
+    # omegaconf：vendored indextts（infer_v2_5.py）的顶层 import 依赖
+    # （deploy 日志 2026-10-19 两机 TTS 模型加载报 No module named
+    # 'omegaconf'）；判就绪必须可见，老部署由此触发重新部署补齐
+    if not _shared_pkg_exists(site_packages, "omegaconf"):
+        return False, ".venv-tts 内缺少 omegaconf（IndexTTS 顶层依赖，重新部署可补齐）"
+    # 源码补丁标记：老部署的上游 infer_v2_5.py 未打 modelscope 可选化
+    # 补丁（部署源码来自 GitHub zip 快照，项目内补丁副本不会到用户
+    # 机），TTS 模型加载会 ModuleNotFoundError: modelscope——判未就绪
+    # 以触发重新部署（env_setup._patch_indextts_modelscope 幂等补齐）
+    try:
+        infer_src = (INDEX_REPO_DIR / "indextts" / "infer_v2_5.py").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return False, "无法读取 IndexTTS 源码 infer_v2_5.py（需重新部署）"
+    if "ESubDub 部署适配" not in infer_src:
+        return False, "IndexTTS 源码未打部署补丁（重新部署可补齐）"
+    # model_download.py 的加载期兜底补丁：首次加载缺辅助模型时上游会
+    # 现场联网下载，国内网络首选 modelscope——未打补丁的旧部署在此
+    # ModuleNotFoundError（实测 2026-10-19 独显机），同样判未就绪触发
+    # 重新部署补齐
+    try:
+        md_src = (
+            INDEX_REPO_DIR / "indextts" / "utils" / "model_download.py"
+        ).read_text(encoding="utf-8")
+    except OSError:
+        return False, "无法读取 IndexTTS 源码 model_download.py（需重新部署）"
+    if "ESubDub 部署适配" not in md_src:
+        return False, "IndexTTS 源码未打加载期补丁（重新部署可补齐）"
     ta_dir = site_packages / "torchaudio"
+    if not ta_dir.is_dir():
+        # pip 经 .pth 共享目录（.venv-ml / 主环境）看到同版本 torchaudio
+        # 时会 "already satisfied" 跳过本地安装（共享侧装完同样剥离了
+        # C 扩展，worker import 与本地副本完全等价，实测见 deploy 日志
+        # 2026-10-18）：改以共享目录为检查对象
+        pth = site_packages / "_share_main_venv.pth"
+        try:
+            share = Path(pth.read_text(encoding="utf-8").strip())
+            ta_dir = share / "torchaudio"
+        except OSError:
+            pass
     if not ta_dir.is_dir():
         return False, (
             ".venv-tts 内缺少 torchaudio 2.8"
@@ -118,9 +182,14 @@ def tts_runtime_ready() -> tuple[bool, str]:
     for ext in ("_torchaudio.pyd", "_torchaudio.so"):
         if (ta_dir / "lib" / ext).is_file():
             return False, (
-                "torchaudio 的 C 扩展与共享的 torch 2.14 二进制不兼容，"
-                "请删除 .venv-tts 内 torchaudio/lib 下的 _torchaudio.* 与 libtorchaudio.*"
+                "torchaudio 的 C 扩展依赖 venv 内未装的配套二进制，"
+                "请删除 torchaudio/lib 下的 _torchaudio.* 与 libtorchaudio.*"
             )
+    # 冒烟通过哨兵（TTS_SMOKE_SENTINEL 定义处注释）：缺失说明本机
+    # 从未通过导入冒烟、或上次冒烟失败后环境有变——判未就绪以触发
+    # 重新部署重跑冒烟，避免坏环境潜伏到任务执行期才爆
+    if not TTS_SMOKE_SENTINEL.is_file():
+        return False, "TTS 环境未通过导入冒烟验证（重新部署可补齐）"
     return True, ""
 
 
@@ -198,19 +267,20 @@ class TTSEngine:
             cmd.append("--bf16")
 
         report_progress(progress, 0.05, f"启动 TTS 推理子进程（{device}）")
-        env = {
-            **os.environ,
-            "PYTHONUTF8": "1",
+        # 净化环境：冻结态把随包 DLL 目录从 PATH 剔除，避免 worker 的
+        # torch 原生扩展命中随包 DLL（WinError 1114 等）
+        env = sanitized_subprocess_env()
+        env.update({
             # 冻结态 third_party 不在 worker 脚本推导的项目根下，显式指路
-            "MINIM_INDEX_REPO": str(INDEX_REPO_DIR),
+            "ESUBDUB_INDEX_REPO": str(INDEX_REPO_DIR),
             # 冻结态 torchaudio 垫片等兜底资源的所在目录
-            "MINIM_DATA_ROOT": str(AppConfig.DATA_ROOT),
+            "ESUBDUB_DATA_ROOT": str(AppConfig.DATA_ROOT),
             # 强制 IndexTTS 辅助模型（w2v-bert/campplus/bigvgan 等）走魔搭下载：
             # 国内网络对 huggingface.co 常见 TCP 可通但 TLS 证书校验失败，
             # IndexTTS 的 need_proxy() 会误判为可直连；此开关使其改走
             # ModelScope（映射见 indextts/utils/model_download.py，失败兜底 hf-mirror）
             "USE_MODELSCOPE": "true",
-        }
+        })
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -222,6 +292,7 @@ class TTSEngine:
             bufsize=1,
             cwd=str(AppConfig.DATA_ROOT),
             env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self._stdout_queue = queue.Queue()
         self._stderr_lines.clear()

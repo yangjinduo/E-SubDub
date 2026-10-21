@@ -84,6 +84,7 @@ def _probe_stderr(media_path: str) -> str:
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return proc.stderr or ""
 
@@ -107,6 +108,7 @@ def probe_streams(media_path: str) -> list[dict]:
                 stderr=subprocess.PIPE,
                 text=True,
                 errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 data = json.loads(proc.stdout)
@@ -142,6 +144,7 @@ def probe_duration(media_path: str) -> float:
                 stderr=subprocess.PIPE,
                 text=True,
                 errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 dur = json.loads(proc.stdout).get("format", {}).get("duration")
@@ -225,6 +228,7 @@ def _run_ffmpeg_with_progress(
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     tail: list[str] = []
     last_frac = 0.0

@@ -438,6 +438,7 @@ def _cut_chunk(wav_path: str, start: float, length: float, out_path: Path,
     ret = subprocess.run(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     ).returncode
     if ret != 0 or not out_path.is_file():
         raise RuntimeError(f"切块失败: [{start:.1f}s, +{length:.1f}s] -> {out_path}")

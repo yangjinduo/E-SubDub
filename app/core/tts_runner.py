@@ -83,9 +83,12 @@ def emotion_vector(key: str | None) -> list[float] | None:
 
 
 def normalize_ref_audio(src: Path, out: Path) -> None:
-    """参考音频规范化为 22050Hz 单声道 PCM16 WAV（ffmpeg 优先，回退 librosa）。
+    """参考音频规范化为 22050Hz 单声道 PCM16 WAV（ffmpeg 优先，回退
+    soundfile+soxr）。
 
-    runner 的文本处理阶段与流程查看窗口的"更换参考音频"共用。
+    runner 的文本处理阶段与流程查看窗口的"更换参考音频"共用（主进程
+    执行——回退不得用 librosa：其数据包子包在 Nuitka 冻结态缺失，
+    import 即 ModuleNotFoundError，见 app/pipeline/mix.py 头注释）。
     """
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -100,18 +103,25 @@ def normalize_ref_audio(src: Path, out: Path) -> None:
         ]
         proc = subprocess.run(
             cmd, capture_output=True, timeout=120, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if proc.returncode == 0 and out.is_file():
             return
-        logger.warning("ffmpeg 参考音频规范化失败，回退 librosa: %s",
+        logger.warning("ffmpeg 参考音频规范化失败，回退 soundfile+soxr: %s",
                       proc.stderr[-300:] if proc.stderr else "")
 
-    # 回退：librosa 解码重采样（ffmpeg 不可用/失败时）
-    import librosa
+    # 回退：soundfile 解码 + soxr 重采样 + 均值混缩单声道（ffmpeg 不可
+    # 用/失败时）。librosa.load(sr=..., mono=True) 的等价实现正是这三步
+    # （librosa 默认重采样引擎同为 soxr_hq）
     import soundfile as sf
+    import soxr
 
-    wav, _sr = librosa.load(str(src), sr=TTS_SAMPLE_RATE, mono=True)
-    sf.write(str(out), wav, TTS_SAMPLE_RATE, subtype="PCM_16")
+    data, sr = sf.read(str(src), dtype="float32", always_2d=True)
+    if data.shape[1] > 1:
+        data = data.mean(axis=1, keepdims=True)  # 多声道均值混缩为单声道
+    if sr != TTS_SAMPLE_RATE:
+        data = soxr.resample(data, sr, TTS_SAMPLE_RATE)
+    sf.write(str(out), data, TTS_SAMPLE_RATE, subtype="PCM_16")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -561,8 +571,10 @@ class TtsRunner(QThread):
                 raise RuntimeError(tr("tts_runner.ffmpeg_missing"))
             cmd = [ffmpeg, "-y", "-i", str(combined), *_FORMAT_CODECS[fmt],
                    str(final_audio)]
-            proc = subprocess.run(cmd, capture_output=True, timeout=600,
-                                  check=False)
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=600, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             combined.unlink(missing_ok=True)  # 转码结束即清中转文件
             if proc.returncode != 0:
                 detail = (proc.stderr or b"")[-300:].decode("utf-8", "replace")

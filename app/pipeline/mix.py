@@ -8,7 +8,13 @@
 - 叠加原声（可选，full_audio_wav 非空时）：混音完成后以原声为底，把每句
   对白的混音内容（配音+背景）按对白时间线覆盖回原声——对白时段播新配音，
   句间等其余时段保留原声（笑声、惊叹等语气词与现场氛围不丢失）；
-- stretch_to_duration：librosa 变调不变速时长拉伸，供 TTS 模块兜底。
+- stretch_to_duration：ffmpeg atempo 变调不变速时长拉伸，供 TTS 模块兜底。
+
+本模块不得依赖 librosa：librosa 经 lazy_loader 存根机制以字符串引用数据
+包子包（librosa.util.example_data），Nuitka 静态分析看不见字符串形式的
+模块引用、编不进冻结包，运行期 import 即 ModuleNotFoundError（实测
+2026-10-21 安装版混音阶段）。重采样用 soxr（librosa 1.0 的默认引擎，
+res_type='soxr_hq' 同源同质），解码用 soundfile（librosa.load 同款）。
 """
 
 from __future__ import annotations
@@ -85,16 +91,17 @@ def align_loudness(wav_path: str, target_db: float, out_path: str | None = None)
 def _load_as_track(path: str, canvas_sr: float, canvas_channels: int) -> np.ndarray:
     """读入音频（TTS 配音 / 原声音轨）并整形为 (n, canvas_channels) float32。
 
-    采样率与画布不同 → librosa.resample；声道数与画布一致 → 原样保留
+    采样率与画布不同 → soxr 重采样；声道数与画布一致 → 原样保留
     （保住立体声像）；不一致 → 先转单声道（多声道取均值）再复制到画布
     声道数。
     """
     y, sr_t = sf.read(path, dtype="float32", always_2d=True)
     if sr_t != canvas_sr:
-        import librosa  # 局部导入：仅重采样路径需要，缩短模块首次加载
+        import soxr  # 局部导入：仅重采样路径需要，缩短模块首次加载
 
-        # (n, ch) → 时间在 axis=0，librosa 沿时间轴重采样
-        y = librosa.resample(y, orig_sr=sr_t, target_sr=canvas_sr, axis=0)
+        # soxr 默认 quality='HQ'，与 librosa 1.0 默认 res_type='soxr_hq'
+        # 同一引擎同一档位；(n, ch) 沿时间轴（axis=0）重采样，行为一致
+        y = soxr.resample(y, sr_t, canvas_sr)
     if y.shape[1] == canvas_channels:
         return y
     if y.shape[1] == 1:
@@ -240,10 +247,11 @@ def mix_tracks(
 def stretch_to_duration(wav_path: str, target_dur: float, out_path: str) -> float:
     """把音频变调不变速地拉伸/压缩到目标时长，返回实际输出时长（秒）。
 
-    优先 ffmpeg atempo（时域 WSOLA 变速，语音听感自然）；librosa 的
-    phase_vocoder 变速会在语音上留下"轻微回声/发闷"的相位拖尾痕迹
-    （魔搭 demo 不做时长对齐所以听感干净），仅在内置 ffmpeg 不可用时
-    兜底使用。
+    ffmpeg atempo 为唯一引擎（时域 WSOLA 变速，语音听感自然）。曾用
+    librosa phase_vocoder 作无 ffmpeg 兜底，但 librosa 在 Nuitka 冻结态
+    不可用（见模块头注释），且整条流水线（音频提取/封装）本就硬依赖
+    内置 ffmpeg——缺失时直接报错比静默降级出"发闷拖尾"的劣质音频更
+    诚实。
     """
     import os
     import subprocess
@@ -262,39 +270,33 @@ def stretch_to_duration(wav_path: str, target_dur: float, out_path: str) -> floa
         return orig_dur
 
     ffmpeg = get_ffmpeg_path()
-    if ffmpeg:
-        # ffmpeg 不能原地读写同一文件：先写同目录临时文件，成功后原子替换
-        tmp = out_path + ".atempo.tmp.wav"
-        cmd = [
-            ffmpeg, "-y", "-nostdin", "-i", wav_path,
-            "-filter:a", f"atempo={rate:.6f}",
-            "-ar", str(int(sr)), "-ac", str(int(y.shape[1])),
-            "-acodec", "pcm_s16le", tmp,
-        ]
-        ret = subprocess.run(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-        ).returncode
-        if ret == 0 and Path(tmp).is_file():
-            info = sf.info(tmp)
-            dur = float(info.frames) / float(info.samplerate)
-            os.replace(tmp, out_path)
-            return dur
-        try:  # atempo 失败（理论不会发生）：清理后走 librosa 兜底
-            Path(tmp).unlink()
-        except OSError:
-            pass
-
-    # 兜底：librosa phase_vocoder（可能有轻微相位痕迹，仅在无 ffmpeg 时使用）
-    import warnings
-
-    import librosa
-
-    # time_stretch 期望时间在最后一维：(n, ch) → (ch, n) → 拉伸 → 转回。
-    # 近静音帧的相位计算可能产生 NaN（numba 转换告警），静音并清洗输出。
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        stretched = librosa.effects.time_stretch(y.T, rate=rate).T.astype(np.float32)
-    stretched = np.nan_to_num(stretched, nan=0.0, posinf=0.0, neginf=0.0)
-    sf.write(out_path, stretched, sr, subtype="PCM_16")
-    return len(stretched) / sr
+    if not ffmpeg:
+        raise RuntimeError(
+            "未找到内置 FFmpeg，无法进行时长拉伸（变调不变速）；"
+            "请重新安装以修复内置组件"
+        )
+    # ffmpeg 不能原地读写同一文件：先写同目录临时文件，成功后原子替换
+    tmp = out_path + ".atempo.tmp.wav"
+    cmd = [
+        ffmpeg, "-y", "-nostdin", "-i", wav_path,
+        "-filter:a", f"atempo={rate:.6f}",
+        "-ar", str(int(sr)), "-ac", str(int(y.shape[1])),
+        "-acodec", "pcm_s16le", tmp,
+    ]
+    ret = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ).returncode
+    if ret == 0 and Path(tmp).is_file():
+        info = sf.info(tmp)
+        dur = float(info.frames) / float(info.samplerate)
+        os.replace(tmp, out_path)
+        return dur
+    try:  # atempo 失败（理论不会发生）：清理临时文件后报错
+        Path(tmp).unlink()
+    except OSError:
+        pass
+    raise RuntimeError(
+        f"ffmpeg atempo 时长拉伸失败（退出码 {ret}）：{wav_path}"
+    )

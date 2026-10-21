@@ -1,4 +1,4 @@
-# Minim SubDub Windows 发行构建
+# E-SubDub Windows 发行构建
 # ====================================================================
 # 触发：推送 v* 标签（如 v0.1.0）或手动 workflow_dispatch。
 # 流程：Nuitka standalone 编译（不含 torch 等推理大件，主程序仅
@@ -86,6 +86,6 @@ jobs:
       - name: 归档 onedir 发行目录（供手动触发时下载验证）
         uses: actions/upload-artifact@v4
         with:
-          name: MinimSubDub-onedir-${{ github.run_number }}
-          path: build/dist/MinimSubDub
+          name: ESubDub-onedir-${{ github.run_number }}
+          path: build/dist/ESubDub
           if-no-files-found: error

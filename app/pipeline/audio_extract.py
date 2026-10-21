@@ -97,6 +97,7 @@ def extract_audio(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     total_duration: Optional[float] = None
     tail_lines: list[str] = []

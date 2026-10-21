@@ -31,7 +31,7 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from app.core.config import AppConfig, is_frozen
+from app.core.config import AppConfig, is_frozen, sanitized_subprocess_env
 from app.core.ffmpeg import get_ffmpeg_path
 from app.pipeline.base import ProgressCallback, report_progress
 
@@ -164,7 +164,9 @@ class MLEngine:
         cmd = [str(python), str(_worker_script()), "--ffmpeg", str(ffmpeg)]
 
         report_progress(progress, 0.02, f"启动 ML 推理子进程（{python.parent.parent.name}）")
-        env = {**os.environ, "PYTHONUTF8": "1"}
+        # 净化环境：冻结态把随包 DLL 目录从 PATH 剔除，避免 worker 的
+        # torch 原生扩展命中随包 DLL（WinError 1114 等）
+        env = sanitized_subprocess_env()
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

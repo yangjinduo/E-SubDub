@@ -92,10 +92,14 @@ def _detect_device_via_ml_venv() -> DeviceInfo:
     )
     script = script.replace("sys.platform", "__import__('sys').platform")
     try:
+        from app.core.config import sanitized_subprocess_env
+
         proc = subprocess.run(
             [str(py), "-c", script],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=90,
+            env=sanitized_subprocess_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
         if proc.returncode == 0 and lines:
