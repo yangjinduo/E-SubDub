@@ -33,7 +33,7 @@
 - **任务队列与断点续跑**：每个任务的工作目录以 manifest.json 记录各阶段状态；任务列表持久化（重启自动恢复），主窗口"继续"按钮一键把已中断 / 失败 / 已取消的任务重新入列，"停止"按钮中止整个队列（不影响任务窗口内"停止"仅停当前任务、队列继续的语义）。
 - **流程结果查看**：点击任务窗口中已完成的流程卡片，即可打开该阶段的结果查看窗口——分段表格试听、逐句合成结果、成品封装预览（原视频 / 配音视频对照播放 + 双语字幕面板）等，并支持从该流程一键重跑。
 - **双语字幕**：生成源语言 + 目标语言双语 SRT 字幕文件；预览面板中每条字幕左侧显示起止时间，并随播放进度自动高亮滚动。
-- **资源自动管理**：模型经魔搭社区（ModelScope）自动下载；TTS 虚拟环境与 llama.cpp 推理服务可一键搭建；启动时自动检测 CUDA / MPS / CPU 推理设备。
+- **资源自动管理**：模型经魔搭社区（ModelScope）自动下载；ML 推理环境（安装包形态为 `.venv-ml`）、TTS 虚拟环境（`.venv-tts`）与 llama.cpp 推理服务可一键搭建；启动时自动检测 CUDA / MPS / CPU 推理设备。
 
 ## 快速开始
 
@@ -46,10 +46,13 @@
 ### 安装与启动
 
 ```bash
-# 1. 创建虚拟环境并安装依赖（Windows 示例）
-python -m venv venv
-venv\Scripts\activate
+# 1. 创建虚拟环境并安装依赖（Windows PowerShell 示例；cmd 用户激活改用 venv\Scripts\activate.bat）
+py -3.13 -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+
+# 若 Activate.ps1 报"禁止运行脚本"（执行策略限制），先执行一次再重新激活：
+# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 # 注意：torch 2.14 无配套 torchaudio，项目根目录的 torchaudio/ 垫片包
 # 用于替代，切勿 pip install torchaudio
@@ -59,12 +62,12 @@ python app/main.py
 ```
 
 > **注意**：整个应用始终在主虚拟环境（`venv/`）中启动运行；
-> `.venv-tts/` 仅由 TTS worker 子进程在合成时自动调用，**不要**用它启动 `app/main.py`。
+> `.venv-tts/` 与 `.venv-ml/`（安装包形态的 ML 推理环境）仅由对应 worker 子进程自动调用，**不要**用它们启动 `app/main.py`。
 
 首次启动后：
 
 1. 在主界面右上角 **设置** 中下载所需模型（ASR / 翻译 / 人声分离 / 配音）；
-2. 在设置窗口 **运行环境** 行搭建 TTS 虚拟环境（.venv-tts）与 LLAMA 推理服务（llama.cpp）；
+2. 在设置窗口 **运行环境** 行搭建 TTS 虚拟环境（.venv-tts）与 LLAMA 推理服务（llama.cpp）——源码运行时 ML 推理（人声分离 / 语音识别）直接复用主虚拟环境，仅安装包形态会自动搭建独立的 ML 推理环境（.venv-ml）；
 3. 点击任务列表顶部的任务按钮创建任务：
    - **＋ 配音与字幕**：导入视频，配置源/目标语言，执行完整流程；
    - **＋ 生成字幕**：同上，但只产出字幕（无人声分离与配音阶段）；
@@ -122,11 +125,14 @@ app/
 │   ├── runner.py            # 流水线引擎：按阶段调度、跳过已完成、失效下游
 │   ├── tts_runner.py        # 文本转语音流水线引擎（分句 → 合成 → 语音复核 → 封装输出）
 │   ├── langid_util.py       # 文本语言自动识别（langid，缺失时优雅降级）
+│   ├── task_store.py        # 任务列表持久化：tasks.json 原子写 / 启动恢复
 │   └── task_manager.py      # 任务队列：线程生命周期、任务窗口管理
 ├── pipeline/                # 流水线各阶段实现
 │   ├── audio_extract.py     # 01 音频提取
 │   ├── separate.py          # 02 人声分离（Demucs）
 │   ├── asr.py               # 03 语音识别（MOSS-Transcribe-Diarize + VAD 切块）
+│   ├── ml_client.py         # ML 推理引擎：demucs / ASR worker 子进程管理
+│   ├── ml_worker.py         # ML 子进程工作端（冻结态运行于 .venv-ml）
 │   ├── translate.py         # 05 翻译（含 Homura 时长修正二遍）
 │   ├── subtitle.py          # SRT 字幕生成（内部阶段）
 │   ├── voice_pick.py        # 07 参考音色挑选
@@ -139,7 +145,8 @@ app/
 ├── resources/               # 资源管理
 │   ├── model.py             # 六项资源注册 / 状态检测 / 删除
 │   ├── downloader.py        # 魔搭社区模型下载器
-│   ├── env_setup.py         # 运行环境搭建（.venv-tts、llama.cpp 下载）
+│   ├── env_setup.py         # 运行环境搭建（.venv-ml、.venv-tts、llama.cpp 下载）
+│   ├── deploy_log.py        # 部署日志：环境搭建全过程记录（deploy日期.log）
 │   └── logo/                # 应用 LOGO（.ico / .icns）
 └── ui/                      # PySide6 界面
     ├── main_window.py       # 主窗口：资源状态栏 + 任务列表（三类任务入口）+ 系统监视
@@ -154,7 +161,7 @@ app/
 
 - **阶段化落盘 + manifest 断点续跑**：每阶段产物固定子夹 + 完成标记，重复执行同文件任务时跳过已完成阶段；人工修改内容后由 runner 显式失效下游阶段。
 - **任务列表持久化**：tasks.json 以原子写保存于用户配置目录（Windows `%LOCALAPPDATA%\ESubDub\`、macOS `~/Library/Application Support/ESubDub/`），任务列表与全局设置（界面语言、声音克隆授权）共用这一个文件；启动时恢复任务列表，上次运行中 / 排队中的任务标记为"已中断"，等待手动继续。
-- **TTS 独立虚拟环境**：IndexTTS-2.5 与 MOSS-Transcribe-Diarize 所依赖的 transformers 版本不兼容，故 TTS 运行于独立的 `.venv-tts` 子进程中，经 `tts_worker` 通信；模型跨「生成 / 复核」两阶段复用，复核结束统一释放。
+- **推理环境隔离（双虚拟环境）**：IndexTTS-2.5 与 MOSS-Transcribe-Diarize 所依赖的 transformers 版本（4.x / 5.x）不兼容，不能合用一个环境：TTS 运行于独立 `.venv-tts` 子进程（经 `tts_worker` 通信，torch / numpy 经 .pth 共享主环境或 `.venv-ml`）；安装包形态主程序无 Python 运行时，ML 推理（人声分离 / 语音识别）另建 `.venv-ml` 子进程运行（源码运行直接复用主环境）。TTS 模型跨「生成 / 复核」两阶段复用，复核结束统一释放。
 - **LLM 推理外置**：翻译经 llama.cpp 的 llama-server（HTTP）推理，取消任务时立即终止服务进程。
 - **线程安全退出**：任务线程退出确认后才释放引用，避免 QThread 提前析构导致的崩溃。
 
@@ -178,6 +185,7 @@ app/
 | 运行必须  | `third_party/index-tts/`                           | IndexTTS 引擎源码                                   |
 | 运行必须  | `torchaudio/`                                      | torch 2.14 配套垫片包（demucs 依赖，勿 pip 安装覆盖）          |
 | 运行必须  | `.venv-tts/`                                       | TTS 专用虚拟环境（可软件自动重建）                             |
+| 运行必须  | `.venv-ml/`                                        | ML 推理虚拟环境（安装包形态使用，可软件自动重建）                |
 | 运行必须  | `models/`                                          | 五个模型（可软件自动下载，已 gitignore）                       |
 | 运行时生成 | `output/`                                          | 任务工作目录与成品（gitignore）                            |
 | 开发用   | `venv/`                                            | 主开发虚拟环境                                         |
