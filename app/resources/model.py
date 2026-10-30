@@ -2,7 +2,12 @@
 
 资源分六项：音频提取（FFmpeg）、人声分离（Demucs htdemucs）、音频转文字
 （MOSS-Transcribe-Diarize）、字幕翻译（Index-Translate-2B）、配音时长修正
-（Index-Homura-2B，可选）、声音克隆（IndexTTS-2.5）。
+（Index-Homura-2B，可选）、声音克隆（IndexTTS-2.5 及辅助模型）。
+
+声音克隆的三个辅助模型（w2v-bert-2.0 / CAM++ / BigVGAN v2）不作为独立
+资源展示：界面上并入"声音克隆"一行（模型名显示"IndexTTS-2.5 及辅助
+模型"），部署时随主权重自动并行下载，三者全部就位后"声音克隆"才算
+就绪（见 _detect_tts 与 TTS_AUX_KEYS）。
 
 真实检测规则：
 - FFmpeg：内置工具，get_ffmpeg_path() 非 None 即就绪；
@@ -13,6 +18,9 @@
 
 下载元数据（魔搭 / HuggingFace 仓库 id、匹配模式、体积、默认位置）统一见
 RESOURCE_META。
+
+删除为彻底删除（直接移除文件，不进 .trash / 系统回收站，无法恢复），
+大目录删除在后台守护线程执行，结束后经 resource_delete_finished 通知。
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -173,6 +181,10 @@ _RESOURCE_DEFINITIONS: list[dict] = [
     {"key": "tts_bigvgan", "feature_name": "声音克隆辅助 · 声码器", "model_name": "BigVGAN v2"},
 ]
 
+# TTS 辅助模型三件套的资源 key：不单独展示 / 不单独操作，随主资源 "tts"
+# 一同部署（点下载即并行补齐缺失项），全部就位后 "tts" 才判定就绪
+TTS_AUX_KEYS: tuple[str, ...] = ("tts_w2v", "tts_campplus", "tts_bigvgan")
+
 # 五项资源的下载元数据表（translate 条目随 set_llm_variant() 重建）
 RESOURCE_META: dict[str, ResourceMeta] = {
     "ffmpeg": ResourceMeta(
@@ -295,19 +307,17 @@ def _has_incomplete_files(path: Path) -> bool:
     return any(p.is_file() and p.name.endswith(".incomplete") for p in path.rglob("*"))
 
 
-def move_to_trash(path: str | Path) -> Path:
-    """把文件/目录移入同级 .trash 子目录（带时间戳命名，避免覆盖误删）。"""
+def remove_path(path: str | Path) -> None:
+    """彻底删除文件/目录（直接移除，不进 .trash / 系统回收站，无法恢复）。
+
+    目录用 rmtree 递归删除；文件直接 unlink。删除失败抛 OSError
+    （如被正在运行的任务占用），由调用方处理。
+    """
     path = Path(path)
-    trash_dir = path.parent / ".trash"
-    trash_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = trash_dir / f"{path.name}.{stamp}"
-    counter = 0
-    while dest.exists():
-        counter += 1
-        dest = trash_dir / f"{path.name}.{stamp}.{counter}"
-    shutil.move(str(path), str(dest))
-    return dest
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- 就绪检测
@@ -435,21 +445,36 @@ class ResourceManager(QObject):
     信号：
         resource_status_changed(str): 某项资源状态变化时发射，参数为资源 key，
         供 UI 刷新对应卡片。
+        resource_delete_finished(str, bool): 后台删除结束（资源 key, 是否
+        删除了内容），供发起删除的 UI 记录日志 / 恢复按钮状态。
     """
 
     resource_status_changed = Signal(str)
+    resource_delete_finished = Signal(str, bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._resources: dict[str, ResourceInfo] = {}
         self._llm_variant: str = DEFAULT_LLM_VARIANT
+        # 后台删除线程结束后先自行刷新状态（窗口已关闭时也保持准确）
+        self.resource_delete_finished.connect(self._on_delete_finished)
         self.refresh_all()
 
     # ------------------------------------------------------------------ 查询
 
     def resources(self) -> list[ResourceInfo]:
-        """按固定顺序返回五项资源信息。"""
+        """按固定顺序返回全部资源信息（含 TTS 辅助模型三件套）。"""
         return list(self._resources.values())
+
+    def visible_resources(self) -> list[ResourceInfo]:
+        """按固定顺序返回用户可见资源（不含 TTS 辅助模型三件套）。
+
+        辅助模型并入"声音克隆"一行展示与部署，不单独出卡片 / 资源行。
+        """
+        return [
+            info for info in self._resources.values()
+            if info.key not in TTS_AUX_KEYS
+        ]
 
     def get(self, key: str) -> ResourceInfo:
         """按键获取资源信息，不存在时抛出 KeyError。"""
@@ -560,10 +585,13 @@ class ResourceManager(QObject):
     # ------------------------------------------------------------------ 删除
 
     def delete_resource(self, key: str) -> bool:
-        """删除资源的本地模型目录/文件（移入同级 .trash，避免误删），随后刷新状态。
+        """后台线程彻底删除资源的本地模型目录/文件（直接删除，无法恢复）。
 
+        校验在调用线程完成并立即返回是否已发起删除；实际删除（大模型
+        目录可达数 GB，rmtree 耗时数十秒）在守护线程执行，结束后经
+        resource_delete_finished 回主线程刷新状态并通知 UI。
         FFmpeg 为内置工具，不支持删除（记录 warning 后返回 False）。
-        返回 True 表示已执行删除；False 表示无可删除内容或该资源不支持删除。
+        返回 True 表示删除已发起；False 表示无可删除内容或该资源不支持删除。
         """
         if key == "ffmpeg":
             logger.warning("FFmpeg 为内置工具，不支持删除")
@@ -577,10 +605,28 @@ class ResourceManager(QObject):
         if target is None or not target.exists():
             logger.warning("资源 %s 没有可删除的本地文件（%s）", key, target)
             return False
-        moved = move_to_trash(target)
-        logger.info("资源 %s 已移入回收目录 %s", key, moved)
-        self.refresh(key)
+
+        def _work() -> None:
+            try:
+                remove_path(target)
+            except OSError as e:
+                logger.error("资源 %s 删除失败（%s）：%s", key, target, e)
+                self.resource_delete_finished.emit(key, False)
+            else:
+                logger.info("资源 %s 已彻底删除：%s", key, target)
+                self.resource_delete_finished.emit(key, True)
+
+        threading.Thread(target=_work, daemon=True, name=f"delete-{key}").start()
         return True
+
+    def _on_delete_finished(self, key: str, deleted: bool) -> None:
+        """后台删除结束：刷新该资源状态；删除 tts 时辅助模型一并失效。"""
+        if deleted:
+            self.refresh(key)
+            if key == "tts":
+                # 辅助模型位于 tts 目录的 hf_cache/ 内，随主目录一同被删
+                for aux in TTS_AUX_KEYS:
+                    self.refresh(aux)
 
     # ------------------------------------------------------------ 供后续任务接入
 

@@ -1,8 +1,12 @@
-"""顶部资源状态栏：推理设备卡 + 五张资源卡片 + 统一设置按钮。
+"""顶部资源状态栏：推理设备卡 + 各资源卡片 + 统一设置按钮。
 
 最左侧的推理设备卡与其他资源卡同尺寸同风格：上行"推理设备" + 环境
 就绪徽标（TTS 虚拟环境与 LLAMA 服务均就绪才显示已就绪，徽标 tooltip
 给出分项明细），下行设备描述（CUDA/MPS 绿色，CPU 红色并带慢速提示）。
+
+TTS 的三个辅助模型（w2v-bert-2.0 / CAM++ / BigVGAN v2）不单独出卡片：
+并入"声音克隆"卡展示（模型名显示"IndexTTS-2.5 及辅助模型"），随主
+权重自动部署，三者全部就位该卡才显示已就绪。
 
 设置按钮不再分散在各卡片上，而是位于所有卡片右侧，点击后打开统一设置
 窗口（查看全部资源路径 / 状态，并执行删除与下载；运行环境搭建入口也在
@@ -23,6 +27,13 @@ from app.ui.style import themed_icon, tokens
 def _feature_label(info: ResourceInfo) -> str:
     """功能名按资源 key 取当前界面语言文案（模型名等专有名词不翻译）。"""
     return tr(f"resource.{info.key}.feature")
+
+
+def _model_label(info: ResourceInfo) -> str:
+    """模型名；声音克隆行附加辅助模型说明（三件套随主权重自动部署）。"""
+    if info.key == "tts":
+        return f"{info.model_name} {tr('resource.tts.aux_suffix')}"
+    return info.model_name
 
 
 def _badge_text(ready: bool) -> str:
@@ -52,7 +63,7 @@ class ResourceCard(QFrame):
         title_row.addWidget(self._badge)
 
         # 下行：模型名
-        self._model_label = QLabel(info.model_name)
+        self._model_label = QLabel(_model_label(info))
         self._model_label.setObjectName("resourceModelName")
 
         layout = QVBoxLayout(self)
@@ -67,7 +78,7 @@ class ResourceCard(QFrame):
     def update_info(self, info: ResourceInfo) -> None:
         """按最新资源信息刷新卡片内容与徽标。"""
         self._feature_label.setText(_feature_label(info))
-        self._model_label.setText(info.model_name)
+        self._model_label.setText(_model_label(info))
         self._set_badge(info.status is ResourceStatus.READY, tooltip="")
 
     def _set_badge(self, ready: bool, tooltip: str) -> None:
@@ -142,7 +153,7 @@ class DeviceCard(QFrame):
 
 
 class ResourceStatusBar(QFrame):
-    """顶部资源状态栏：最左推理设备卡 + 横向五张资源卡片 + 统一设置按钮。"""
+    """顶部资源状态栏：最左推理设备卡 + 横向各资源卡片 + 统一设置按钮。"""
 
     # 右侧统一设置按钮被点击（无参数，打开统一设置窗口）
     settings_requested = Signal()
@@ -160,8 +171,8 @@ class ResourceStatusBar(QFrame):
         self._device_card = DeviceCard()
         layout.addWidget(self._device_card, 1)
 
-        # 五张资源卡片
-        for info in manager.resources():
+        # 各资源卡片（TTS 辅助模型三件套不单独出卡，并入"声音克隆"卡）
+        for info in manager.visible_resources():
             card = ResourceCard(info)
             self._cards[info.key] = card
             layout.addWidget(card, 1)

@@ -19,8 +19,10 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QWidget, QVBoxLayout
 from app.core.config import AppConfig
 from app.core.hardware import DeviceInfo, detect_device, detect_device_standalone
 from app.core.i18n import tr
+from app.core import sleep_guard
 from app.core.task_manager import TaskManager
 from app.core.tts_runner import TtsTaskConfig
+from app.resources.downloader import get_model_downloader
 from app.resources.env_setup import environment_status, get_env_setup_manager
 from app.resources.model import get_resource_manager
 from app.ui.dialogs.resource_dialog import SettingsDialog
@@ -88,8 +90,23 @@ class MainWindow(QMainWindow):
         # 不自动执行；TaskListPanel 构造时从队列整表填充）
         self._task_manager.restore_tasks()
         # 环境搭建完成后刷新设备卡徽标（设置窗口触发，窗口关闭后仍生效）
-        get_env_setup_manager().environment_changed.connect(self._on_env_changed)
+        self._env_mgr = get_env_setup_manager()
+        self._env_mgr.environment_changed.connect(self._on_env_changed)
         logger.info("环境搭建管理器已连接")
+        # 防休眠：任务 / 模型下载 / 环境搭建任一进行中且用户开启开关时，
+        # 阻止系统休眠防止长任务被中断（开关在设置窗口，持久化于 tasks.json）
+        self._downloader = get_model_downloader()
+        self._task_manager.task_added.connect(self._update_sleep_guard)
+        self._task_manager.task_state_changed.connect(self._update_sleep_guard)
+        self._task_manager.task_removed.connect(self._update_sleep_guard)
+        self._downloader.download_started.connect(self._update_sleep_guard)
+        self._downloader.download_finished.connect(self._update_sleep_guard)
+        self._downloader.download_failed.connect(self._update_sleep_guard)
+        self._downloader.download_cancelled.connect(self._update_sleep_guard)
+        self._env_mgr.setup_started.connect(self._update_sleep_guard)
+        self._env_mgr.setup_finished.connect(self._update_sleep_guard)
+        self._env_mgr.setup_cancelled.connect(self._update_sleep_guard)
+        self._update_sleep_guard()
         # 打开中的任务窗口（含未开始的空窗口；应用退出时统一销毁）
         self._task_windows: list[TaskWindowBase] = []
         # 启动期后台探测（精确设备 + 运行环境状态），完成后信号刷新
@@ -170,6 +187,18 @@ class MainWindow(QMainWindow):
     def _on_env_changed(self) -> None:
         """环境搭建结束（含取消/失败）：重新检测并刷新设备卡徽标。"""
         self._refresh_env_state()
+
+    def _update_sleep_guard(self, *_args) -> None:
+        """按当前活动状态（任务 / 下载 / 环境搭建）同步防休眠守卫。
+
+        是否真正阻止休眠还取决于用户的开关（sleep_guard 内部判断）；
+        信号参数忽略（各信号签名不同，仅作触发）。
+        """
+        sleep_guard.set_active(
+            self._task_manager.has_active_tasks()
+            or self._downloader.has_active_downloads()
+            or self._env_mgr.is_running()
+        )
 
     # ------------------------------------------------------------------ 任务窗口
 

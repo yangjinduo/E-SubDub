@@ -53,7 +53,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from app.core.i18n import tr
 from app.resources.deploy_log import deploy_logger, deploy_log_path
-from app.resources.model import RESOURCE_META, get_resource_manager
+from app.resources.model import RESOURCE_META, TTS_AUX_KEYS, get_resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +530,7 @@ class ModelDownloader(QObject):
     """模型下载器：纯 HTTP 下载到指定目录，多资源可并行（每资源一线程）。
 
     信号：
+        download_started(str): 下载已开始，参数为资源 key
         download_progress(str, float, str): 进度，参数为资源 key、百分比（0-1）、
             速度字符串（如 "3.2 MB/s"）
         download_finished(str, str): 下载完成，参数为资源 key、本地目录
@@ -537,6 +538,7 @@ class ModelDownloader(QObject):
         download_cancelled(str): 用户取消下载，参数为资源 key
     """
 
+    download_started = Signal(str)
     download_progress = Signal(str, float, str)
     download_finished = Signal(str, str)
     download_failed = Signal(str, str)
@@ -612,6 +614,7 @@ class ModelDownloader(QObject):
         thread.finished.connect(lambda k=key: self._threads.pop(k, None))
         self._threads[key] = thread
         thread.start()
+        self.download_started.emit(key)
 
     def cancel(self, key: str) -> None:
         """取消指定资源的下载（当前文件写完 .incomplete 后停止，现场保留）。"""
@@ -627,6 +630,10 @@ class ModelDownloader(QObject):
         thread = self._threads.get(key)
         return thread is not None and thread.isRunning()
 
+    def has_active_downloads(self) -> bool:
+        """是否有任意资源正在下载。"""
+        return any(thread.isRunning() for thread in self._threads.values())
+
     # ------------------------------------------------------------------ 内部
 
     def _on_succeeded(self, key: str, local_path: str) -> None:
@@ -637,6 +644,10 @@ class ModelDownloader(QObject):
         if any(info.key == key for info in manager.resources()):
             if not manager.get(key).status.is_ready:
                 manager.refresh(key)
+        # 辅助模型三件套的就位情况决定 "tts" 行的就绪判定（_detect_tts
+        # 要求三件套齐全），辅助模型下载完成后需连带刷新主资源卡片
+        if key in TTS_AUX_KEYS and not manager.get("tts").status.is_ready:
+            manager.refresh("tts")
 
 
 # 模块级单例：通过 get_model_downloader() 获取。

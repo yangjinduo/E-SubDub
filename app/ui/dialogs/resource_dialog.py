@@ -1,12 +1,18 @@
-"""统一设置窗口：界面语言切换 + 运行环境搭建 + 全部资源管理。
+"""统一设置窗口：界面语言 / 主题切换 + 运行环境搭建 + 全部资源管理
++ 任务运行期间防休眠开关。
 
-替代旧的"单资源设置对话框"：一个入口查看五项资源的准备状态与本地路径，
-并直接执行删除（移入 .trash）与下载（含进度与取消）。
+替代旧的"单资源设置对话框"：一个入口查看各资源的准备状态与本地路径，
+并直接执行删除（后台线程彻底删除，不进回收站）与下载（含进度与取消）。
 
 "运行环境"行位于资源列表最上方（音频提取之上）：检测 TTS 独立虚拟环境
 （.venv-tts）与 llama-server 是否就绪，未就绪时一键搭建（后台 QThread，
 含步骤进度与取消；完成后资源栏的推理设备卡同步刷新）；已部署时提供
-删除按钮（各组件移入 .trash 可找回，与模型删除一致）。
+删除按钮（后台线程彻底删除，重新部署即重建）。
+
+TTS 的三个辅助模型（w2v-bert-2.0 / CAM++ / BigVGAN v2）不单独出资源
+行：并入"声音克隆"行（模型名显示"IndexTTS-2.5 及辅助模型"），点击
+下载即并行补齐缺失的主权重与辅助模型，取消一并取消，徽标显示整组
+平均进度；三者全部就位后"声音克隆"才显示已就绪。
 
 "资源管理"标题行右侧提供"一键部署"按钮：后台并行搭建运行环境与下载
 全部缺失模型（每资源独立下载线程，互不阻塞；环境搭建线程同步进行）。
@@ -23,6 +29,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QCursor, QDesktopServices
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QGridLayout,
@@ -36,18 +43,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core import sleep_guard
 from app.core.hardware import DeviceInfo, detect_device_standalone
 from app.core.i18n import SUPPORTED_LANGUAGES, get_language, set_language, tr
 from app.resources.deploy_log import deploy_log_path
 from app.resources.downloader import get_model_downloader
 from app.resources.env_setup import (
-    delete_runtime_env,
     environment_status,
     get_env_setup_manager,
     runtime_env_components,
 )
 from app.resources.model import (
     RESOURCE_META,
+    TTS_AUX_KEYS,
     ResourceInfo,
     ResourceManager,
     get_models_root,
@@ -59,6 +67,9 @@ from app.ui.style import (
     set_theme,
     tokens,
 )
+
+# "声音克隆"行的展示分组：主权重 + 辅助模型三件套（一行聚合展示与操作）
+_TTS_GROUP: tuple[str, ...] = ("tts",) + TTS_AUX_KEYS
 
 
 class SettingsDialog(QDialog):
@@ -90,11 +101,19 @@ class SettingsDialog(QDialog):
         # 运行环境行的进度控件引用（搭建进行中时存在）
         self._env_refs: dict[str, QLabel] = {}
         self._rows_host: QWidget | None = None
+        # 各下载的最近进度（0-1），供 tts 行聚合整组（主权重 + 辅助模型）进度
+        self._download_pct: dict[str, float] = {}
+        # 后台删除进行中的资源 key（行内按钮显示"删除中…"并禁用）
+        self._deleting_keys: set[str] = set()
+        # 运行环境删除进行中
+        self._env_deleting = False
 
         self._build_ui()
 
         # 资源状态变化（下载完成 / 删除）时刷新对应行
         self._manager.resource_status_changed.connect(self._on_status_changed)
+        # 后台删除结束（成功 / 失败）：记录日志并恢复行的初始状态
+        self._manager.resource_delete_finished.connect(self._on_resource_deleted)
         # 下载进度 / 结果
         self._downloader.download_progress.connect(self._on_download_progress)
         self._downloader.download_finished.connect(self._on_download_finished)
@@ -105,6 +124,8 @@ class SettingsDialog(QDialog):
         self._env_mgr.setup_progress.connect(self._on_env_progress)
         self._env_mgr.setup_finished.connect(self._on_env_finished)
         self._env_mgr.setup_cancelled.connect(self._on_env_cancelled)
+        # 运行环境后台删除结果
+        self._env_mgr.delete_finished.connect(self._on_env_delete_finished)
 
     # ------------------------------------------------------------------ 构建
 
@@ -116,10 +137,12 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        # ---- 界面语言 ----
-        lang_row = QHBoxLayout()
-        lang_row.setSpacing(10)
-        # 标签双语写死（不随界面语言翻译）：无论用户懂哪种语言，都能认出此处修改界面语言
+        # ---- 界面语言 + 界面主题（同一行：语言在左，主题在其右侧） ----
+        # 标签与选项名双语写死（不随界面语言翻译）：无论用户懂哪种语言，
+        # 都能认出此处修改界面语言 / 主题（深浅色固定软件自身配色，
+        # 不跟随系统深浅色）
+        pref_row = QHBoxLayout()
+        pref_row.setSpacing(10)
         self._lang_label = QLabel("语言 / Language")
         self._lang_combo = QComboBox()
         for code, native in SUPPORTED_LANGUAGES.items():
@@ -128,15 +151,9 @@ class SettingsDialog(QDialog):
             list(SUPPORTED_LANGUAGES.keys()).index(get_language())
         )
         self._lang_combo.currentIndexChanged.connect(self._on_language_changed)
-        lang_row.addWidget(self._lang_label)
-        lang_row.addWidget(self._lang_combo)
-        lang_row.addStretch(1)
-        layout.addLayout(lang_row)
-
-        # ---- 界面主题（深 / 浅色；固定软件自身配色，不跟随系统深浅色） ----
-        theme_row = QHBoxLayout()
-        theme_row.setSpacing(10)
-        # 标签与选项名同样双语写死：与语言行保持一致
+        pref_row.addWidget(self._lang_label)
+        pref_row.addWidget(self._lang_combo)
+        pref_row.addSpacing(24)
         self._theme_label = QLabel("主题 / Theme")
         self._theme_combo = QComboBox()
         for code, native in SUPPORTED_THEMES.items():
@@ -145,10 +162,17 @@ class SettingsDialog(QDialog):
             list(SUPPORTED_THEMES.keys()).index(get_theme())
         )
         self._theme_combo.currentIndexChanged.connect(self._on_theme_changed)
-        theme_row.addWidget(self._theme_label)
-        theme_row.addWidget(self._theme_combo)
-        theme_row.addStretch(1)
-        layout.addLayout(theme_row)
+        pref_row.addWidget(self._theme_label)
+        pref_row.addWidget(self._theme_combo)
+        pref_row.addStretch(1)
+        layout.addLayout(pref_row)
+
+        # ---- 有任务 / 下载运行时禁止系统休眠（防止长任务被休眠中断） ----
+        self._sleep_check = QCheckBox(tr("settings.prevent_sleep"))
+        self._sleep_check.setToolTip(tr("settings.prevent_sleep_tooltip"))
+        self._sleep_check.setChecked(sleep_guard.is_enabled())
+        self._sleep_check.toggled.connect(self._on_sleep_toggled)
+        layout.addWidget(self._sleep_check)
 
         # 分隔线
         separator = QLabel()
@@ -188,7 +212,7 @@ class SettingsDialog(QDialog):
         self._rebuild_resource_rows()
 
     def _rebuild_resource_rows(self) -> None:
-        """按管理器当前状态重建全部资源行（运行环境行置顶）。"""
+        """按管理器当前状态重建资源行（运行环境行置顶，辅助模型不单独出行）。"""
         if self._rows_host is not None:
             self._rows_layout.removeWidget(self._rows_host)
             self._rows_host.deleteLater()
@@ -206,8 +230,8 @@ class SettingsDialog(QDialog):
         # 第 0 行：运行环境（TTS 虚拟环境 + LLAMA 服务），位于音频提取之上
         self._build_env_row(grid)
 
-        for row, info in enumerate(self._manager.resources(), start=1):
-            # 列 0：功能名 + 模型名
+        for row, info in enumerate(self._manager.visible_resources(), start=1):
+            # 列 0：功能名 + 模型名（声音克隆行标注"及辅助模型"）
             name_column = QWidget()
             name_layout = QVBoxLayout(name_column)
             name_layout.setContentsMargins(0, 0, 0, 0)
@@ -217,18 +241,21 @@ class SettingsDialog(QDialog):
             feature.setStyleSheet(
                 f"font-size: 13px; font-weight: 600; color: {c['feature_name']};"
             )
-            model = QLabel(info.model_name)
+            model_text = info.model_name
+            if info.key == "tts":
+                model_text = f"{info.model_name} {tr('resource.tts.aux_suffix')}"
+            model = QLabel(model_text)
             model.setStyleSheet(f"font-size: 12px; color: {c['model_name']};")
             name_layout.addWidget(feature)
             name_layout.addWidget(model)
             grid.addWidget(name_column, row, 0)
 
-            # 列 1：状态徽标（下载中显示百分比，下载完成才显示"已就绪"）
-            downloading = self._is_downloading(info.key)
+            # 列 1：状态徽标（下载中显示整组进度，全部完成才显示"已就绪"）
+            downloading = self._row_downloading(info.key)
             badge = QLabel()
             if downloading:
                 badge.setObjectName("notReadyBadge")
-                badge.setText("0%")
+                badge.setText(f"{self._group_progress(info.key) * 100:.0f}%")
             else:
                 badge.setObjectName("readyBadge" if info.status.is_ready else "notReadyBadge")
                 badge.setText(tr("common.ready") if info.status.is_ready else tr("common.not_ready"))
@@ -244,6 +271,32 @@ class SettingsDialog(QDialog):
         self._rows_host = host
         self._rows_layout.addWidget(host)
         self._update_deploy_button_state()
+
+    # ------------------------------------------------------------------ 行分组
+
+    def _group_keys(self, key: str) -> tuple[str, ...]:
+        """资源行的操作分组：tts 行聚合主权重与辅助模型三件套，其余单行单资源。"""
+        return _TTS_GROUP if key == "tts" else (key,)
+
+    def _row_key(self, key: str) -> str:
+        """下载 key -> 所属行 key（辅助模型的进度 / 完成事件归到 tts 行）。"""
+        return "tts" if key in TTS_AUX_KEYS else key
+
+    def _row_downloading(self, key: str) -> bool:
+        """该行是否有任一资源处于下载中（tts 行看整组）。"""
+        return any(self._downloader.is_downloading(k) for k in self._group_keys(key))
+
+    def _group_progress(self, key: str) -> float:
+        """该行整组下载进度（0-1）：下载中取最近进度，已就绪计满，其余计零。"""
+        parts = []
+        for k in self._group_keys(key):
+            if self._downloader.is_downloading(k):
+                parts.append(self._download_pct.get(k, 0.0))
+            elif self._manager.get(k).status.is_ready:
+                parts.append(1.0)
+            else:
+                parts.append(0.0)
+        return sum(parts) / len(parts) if parts else 0.0
 
     def _build_env_row(self, grid: QGridLayout) -> None:
         """运行环境行：检测状态 + 搭建按钮 / 搭建进度 + 取消。"""
@@ -305,13 +358,17 @@ class SettingsDialog(QDialog):
             cancel_button = QPushButton(tr("common.cancel"))
             cancel_button.clicked.connect(self._env_mgr.cancel)
             actions_layout.addWidget(cancel_button)
+        elif self._env_deleting:
+            deleting_button = QPushButton(tr("settings.deleting"))
+            deleting_button.setEnabled(False)
+            actions_layout.addWidget(deleting_button)
         else:
             if not both_ready:
                 setup_button = QPushButton(tr("settings.env_setup"))
                 setup_button.clicked.connect(self._on_env_setup_clicked)
                 actions_layout.addWidget(setup_button)
             # 有已部署组件（.venv-tts / tools / third_party 等）时提供删除，
-            # 与模型行的删除一致：移入 .trash 可找回，重新部署即重建
+            # 与模型行的删除一致：后台线程彻底删除，重新部署即重建
             if runtime_env_components():
                 delete_button = QPushButton(tr("common.delete"))
                 delete_button.setObjectName("dangerButton")
@@ -325,7 +382,7 @@ class SettingsDialog(QDialog):
         self._env_mgr.start_setup(self._device)
 
     def _on_env_delete_clicked(self) -> None:
-        """清除已部署的运行环境（确认后各组件移入 .trash，可重新一键部署）。
+        """清除已部署的运行环境（确认后后台线程彻底删除，可重新一键部署）。
 
         开发态清除只动 .venv-tts / tools / third_party 等部署产物，
         主开发环境（项目根 venv/）不受影响。
@@ -337,22 +394,31 @@ class SettingsDialog(QDialog):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        try:
-            moved = delete_runtime_env()
-        except RuntimeError as e:
-            msg = str(e)
+        if self._env_mgr.start_delete():
+            self._env_deleting = True
+            self._rebuild_resource_rows()
+
+    def _on_env_delete_finished(self, ok: bool, detail: str) -> None:
+        """运行环境后台删除结束：日志 + 失败弹窗 + 刷新行与设备卡徽标。
+
+        detail 为已删除的组件名列表（成功时）或错误文案（失败时）；
+        成功但列表为空 = 本机本就没有可删除内容。
+        """
+        self._env_deleting = False
+        if ok:
+            if detail:
+                self.log_requested.emit(tr("settings.env_delete_done"))
+            else:
+                self.log_requested.emit(tr("settings.env_delete_nothing"))
+        else:
+            msg = detail
             path = deploy_log_path()
             if path is not None:
                 msg += f"\n{tr('common.log_hint', path=path)}"
             self.log_requested.emit(tr("settings.env_delete_failed", error=msg))
             QMessageBox.warning(self, tr("common.settings"), msg)
-        else:
-            if moved:
-                self.log_requested.emit(tr("settings.env_delete_done"))
-            else:
-                self.log_requested.emit(tr("settings.env_delete_nothing"))
-            # 通知主窗口（设备卡等）运行环境就绪状态已变化
-            self._env_mgr.environment_changed.emit()
+        # 通知主窗口（设备卡等）运行环境就绪状态已变化
+        self._env_mgr.environment_changed.emit()
         self._rebuild_resource_rows()
 
     def _on_env_started(self) -> None:
@@ -379,7 +445,7 @@ class SettingsDialog(QDialog):
         self._rebuild_resource_rows()
 
     def _is_downloading(self, key: str) -> bool:
-        """资源行是否处于下载中。"""
+        """单个资源是否处于下载中。"""
         return self._downloader.is_downloading(key)
 
     def _build_location_cell(self, info: ResourceInfo) -> QWidget:
@@ -389,8 +455,9 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         c = tokens()
 
-        if self._is_downloading(info.key):
-            progress = QLabel(tr("settings.downloading", pct="0", speed="…"))
+        if self._row_downloading(info.key):
+            pct = f"{self._group_progress(info.key) * 100:.0f}"
+            progress = QLabel(tr("settings.downloading", pct=pct, speed="…"))
             progress.setStyleSheet(f"color: {c['accent_text']};")
             self._row_refs.setdefault(info.key, {})["progress"] = progress
             layout.addWidget(progress)
@@ -404,8 +471,13 @@ class SettingsDialog(QDialog):
             hint.setStyleSheet(f"color: {c['text_faint']}; font-size: 12px;")
             layout.addWidget(hint)
         else:
-            size_text = f"{info.download_size_gb:g}"
-            need = QLabel(tr("settings.need_download", size=size_text))
+            # 需下载体积：tts 行合并辅助模型三件套（一并自动下载）
+            size_gb = info.download_size_gb
+            if info.key == "tts":
+                size_gb += sum(
+                    RESOURCE_META[k].download_size_gb for k in TTS_AUX_KEYS
+                )
+            need = QLabel(tr("settings.need_download", size=f"{size_gb:g}"))
             need.setStyleSheet(f"color: {c['text_body']};")
             layout.addWidget(need)
         return cell
@@ -417,7 +489,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        if self._is_downloading(info.key):
+        if self._row_downloading(info.key):
             cancel_button = QPushButton(tr("common.cancel"))
             cancel_button.clicked.connect(lambda _=False, k=info.key: self._on_cancel_clicked(k))
             layout.addWidget(cancel_button)
@@ -426,6 +498,10 @@ class SettingsDialog(QDialog):
                 builtin = QLabel(tr("settings.builtin"))
                 builtin.setStyleSheet(f"color: {tokens()['text_faint']}; font-size: 12px;")
                 layout.addWidget(builtin)
+            elif info.key in self._deleting_keys:
+                deleting_button = QPushButton(tr("settings.deleting"))
+                deleting_button.setEnabled(False)
+                layout.addWidget(deleting_button)
             else:
                 delete_button = QPushButton(tr("common.delete"))
                 delete_button.setObjectName("dangerButton")
@@ -485,21 +561,33 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(tr("common.settings"))
         self._resources_title.setText(tr("settings.resources"))
         self._deploy_all_button.setText(tr("settings.deploy_all"))
+        self._sleep_check.setText(tr("settings.prevent_sleep"))
+        self._sleep_check.setToolTip(tr("settings.prevent_sleep_tooltip"))
         self._rebuild_resource_rows()
+
+    # ------------------------------------------------------------------ 防休眠
+
+    def _on_sleep_toggled(self, checked: bool) -> None:
+        """切换「任务 / 下载运行时禁止系统休眠」：立即生效并持久化。
+
+        实际是否阻止休眠由 sleep_guard 按（开关 × 当前有无活动）决定，
+        详见 app/core/sleep_guard.py。
+        """
+        sleep_guard.set_enabled(checked)
 
     # ------------------------------------------------------------------ 下载
 
     def _start_default_download(self, key: str) -> bool:
         """按默认位置（软件安装目录下 models/<默认子目录>）启动后台下载。
 
-        返回是否真正发起了下载（已在下载中的资源跳过）。
+        返回是否真正发起了下载（已就绪或在下载中的资源跳过）。
         """
         info = self._manager.get(key)
         meta = RESOURCE_META.get(key)
         if meta is None or not meta.repo_id:
             # 内置资源（如 FFmpeg）不提供下载
             return False
-        if self._is_downloading(key):
+        if info.status.is_ready or self._is_downloading(key):
             return False
         self._downloader.start_download(
             key=key,
@@ -512,8 +600,13 @@ class SettingsDialog(QDialog):
         return True
 
     def _on_download_clicked(self, key: str) -> None:
-        """点击下载：直接下载到默认位置（软件安装目录），不再让用户选择目标。"""
-        self._start_default_download(key)
+        """点击下载：直接下载到默认位置（软件安装目录）。
+
+        "声音克隆"行一并启动主权重与辅助模型三件套中缺失项的下载
+        （已就绪 / 在下载中的自动跳过）。
+        """
+        for k in self._group_keys(key):
+            self._start_default_download(k)
         self._rebuild_resource_rows()
 
     def _on_deploy_all_clicked(self) -> None:
@@ -564,36 +657,56 @@ class SettingsDialog(QDialog):
         self._deploy_all_button.setEnabled(env_pending or model_pending)
 
     def _on_cancel_clicked(self, key: str) -> None:
-        """取消正在进行的下载（已完成文件保留，重新下载可续传）。"""
-        self._downloader.cancel(key)
+        """取消正在进行的下载（已完成文件保留，重新下载可续传）。
+
+        "声音克隆"行一并取消主权重与辅助模型三件套的全部下载。
+        """
+        for k in self._group_keys(key):
+            if self._downloader.is_downloading(k):
+                self._downloader.cancel(k)
         self._rebuild_resource_rows()
 
     def _on_download_progress(self, key: str, percent: float, speed: str) -> None:
-        """更新对应行的下载进度文案与状态徽标百分比。"""
-        refs = self._row_refs.get(key)
+        """更新对应行的下载进度文案与状态徽标百分比。
+
+        辅助模型的进度归并到"声音克隆"行，徽标显示整组（主权重 +
+        辅助模型三件套）平均进度；进度文案显示当前回报的下载速度。
+        """
+        self._download_pct[key] = percent
+        row_key = self._row_key(key)
+        refs = self._row_refs.get(row_key)
         if refs is None:
             return
-        pct_text = f"{percent * 100:.0f}%"
+        pct_value = f"{self._group_progress(row_key) * 100:.0f}"
         progress = refs.get("progress")
         if progress is not None:
             progress.setText(
-                tr("settings.downloading", pct=f"{percent * 100:.0f}", speed=speed)
+                tr("settings.downloading", pct=pct_value, speed=speed)
             )
-        # 状态徽标同步显示百分比（下载完成前不显示"已就绪"）
+        # 状态徽标同步显示整组进度（下载完成前不显示"已就绪"）
         badge = refs.get("badge")
         if badge is not None:
-            badge.setText(pct_text)
+            badge.setText(f"{pct_value}%")
 
     def _on_download_finished(self, key: str, local_path: str) -> None:
         """下载完成：下载一律走默认位置，按检测结果刷新状态。"""
         info = self._manager.get(key)
+        self._download_pct.pop(key, None)
         self._manager.refresh(key)
+        # 辅助模型就位情况影响"声音克隆"行的就绪判定（_detect_tts 要求
+        # 三件套齐全），需连带刷新主资源
+        if key in TTS_AUX_KEYS:
+            self._manager.refresh("tts")
         self.log_requested.emit(tr("settings.download_done", name=info.model_name))
         self._rebuild_resource_rows()
 
     def _on_download_failed(self, key: str, error: str) -> None:
         """下载失败：弹窗提示并恢复行的初始状态。"""
         info = self._manager.get(key)
+        self._download_pct.pop(key, None)
+        self._manager.refresh(key)
+        if key in TTS_AUX_KEYS:
+            self._manager.refresh("tts")
         self.log_requested.emit(tr("settings.download_failed", name=info.model_name, error=error))
         QMessageBox.warning(
             self, tr("common.settings"), tr("settings.download_failed", name=info.model_name, error=error)
@@ -603,13 +716,17 @@ class SettingsDialog(QDialog):
     def _on_download_cancelled(self, key: str) -> None:
         """下载被用户取消：记录日志并恢复行的初始状态。"""
         info = self._manager.get(key)
+        self._download_pct.pop(key, None)
+        self._manager.refresh(key)
+        if key in TTS_AUX_KEYS:
+            self._manager.refresh("tts")
         self.log_requested.emit(tr("settings.download_cancelled", name=info.model_name))
         self._rebuild_resource_rows()
 
     # ------------------------------------------------------------------ 删除
 
     def _on_delete_clicked(self, key: str) -> None:
-        """删除本地模型文件（确认后移入 .trash，可找回）。"""
+        """删除本地模型文件（确认后后台线程彻底删除，不进回收站）。"""
         info = self._manager.get(key)
         if key == "ffmpeg":
             self.log_requested.emit(tr("settings.delete_builtin"))
@@ -621,7 +738,17 @@ class SettingsDialog(QDialog):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        deleted = self._manager.delete_resource(key)
+        if self._manager.delete_resource(key):
+            self._deleting_keys.add(key)
+            self._rebuild_resource_rows()
+        else:
+            self.log_requested.emit(tr("settings.delete_nothing", name=info.model_name))
+            self._rebuild_resource_rows()
+
+    def _on_resource_deleted(self, key: str, deleted: bool) -> None:
+        """后台删除结束：记录日志并恢复行的初始状态（状态刷新由管理器完成）。"""
+        self._deleting_keys.discard(key)
+        info = self._manager.get(key)
         if deleted:
             self.log_requested.emit(tr("settings.delete_done", name=info.model_name))
         else:

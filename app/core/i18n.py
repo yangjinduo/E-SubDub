@@ -110,6 +110,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "resource.translate.feature": "字幕翻译",
         "resource.homura.feature": "配音时长修正",
         "resource.tts.feature": "声音克隆",
+        "resource.tts.aux_suffix": "及辅助模型",
         # ---- 运行环境搭建 ----
         "settings.env_feature": "运行环境",
         "settings.env_sub": "ML 虚拟环境 · TTS 虚拟环境 · LLAMA 服务",
@@ -229,7 +230,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.builtin_hint": "随软件内置，无需下载或删除。",
         "settings.path_unknown": "（未知路径）",
         "settings.need_download": "需下载约 {size} GB",
-        "settings.delete_hint": "删除后资源将恢复为未就绪（文件移入 .trash 目录，可找回）。",
+        "settings.delete_hint": "删除后资源将恢复为未就绪，本地文件将被彻底删除（不进回收站，无法恢复）。",
         "settings.download_started": "开始下载 {name}…",
         "settings.download_done": "{name} 下载完成，已就绪。",
         "settings.download_failed": "{name} 下载失败：{error}",
@@ -237,19 +238,25 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.delete_done": "已删除 {name} 的本地文件，状态恢复为未就绪。",
         "settings.delete_nothing": "{name} 没有可删除的本地文件。",
         "settings.delete_builtin": "FFmpeg 为内置工具，不支持删除。",
+        "settings.deleting": "删除中…",
         "settings.downloading": "下载中 {pct}% · {speed}",
         "settings.confirm_delete_title": "确认删除",
-        "settings.confirm_delete": "确定删除 {name} 的本地文件？\n文件将移入同级 .trash 目录，可手动找回。",
+        "settings.confirm_delete": "确定删除 {name} 的本地文件？\n文件将被彻底删除（不进回收站），无法恢复。",
         "settings.confirm_env_delete_title": "删除运行环境",
         "settings.confirm_env_delete": (
             "确定删除已部署的运行环境？\n"
             "（.venv-ml / .venv-tts 虚拟环境、llama-server、IndexTTS 源码）\n"
-            "各组件将移入同级 .trash 目录，可手动找回；删除后可重新一键部署。\n"
+            "各组件将被彻底删除（不进回收站），无法恢复；删除后可重新一键部署。\n"
             "请先确保当前没有正在运行的配音任务。"
         ),
-        "settings.env_delete_done": "运行环境已清除（移入回收目录），可重新一键部署。",
+        "settings.env_delete_done": "运行环境已彻底删除，可重新一键部署。",
         "settings.env_delete_nothing": "没有可删除的运行环境。",
         "settings.env_delete_failed": "删除运行环境失败：{error}",
+        "settings.prevent_sleep": "任务运行时禁止系统休眠",
+        "settings.prevent_sleep_tooltip": (
+            "勾选后，任务执行、模型下载或环境搭建期间系统不会进入休眠"
+            "（屏幕仍可自动关闭），防止长任务被中断。"
+        ),
         # ---- ASR 校对对话框 ----
         "asr_review.title": "校对识别结果",
         "asr_review.heading": "核对识别文本",
@@ -608,6 +615,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "resource.translate.feature": "Subtitle translation",
         "resource.homura.feature": "Dubbing duration correction",
         "resource.tts.feature": "Voice cloning",
+        "resource.tts.aux_suffix": "+ auxiliary models",
         # ---- Runtime environment setup ----
         "settings.env_feature": "Runtime environment",
         "settings.env_sub": "ML virtualenv · TTS virtualenv · LLAMA service",
@@ -729,7 +737,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.builtin_hint": "Bundled with the app; no download or deletion needed.",
         "settings.path_unknown": "(unknown path)",
         "settings.need_download": "Requires ~{size} GB download",
-        "settings.delete_hint": "After deletion the resource becomes not ready (files are moved to a .trash folder and can be recovered).",
+        "settings.delete_hint": "After deletion the resource becomes not ready; local files are permanently removed (not moved to a recycle bin and cannot be recovered).",
         "settings.download_started": "Downloading {name}…",
         "settings.download_done": "{name} download complete, now ready.",
         "settings.download_failed": "{name} download failed: {error}",
@@ -737,20 +745,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.delete_done": "Local files of {name} deleted; status is now not ready.",
         "settings.delete_nothing": "{name} has no local files to delete.",
         "settings.delete_builtin": "FFmpeg is built in and cannot be deleted.",
+        "settings.deleting": "Deleting…",
         "settings.downloading": "Downloading {pct}% · {speed}",
         "settings.confirm_delete_title": "Confirm deletion",
-        "settings.confirm_delete": "Delete local files of {name}?\nFiles will be moved to a .trash folder next to them and can be recovered manually.",
+        "settings.confirm_delete": "Delete local files of {name}?\nFiles will be permanently deleted (not moved to a recycle bin) and cannot be recovered.",
         "settings.confirm_env_delete_title": "Delete runtime environment",
         "settings.confirm_env_delete": (
             "Delete the deployed runtime environment?\n"
             "(.venv-ml / .venv-tts virtualenvs, llama-server, IndexTTS source)\n"
-            "Components will be moved to a .trash folder and can be recovered manually; "
-            "you can run one-click deploy again afterwards.\n"
+            "Components will be permanently deleted (not moved to a recycle bin) and cannot "
+            "be recovered; you can run one-click deploy again afterwards.\n"
             "Make sure no dubbing task is currently running."
         ),
-        "settings.env_delete_done": "Runtime environment cleared (moved to trash); run one-click deploy to rebuild.",
+        "settings.env_delete_done": "Runtime environment permanently deleted; run one-click deploy to rebuild.",
         "settings.env_delete_nothing": "No runtime environment to delete.",
         "settings.env_delete_failed": "Failed to delete runtime environment: {error}",
+        "settings.prevent_sleep": "Prevent system sleep while tasks are running",
+        "settings.prevent_sleep_tooltip": (
+            "When checked, the system will not go to sleep during task execution, "
+            "model downloads, or environment setup (the display may still turn off), "
+            "so long-running jobs are not interrupted."
+        ),
         # ---- ASR review dialog ----
         "asr_review.title": "Review transcription",
         "asr_review.heading": "Check transcribed text",

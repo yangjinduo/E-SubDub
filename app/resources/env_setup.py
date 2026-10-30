@@ -76,7 +76,7 @@ from app.pipeline.tts import (
     tts_runtime_ready,
 )
 from app.resources.deploy_log import deploy_logger, deploy_log_path
-from app.resources.model import move_to_trash
+from app.resources.model import remove_path
 
 logger = logging.getLogger(__name__)
 
@@ -489,23 +489,23 @@ def runtime_env_components() -> list[tuple[str, Path]]:
 
 
 def delete_runtime_env() -> list[str]:
-    """清除已部署的运行环境：各组件移入同级 .trash 回收目录（可找回）。
+    """彻底清除已部署的运行环境：各组件直接删除（不进回收站，无法恢复）。
 
     返回被清除的组件名列表（空列表 = 本机无可清除内容）。部分组件被
     占用时（如 TTS 任务进行中，worker 正使用 .venv-tts 的 python.exe）
-    Windows 下移动失败——此时抛 RuntimeError 指明失败组件与原因；已
-    成功移入回收目录的其余组件保持已清除状态（重新一键部署会补齐）。
+    Windows 下删除失败——此时抛 RuntimeError 指明失败组件与原因；已
+    成功删除的其余组件保持已清除状态（重新一键部署会补齐）。
     """
     dlog = deploy_logger()
     dlog.info("=== 清除运行环境 ===（组件：%s）",
               "、".join(label for label, _ in runtime_env_components()) or "（无）")
-    moved: list[str] = []
+    removed: list[str] = []
     errors: list[str] = []
     for label, path in runtime_env_components():
         try:
-            dest = move_to_trash(path)
-            moved.append(label)
-            dlog.info("[清除] %s → %s", label, dest)
+            remove_path(path)
+            removed.append(label)
+            dlog.info("[清除] %s（%s）", label, path)
         except OSError as e:
             errors.append(f"{label}：{e}")
             dlog.error("[清除] %s 失败：%s", label, e)
@@ -514,8 +514,8 @@ def delete_runtime_env() -> list[str]:
             "部分组件清除失败（多因被正在运行的任务占用，请先停止任务后重试）：\n"
             + "\n".join(errors)
         )
-    dlog.info("=== 运行环境已清除：%s ===", "、".join(moved) if moved else "（无可清除组件）")
-    return moved
+    dlog.info("=== 运行环境已清除：%s ===", "、".join(removed) if removed else "（无可清除组件）")
+    return removed
 
 
 # ---------------------------------------------------------------- 搭建线程
@@ -1511,7 +1511,7 @@ class _EnvSetupThread(QThread):
         venv 内部失败只报一行 Error——ensurepip 子进程的真实输出被 venv
         吞掉（实测独显机 2026-10-20 全新安装 ensurepip 退出码 1、零输出，
         无从定位）。故：
-        1. 半残目录（有目录无 python.exe）先移入 .trash——venv 的升级
+        1. 半残目录（有目录无 python.exe）先彻底删除——venv 的升级
            路径在残缺目录上行为未定义；
         2. 创建前探测基础解释器 ensurepip 可用（快）——运行时损坏时
            提前给出明确报错，而不是 venv 深处的裸退出码；
@@ -1525,11 +1525,11 @@ class _EnvSetupThread(QThread):
             return
         if venv_dir.exists():
             dlog.warning(
-                "[%s] %s 目录残缺（无 python.exe），移入回收目录后重建：%s",
+                "[%s] %s 目录残缺（无 python.exe），删除后重建：%s",
                 tag, venv_dir.name, venv_dir,
             )
             self._kill_stale_venv_pythons()
-            move_to_trash(venv_dir)
+            remove_path(venv_dir)
         base_py = _bootstrap_python()
         # 探测基础解释器 ensurepip：venv 创建的最后一步就是在新建 venv
         # 里跑 ensurepip 装入捆绑 pip，基础解释器缺 ensurepip/捆绑轮子
@@ -1571,10 +1571,10 @@ class _EnvSetupThread(QThread):
         _diagnose("首次创建失败")
         self._kill_stale_venv_pythons()
         try:
-            move_to_trash(venv_dir)
+            remove_path(venv_dir)
         except OSError as e:
             raise RuntimeError(
-                f"venv 创建失败且残缺目录无法移入回收目录"
+                f"venv 创建失败且残缺目录无法删除"
                 f"（可能有程序占用，请重启软件后重试）：\n{e}"
             ) from e
         try:
@@ -1863,6 +1863,7 @@ class EnvSetupManager(QObject):
         setup_finished(bool, str): 搭建结束（成功与否, 完整结果/错误文案）
         setup_cancelled(): 用户取消
         environment_changed(): 环境就绪状态可能已变化（供设备卡等刷新）
+        delete_finished(bool, str): 删除运行环境结束（成功与否, 已删组件/错误文案）
     """
 
     setup_started = Signal()
@@ -1870,14 +1871,20 @@ class EnvSetupManager(QObject):
     setup_finished = Signal(bool, str)
     setup_cancelled = Signal()
     environment_changed = Signal()
+    delete_finished = Signal(bool, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._thread: _EnvSetupThread | None = None
+        self._deleting = False
 
     def is_running(self) -> bool:
         """是否有搭建任务进行中。"""
         return self._thread is not None and self._thread.isRunning()
+
+    def is_deleting(self) -> bool:
+        """是否正在后台删除运行环境。"""
+        return self._deleting
 
     def start_setup(self, device: DeviceInfo | None) -> bool:
         """启动环境搭建（补齐缺失部分）；已在进行中时返回 False。"""
@@ -1897,6 +1904,32 @@ class EnvSetupManager(QObject):
         """取消进行中的搭建。"""
         if self._thread is not None:
             self._thread.cancel()
+
+    def start_delete(self) -> bool:
+        """后台线程彻底删除已部署的运行环境（直接删除，无法恢复）。
+
+        组件目录（虚拟环境等）可达数 GB，同步删除会卡住 UI，故与搭建
+        一致放后台执行，结束后经 delete_finished 通知。搭建进行中时不
+        允许删除（返回 False）。
+        """
+        if self.is_running() or self._deleting:
+            return False
+
+        def _work() -> None:
+            self._deleting = True
+            try:
+                removed = delete_runtime_env()
+            except RuntimeError as e:
+                self.delete_finished.emit(False, str(e))
+            else:
+                self.delete_finished.emit(
+                    True, "、".join(removed) if removed else ""
+                )
+            finally:
+                self._deleting = False
+
+        threading.Thread(target=_work, daemon=True, name="env-delete").start()
+        return True
 
     # ------------------------------------------------------------------ 结果
 
