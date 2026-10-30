@@ -1730,7 +1730,17 @@ class _EnvSetupThread(QThread):
         py = python or get_tts_venv_python()
         pip_tmp = AppConfig.DATA_ROOT / ".pip-tmp"
         pip_tmp.mkdir(parents=True, exist_ok=True)
-        env_extra = {"TMP": str(pip_tmp), "TEMP": str(pip_tmp)}
+        # PYTHONNOUSERSITE：让 pip 的"已安装"判定视野与 -I 冒烟/运行态
+        # 一致。用户级 site-packages（%APPDATA%\Python\Py3xx\site-packages）
+        # 对 venv 解释器可见，其中已装的包会被 pip 误判 already satisfied
+        # 跳装（matplotlib 依赖 pillow/contourpy 等即因此漏进不了 venv，
+        # 部署日志 2026-10-30 冒烟 No module named 'PIL'），而 -I 冒烟
+        # 恰好看不到用户级目录——闭包缺口潜伏到冒烟期才爆。干净部署机
+        # 无用户级包不受影响，属开发机特有的"本机已装"参照污染
+        env_extra = {
+            "TMP": str(pip_tmp), "TEMP": str(pip_tmp),
+            "PYTHONNOUSERSITE": "1",
+        }
         sources = list(indexes) if indexes is not None else list(_PIP_INDEXES)
         last_err: RuntimeError | None = None
         attempt = 0
