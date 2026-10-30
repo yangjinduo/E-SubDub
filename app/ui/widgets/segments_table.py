@@ -32,32 +32,21 @@ from PySide6.QtWidgets import (
 
 from app.core.ffmpeg import get_ffmpeg_path
 from app.core.i18n import tr
+from app.ui.style import table_qss, tokens
 from app.ui.widgets.audio_player import AudioPlayerBar
 
-# 表格样式：与 app/ui/style.py 全局 QSS 保持一致的浅色现代观感
-TABLE_QSS = """
-QTableWidget {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
-    border-radius: 10px;
-    gridline-color: #F3F4F6;
-    selection-background-color: #EFF6FF;
-    selection-color: #1D4ED8;
-}
-QHeaderView::section {
-    background: #F9FAFB;
-    color: #4B5563;
-    border: none;
-    border-bottom: 1px solid #E5E7EB;
-    padding: 8px 6px;
-    font-weight: 600;
-}
-"""
 
-_COLOR_NORMAL = QColor("#1F2937")
-_COLOR_DELETED = QColor("#9CA3AF")
-_COLOR_BG_DELETED = QColor("#F3F4F6")
-_COLOR_BG_NORMAL = QColor("#FFFFFF")
+def _row_colors() -> dict:
+    """表格行文本 / 背景颜色（按当前主题取令牌，深浅色都清晰）。"""
+    c = tokens()
+    return {
+        "normal": QColor(c["row_text"]),
+        "deleted": QColor(c["row_text_deleted"]),
+        "bg_normal": QColor(c["row_bg"]),
+        "bg_deleted": QColor(c["row_bg_deleted"]),
+        "danger": QColor(c["danger_text"]),
+        "success": QColor(c["success_text"]),
+    }
 
 # 行高自适应：最小行高与文本换行内容上下的留白
 _MIN_ROW_HEIGHT = 42
@@ -146,7 +135,7 @@ class SegmentsTableWidget(QWidget):
 
         self._table = QTableWidget(len(self._segments), len(columns), self)
         self._table.setHorizontalHeaderLabels(columns)
-        self._table.setStyleSheet(TABLE_QSS)
+        self._table.setStyleSheet(table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(_MIN_ROW_HEIGHT)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -264,23 +253,24 @@ class SegmentsTableWidget(QWidget):
         """按 deleted 状态刷新整行外观：置灰 / 恢复。"""
         seg = self._segments[row]
         deleted = bool(seg.deleted)
+        colors = _row_colors()
         for col in (0, 1, 2):
             item = self._table.item(row, col)
-            item.setForeground(_COLOR_DELETED if deleted else _COLOR_NORMAL)
-            item.setBackground(_COLOR_BG_DELETED if deleted else _COLOR_BG_NORMAL)
+            item.setForeground(colors["deleted"] if deleted else colors["normal"])
+            item.setBackground(colors["bg_deleted"] if deleted else colors["bg_normal"])
 
         if self._readonly:
             for col in (3, 4):
                 item = self._table.item(row, col)
-                item.setForeground(_COLOR_DELETED if deleted else _COLOR_NORMAL)
-                item.setBackground(_COLOR_BG_DELETED if deleted else _COLOR_BG_NORMAL)
+                item.setForeground(colors["deleted"] if deleted else colors["normal"])
+                item.setBackground(colors["bg_deleted"] if deleted else colors["bg_normal"])
             return
 
         status_item = self._table.item(row, 5)
         status_item.setText(
             tr("asr_review.status_deleted") if deleted else tr("asr_review.status_normal")
         )
-        status_item.setForeground(QColor("#DC2626") if deleted else QColor("#059669"))
+        status_item.setForeground(colors["danger"] if deleted else colors["success"])
 
         self._table.cellWidget(row, 3).setEnabled(not deleted)
         self._table.cellWidget(row, 4).setEnabled(not deleted)

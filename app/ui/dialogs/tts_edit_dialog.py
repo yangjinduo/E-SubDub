@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.i18n import tr
+from app.ui.style import tokens
 
 # 情绪 key → (i18n key, 显示颜色)。None = 跟随参考音频（默认）
 EMOTION_ITEMS: list[tuple] = [
@@ -189,8 +190,9 @@ class TtsEditDialog(QDialog):
 
     def _set_row_gray(self, row: int, gray: bool) -> None:
         """置灰/恢复一行（文本与序号变灰、内容列禁编辑、按钮禁用情绪）。"""
-        disabled = QColor("#9CA3AF")
-        enabled = QColor("#111827")
+        c = tokens()
+        disabled = QColor(c["row_text_deleted"])
+        enabled = QColor(c["text_strong"])
         text_item = self._table.item(row, 1)
         index_item = self._table.item(row, 0)
         for item in (text_item, index_item):

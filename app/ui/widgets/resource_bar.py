@@ -17,6 +17,7 @@ from app.core.config import AppConfig
 from app.core.hardware import DeviceInfo
 from app.core.i18n import tr
 from app.resources.model import ResourceInfo, ResourceManager, ResourceStatus
+from app.ui.style import themed_icon, tokens
 
 
 def _feature_label(info: ResourceInfo) -> str:
@@ -121,7 +122,8 @@ class DeviceCard(QFrame):
     def set_device(self, device: DeviceInfo) -> None:
         """更新设备描述与快慢提示色（快绿慢红）。"""
         self._device_label.setText(device.description)
-        color = "#DC2626" if device.is_slow else "#059669"
+        c = tokens()
+        color = c["danger_text"] if device.is_slow else c["success_text"]
         self._device_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     def set_env_state(self, ml_ready: bool, tts_ready: bool, llama_ready: bool) -> None:
@@ -169,7 +171,7 @@ class ResourceStatusBar(QFrame):
         # 统一设置按钮（所有资源卡片的右侧，纯图标 + tooltip 说明用途）
         self._settings_button = QPushButton()
         self._settings_button.setObjectName("cardSettingButton")
-        self._settings_button.setIcon(QIcon(str(AppConfig.ICONS_DIR / "settings.svg")))
+        self._settings_button.setIcon(themed_icon(AppConfig.ICONS_DIR / "settings.svg"))
         self._settings_button.setIconSize(QSize(20, 20))
         self._settings_button.setFixedSize(36, 36)
         self._settings_button.setToolTip(tr("common.settings"))

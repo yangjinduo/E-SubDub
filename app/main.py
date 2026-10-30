@@ -117,12 +117,14 @@ def main() -> int:
         from app.core.config import AppConfig, is_frozen
         from app.core.hardware import detect_device_standalone
         from app.ui.main_window import MainWindow
-        from app.ui.style import APPLICATION_QSS
+        from app.ui.style import apply_theme
 
         logging.info("模块导入完成（frozen=%s）", is_frozen())
         app = QApplication(sys.argv)
         logging.info("QApplication 已创建")
-        app.setStyleSheet(APPLICATION_QSS)
+        # 应用当前主题（默认深色）：Fusion 样式 + 显式调色板 + 主题 QSS，
+        # 不受 Windows 10/11 系统深浅色模式影响
+        apply_theme(app)
 
         # 应用 LOGO（app/resources/logo）：作用于全部窗口标题栏与任务栏图标
         icon_path = AppConfig.app_icon_path()

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QApplication,
     QVBoxLayout,
     QWidget,
 )
@@ -51,18 +52,27 @@ from app.resources.model import (
     ResourceManager,
     get_models_root,
 )
+from app.ui.style import (
+    SUPPORTED_THEMES,
+    apply_theme,
+    get_theme,
+    set_theme,
+    tokens,
+)
 
 
 class SettingsDialog(QDialog):
-    """统一设置窗口（运行环境 + 资源管理 + 界面语言）。
+    """统一设置窗口（运行环境 + 资源管理 + 界面语言与主题）。
 
     信号：
         log_requested(str): 请求主窗口日志区追加一行
         language_changed(str): 界面语言已切换，参数为新语言代码（主窗口据此重建 UI）
+        theme_changed(str): 界面主题已切换，参数为新主题代码（主窗口据此重建 UI）
     """
 
     log_requested = Signal(str)
     language_changed = Signal(str)
+    theme_changed = Signal(str)
 
     def __init__(
         self,
@@ -118,18 +128,33 @@ class SettingsDialog(QDialog):
             list(SUPPORTED_LANGUAGES.keys()).index(get_language())
         )
         self._lang_combo.currentIndexChanged.connect(self._on_language_changed)
-        self._lang_hint = QLabel(tr("settings.language_hint"))
-        self._lang_hint.setStyleSheet("color: #9CA3AF; font-size: 12px;")
         lang_row.addWidget(self._lang_label)
         lang_row.addWidget(self._lang_combo)
-        lang_row.addWidget(self._lang_hint)
         lang_row.addStretch(1)
         layout.addLayout(lang_row)
+
+        # ---- 界面主题（深 / 浅色；固定软件自身配色，不跟随系统深浅色） ----
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(10)
+        # 标签与选项名同样双语写死：与语言行保持一致
+        self._theme_label = QLabel("主题 / Theme")
+        self._theme_combo = QComboBox()
+        for code, native in SUPPORTED_THEMES.items():
+            self._theme_combo.addItem(native, code)
+        self._theme_combo.setCurrentIndex(
+            list(SUPPORTED_THEMES.keys()).index(get_theme())
+        )
+        self._theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+        theme_row.addWidget(self._theme_label)
+        theme_row.addWidget(self._theme_combo)
+        theme_row.addStretch(1)
+        layout.addLayout(theme_row)
 
         # 分隔线
         separator = QLabel()
         separator.setFixedHeight(1)
-        separator.setStyleSheet("background: #E5E7EB;")
+        separator.setStyleSheet(f"background: {tokens()['separator_line']};")
+        self._separator = separator
         layout.addWidget(separator)
 
         # ---- 资源管理（标题行右侧：一键部署） ----
@@ -187,10 +212,13 @@ class SettingsDialog(QDialog):
             name_layout = QVBoxLayout(name_column)
             name_layout.setContentsMargins(0, 0, 0, 0)
             name_layout.setSpacing(1)
+            c = tokens()
             feature = QLabel(tr(f"resource.{info.key}.feature"))
-            feature.setStyleSheet("font-size: 13px; font-weight: 600; color: #111827;")
+            feature.setStyleSheet(
+                f"font-size: 13px; font-weight: 600; color: {c['feature_name']};"
+            )
             model = QLabel(info.model_name)
-            model.setStyleSheet("font-size: 12px; color: #6B7280;")
+            model.setStyleSheet(f"font-size: 12px; color: {c['model_name']};")
             name_layout.addWidget(feature)
             name_layout.addWidget(model)
             grid.addWidget(name_column, row, 0)
@@ -228,10 +256,13 @@ class SettingsDialog(QDialog):
         name_layout = QVBoxLayout(name_column)
         name_layout.setContentsMargins(0, 0, 0, 0)
         name_layout.setSpacing(1)
+        c = tokens()
         feature = QLabel(tr("settings.env_feature"))
-        feature.setStyleSheet("font-size: 13px; font-weight: 600; color: #111827;")
+        feature.setStyleSheet(
+            f"font-size: 13px; font-weight: 600; color: {c['feature_name']};"
+        )
         sub = QLabel(tr("settings.env_sub"))
-        sub.setStyleSheet("font-size: 12px; color: #6B7280;")
+        sub.setStyleSheet(f"font-size: 12px; color: {c['model_name']};")
         name_layout.addWidget(feature)
         name_layout.addWidget(sub)
         grid.addWidget(name_column, 0, 0)
@@ -252,16 +283,16 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         if running:
             progress = QLabel(tr("env.step.check_tts"))
-            progress.setStyleSheet("color: #2563EB;")
+            progress.setStyleSheet(f"color: {c['accent_text']};")
             self._env_refs["progress"] = progress
             layout.addWidget(progress)
         elif both_ready:
             ready = QLabel(tr("settings.env_ready_detail"))
-            ready.setStyleSheet("color: #6B7280; font-size: 12px;")
+            ready.setStyleSheet(f"color: {c['model_name']}; font-size: 12px;")
             layout.addWidget(ready)
         else:
             missing = QLabel(tr("settings.env_missing_detail"))
-            missing.setStyleSheet("color: #374151;")
+            missing.setStyleSheet(f"color: {c['text_body']};")
             layout.addWidget(missing)
         grid.addWidget(cell, 0, 2)
 
@@ -356,10 +387,11 @@ class SettingsDialog(QDialog):
         cell = QWidget()
         layout = QVBoxLayout(cell)
         layout.setContentsMargins(0, 0, 0, 0)
+        c = tokens()
 
         if self._is_downloading(info.key):
             progress = QLabel(tr("settings.downloading", pct="0", speed="…"))
-            progress.setStyleSheet("color: #2563EB;")
+            progress.setStyleSheet(f"color: {c['accent_text']};")
             self._row_refs.setdefault(info.key, {})["progress"] = progress
             layout.addWidget(progress)
         elif info.status.is_ready:
@@ -369,12 +401,12 @@ class SettingsDialog(QDialog):
             layout.addWidget(path_edit)
         elif info.key == "ffmpeg":
             hint = QLabel(tr("settings.builtin_hint"))
-            hint.setStyleSheet("color: #9CA3AF; font-size: 12px;")
+            hint.setStyleSheet(f"color: {c['text_faint']}; font-size: 12px;")
             layout.addWidget(hint)
         else:
             size_text = f"{info.download_size_gb:g}"
             need = QLabel(tr("settings.need_download", size=size_text))
-            need.setStyleSheet("color: #374151;")
+            need.setStyleSheet(f"color: {c['text_body']};")
             layout.addWidget(need)
         return cell
 
@@ -392,7 +424,7 @@ class SettingsDialog(QDialog):
         elif info.status.is_ready:
             if info.key == "ffmpeg":
                 builtin = QLabel(tr("settings.builtin"))
-                builtin.setStyleSheet("color: #9CA3AF; font-size: 12px;")
+                builtin.setStyleSheet(f"color: {tokens()['text_faint']}; font-size: 12px;")
                 layout.addWidget(builtin)
             else:
                 delete_button = QPushButton(tr("common.delete"))
@@ -415,7 +447,7 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         return cell
 
-    # ------------------------------------------------------------------ 语言
+    # ------------------------------------------------------------------ 语言 / 主题
 
     def _on_language_changed(self, index: int) -> None:
         """切换界面语言：立即生效并通知主窗口重建。"""
@@ -426,10 +458,31 @@ class SettingsDialog(QDialog):
         self._retranslate()
         self.language_changed.emit(code)
 
+    def _on_theme_changed(self, index: int) -> None:
+        """切换界面主题：立即应用到整个应用并通知主窗口重建。
+
+        浅色 / 深色均为软件内置配色（Fusion 样式 + 显式调色板），
+        切换与运行全程不受 Windows 系统深浅色模式影响。
+        """
+        code = self._theme_combo.itemData(index)
+        if code is None or code == get_theme():
+            return
+        set_theme(code)
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app)
+        self._refresh_static_styles()
+        self._rebuild_resource_rows()
+        self.theme_changed.emit(code)
+
+    def _refresh_static_styles(self) -> None:
+        """主题切换后重取本窗口静态控件的行内样式颜色。"""
+        c = tokens()
+        self._separator.setStyleSheet(f"background: {c['separator_line']};")
+
     def _retranslate(self) -> None:
         """语言切换后刷新本窗口内的静态文案（语言标签双语写死无需刷新；资源行整体重建）。"""
         self.setWindowTitle(tr("common.settings"))
-        self._lang_hint.setText(tr("settings.language_hint"))
         self._resources_title.setText(tr("settings.resources"))
         self._deploy_all_button.setText(tr("settings.deploy_all"))
         self._rebuild_resource_rows()

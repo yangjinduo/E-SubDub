@@ -39,27 +39,8 @@ from PySide6.QtWidgets import (
 from app.core.i18n import tr
 from app.core.tts_runner import INTERVAL_SILENCE_SEC
 from app.ui.dialogs.tts_edit_dialog import EMOTION_ITEMS, emotion_color, emotion_label
+from app.ui.style import table_qss, tokens
 from app.ui.widgets.audio_player import AudioPlayerBar
-
-# 表格样式：与 app/ui/style.py 全局 QSS 保持一致的浅色现代观感
-TABLE_QSS = """
-QTableWidget {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
-    border-radius: 10px;
-    gridline-color: #F3F4F6;
-    selection-background-color: #EFF6FF;
-    selection-color: #1D4ED8;
-}
-QHeaderView::section {
-    background: #F9FAFB;
-    color: #4B5563;
-    border: none;
-    border-bottom: 1px solid #E5E7EB;
-    padding: 8px 6px;
-    font-weight: 600;
-}
-"""
 
 # 行高自适应：最小行高与内容换行上下的留白
 _MIN_ROW_HEIGHT = 42
@@ -162,7 +143,7 @@ class TtsVoiceReviewDialog(QDialog):
             tr("tts_voice_review.column_delete"),
             tr("tts_voice_review.column_regen"),
         ])
-        self._table.setStyleSheet(TABLE_QSS)
+        self._table.setStyleSheet(table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(_MIN_ROW_HEIGHT)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -322,10 +303,11 @@ class TtsVoiceReviewDialog(QDialog):
         self._delete_buttons[row].setText(
             tr("tts_voice_review.restore") if deleted else tr("common.delete")
         )
-        color = QColor("#9CA3AF") if deleted else QColor("#1F2937")
+        c = tokens()
+        color = QColor(c["row_text_deleted"]) if deleted else QColor(c["row_text"])
         self._content_items[row].setForeground(color)
         self._table.item(row, _COL_EMO).setForeground(
-            QColor("#9CA3AF") if deleted
+            QColor(c["row_text_deleted"]) if deleted
             else QColor(emotion_color(self._rows[row].get("emo")))
         )
         in_queue = row in self._regen_states

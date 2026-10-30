@@ -220,7 +220,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "step.tts_voice_review": "语音复核",
         "step.tts_mux": "封装输出",
         # ---- 设置窗口 ----
-        "settings.language_hint": "切换后立即生效",
         "settings.resources": "资源管理",
         "settings.deploy_all": "一键部署",
         "settings.deploy_all_started": "一键部署已启动：并行搭建运行环境并下载全部缺失模型，目标位置为软件安装目录。",
@@ -721,7 +720,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "step.tts_voice_review": "Voice review",
         "step.tts_mux": "Mux output",
         # ---- Settings dialog ----
-        "settings.language_hint": "Applied immediately",
         "settings.resources": "Resources",
         "settings.deploy_all": "Deploy all",
         "settings.deploy_all_started": "One-click deploy started: setting up the runtime and downloading all missing models in parallel, into the installation directory.",

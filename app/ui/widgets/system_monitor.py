@@ -20,6 +20,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
 from app.core.i18n import tr
+from app.ui.style import sparkline_grid_color
 
 # 折线图保留的采样点数
 _SAMPLE_COUNT = 60
@@ -106,8 +107,8 @@ class _Sparkline(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         width, height = self.width(), self.height()
 
-        # 参考网格：中线（浅色底，半透明黑）
-        painter.setPen(QPen(QColor(0, 0, 0, 26), 1))
+        # 参考网格：中线（按主题取半透明深/浅色）
+        painter.setPen(QPen(sparkline_grid_color(), 1))
         painter.drawLine(0, height // 2, width, height // 2)
 
         if len(self._samples) < 2:

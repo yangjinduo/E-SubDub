@@ -53,6 +53,7 @@ from app.core.tts_runner import TtsTaskConfig, split_sentences
 from app.core.workspace import STAGE_REVIEW
 from app.pipeline.llm_engine import resolve_llama_server_exe
 from app.resources.model import get_resource_manager
+from app.ui.style import tokens
 from app.ui.widgets.import_area import ImportArea
 from app.ui.widgets.pipeline_panel import (
     PIPELINE_STEPS,
@@ -1165,9 +1166,11 @@ class _ManualTextCard(QFrame):
         super().__init__(parent)
         self.setObjectName("ttsManualCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        # 虚线边框暗示可点击区域（与左栏导入区实线区分）
+        # 虚线边框暗示可点击区域（与左栏导入区实线区分），颜色按当前主题取
         self.setStyleSheet(
-            "QFrame#ttsManualCard { border: 1px dashed #D1D5DB; border-radius: 8px; }"
+            "QFrame#ttsManualCard {"
+            f" border: 1px dashed {tokens()['dashed_border']};"
+            " border-radius: 8px; }"
         )
 
     def mousePressEvent(self, event) -> None:

@@ -31,20 +31,25 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.i18n import tr
+from app.ui.style import tokens
 
-_TABLE_QSS = """
-QTableWidget {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
+
+def _table_qss() -> str:
+    """字幕表格 QSS（按当前主题取色，与全局 QSS 保持一致观感）。"""
+    c = tokens()
+    return f"""
+QTableWidget {{
+    background: {c['table_bg']};
+    border: 1px solid {c['table_border']};
     border-radius: 10px;
-    gridline-color: #F3F4F6;
+    gridline-color: {c['table_gridline']};
     outline: none;
-    selection-background-color: #EFF6FF;
-    selection-color: #1D4ED8;
-}
-QTableWidget::item {
+    selection-background-color: {c['table_sel_bg']};
+    selection-color: {c['table_sel_text']};
+}}
+QTableWidget::item {{
     padding: 8px 6px;
-}
+}}
 """
 
 # 行高自适应：最小行高（对齐 TtsVoiceReviewDialog）与安全余量；文本
@@ -153,7 +158,7 @@ class SubtitlePanel(QFrame):
 
         self._table = QTableWidget(self)
         self._table.setColumnCount(2)
-        self._table.setStyleSheet(_TABLE_QSS)
+        self._table.setStyleSheet(_table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setVisible(False)
         self._table.setSelectionBehavior(
@@ -215,7 +220,7 @@ class SubtitlePanel(QFrame):
         for row, (start, end, text) in enumerate(cues):
             time_item = QTableWidgetItem(f"{_fmt_ts(start)} - {_fmt_ts(end)}")
             time_item.setTextAlignment(center)
-            time_item.setForeground(QColor("#6B7280"))
+            time_item.setForeground(QColor(tokens()["text_muted"]))
             self._table.setItem(row, _COL_TIME, time_item)
 
             text_item = QTableWidgetItem(text)

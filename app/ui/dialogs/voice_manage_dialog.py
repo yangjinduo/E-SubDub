@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.i18n import tr
+from app.ui.style import tokens
 from app.ui.widgets.audio_player import AudioPlayerBar
 
 # 例句展示的长度上限，超出部分截断加省略号
@@ -123,12 +124,13 @@ class VoiceManageDialog(QDialog):
         name_label = QLabel(
             tr("voice.speaker_count", spk=spk, count=self._count_sentences(spk))
         )
-        name_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #111827;")
+        c = tokens()
+        name_label.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {c['text_strong']};")
         path_label = QLabel()
-        path_label.setStyleSheet("color: #6B7280; font-size: 12px;")
+        path_label.setStyleSheet(f"color: {c['text_muted']}; font-size: 12px;")
         path_label.setWordWrap(True)
         sample_label = QLabel(tr("voice.sample", text=self._sample_text(spk)))
-        sample_label.setStyleSheet("color: #9CA3AF; font-size: 12px;")
+        sample_label.setStyleSheet(f"color: {c['text_faint']}; font-size: 12px;")
         sample_label.setWordWrap(True)
         info.addWidget(name_label)
         info.addWidget(path_label)

@@ -35,27 +35,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.i18n import tr
+from app.ui.style import table_qss, tokens
 from app.ui.widgets.audio_player import AudioPlayerBar
-
-# 表格样式：与 app/ui/style.py 全局 QSS 保持一致的浅色现代观感
-TABLE_QSS = """
-QTableWidget {
-    background: #FFFFFF;
-    border: 1px solid #E5E7EB;
-    border-radius: 10px;
-    gridline-color: #F3F4F6;
-    selection-background-color: #EFF6FF;
-    selection-color: #1D4ED8;
-}
-QHeaderView::section {
-    background: #F9FAFB;
-    color: #4B5563;
-    border: none;
-    border-bottom: 1px solid #E5E7EB;
-    padding: 8px 6px;
-    font-weight: 600;
-}
-"""
 
 # 行高自适应：最小行高与原文/译文换行内容上下的留白
 _MIN_ROW_HEIGHT = 42
@@ -88,7 +69,7 @@ def _ratio_item(seg) -> QTableWidgetItem:
     item = QTableWidgetItem(_fmt_ratio(seg))
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     if getattr(seg, "needs_review", False):
-        item.setForeground(QColor("#DC2626"))
+        item.setForeground(QColor(tokens()["danger_text"]))
         font = item.font()
         font.setBold(True)
         item.setFont(font)
@@ -158,7 +139,7 @@ class TtsReviewDialog(QDialog):
                 tr("tts_review.column_regen"),
             ]
         )
-        self._table.setStyleSheet(TABLE_QSS)
+        self._table.setStyleSheet(table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(_MIN_ROW_HEIGHT)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)

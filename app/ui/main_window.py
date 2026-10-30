@@ -248,11 +248,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 设置窗口
 
     def _open_settings_dialog(self) -> None:
-        """打开统一设置窗口（运行环境 + 资源管理 + 界面语言）。"""
+        """打开统一设置窗口（运行环境 + 资源管理 + 界面语言与主题）。"""
         dialog = SettingsDialog(self._manager, device=self._device, parent=self)
         dialog.language_changed.connect(self._on_language_changed)
+        dialog.theme_changed.connect(self._on_theme_changed)
         dialog.exec()
 
     def _on_language_changed(self, _code: str) -> None:
         """界面语言已切换：整体重建界面（任务列表从队列重新填充）。"""
+        self._build_ui()
+
+    def _on_theme_changed(self, _code: str) -> None:
+        """界面主题已切换：整体重建界面（行内样式与自绘控件按新主题取色）。"""
         self._build_ui()

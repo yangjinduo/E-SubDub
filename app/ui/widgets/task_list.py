@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from app.core.i18n import tr
 from app.core.task_manager import TaskItem, TaskManager, TaskState
 from app.core.tts_runner import TtsTaskConfig
+from app.ui.style import tokens
 
 # 启动期里程碑日志：冻结态无控制台，启动日志是唯一诊断出口
 # （冻结构建曾出现 TaskListPanel 构造期原生访问违例：根因是 Nuitka
@@ -75,15 +76,16 @@ class _TaskNameCell(QWidget):
     绘制在进度条之上，超宽时中间省略，悬停可看全名。
     """
 
-    _TRACK = QColor("#EEF2F7")    # 进度轨道
-    _FILL = QColor("#BFDBFE")     # 进度填充
-    _TEXT = QColor("#1F2937")     # 任务名文字
-
     def __init__(self, name: str, parent=None) -> None:
         super().__init__(parent)
         self._name = name
         self._progress = 0
         self.setToolTip(name)
+        # 自绘颜色按当前主题取令牌（深浅色都清晰）
+        c = tokens()
+        self._track = QColor(c["cell_track_bg"])     # 进度轨道
+        self._fill = QColor(c["cell_track_fill"])    # 进度填充
+        self._text = QColor(c["row_text"])           # 任务名文字
 
     def set_name(self, name: str) -> None:
         if name != self._name:
@@ -109,18 +111,18 @@ class _TaskNameCell(QWidget):
         track = QRectF(1.0, 1.0, self.width() - 2.0, self.height() - 2.0)
         radius = track.height() / 2.0
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._TRACK)
+        painter.setBrush(self._track)
         painter.drawRoundedRect(track, radius, radius)
 
         # 进度填充（至少一个圆角宽度，避免小进度时形状异常）
         if self._progress > 0:
             fill = QRectF(track)
             fill.setWidth(max(track.width() * self._progress / 100.0, track.height()))
-            painter.setBrush(self._FILL)
+            painter.setBrush(self._fill)
             painter.drawRoundedRect(fill, radius, radius)
 
         # 上层任务名（居中，超宽中间省略）
-        painter.setPen(self._TEXT)
+        painter.setPen(self._text)
         metrics = QFontMetrics(self.font())
         text = metrics.elidedText(
             self._name, Qt.TextElideMode.ElideMiddle, int(track.width()) - 8,

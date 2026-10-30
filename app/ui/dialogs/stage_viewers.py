@@ -72,9 +72,9 @@ from app.core.workspace import (
     downstream_stages,
 )
 from app.ui.dialogs.tts_edit_dialog import emotion_color, emotion_label
+from app.ui.style import table_qss, tokens
 from app.ui.widgets.audio_player import AudioPlayerBar
 from app.ui.widgets.segments_table import (
-    TABLE_QSS,
     SegmentsTableWidget,
     extract_clip,
     fmt_time,
@@ -89,10 +89,16 @@ try:  # QVideoWidget 在 QtMultimediaWidgets（PySide6 Addons），精简环境�
 except ImportError:  # pragma: no cover
     _QT_VIDEO_OK = False
 
-_COLOR_NORMAL = QColor("#1F2937")
-_COLOR_DELETED = QColor("#9CA3AF")
-_COLOR_BG_DELETED = QColor("#F3F4F6")
-_COLOR_BG_NORMAL = QColor("#FFFFFF")
+
+def _row_colors() -> dict:
+    """表格行文本 / 背景颜色（按当前主题取令牌，深浅色都清晰）。"""
+    c = tokens()
+    return {
+        "normal": QColor(c["row_text"]),
+        "deleted": QColor(c["row_text_deleted"]),
+        "bg_normal": QColor(c["row_bg"]),
+        "bg_deleted": QColor(c["row_bg_deleted"]),
+    }
 
 
 def _load_stage_segments(ws: Workspace, path: Path) -> list:
@@ -115,12 +121,13 @@ def _segment_audio_source(ws: Workspace) -> str:
 
 def _paint_row(table: QTableWidget, row: int, columns, deleted: bool) -> None:
     """按删除标记刷新整行颜色（置灰 / 恢复）。"""
+    colors = _row_colors()
     for col in columns:
         item = table.item(row, col)
         if item is None:
             continue
-        item.setForeground(_COLOR_DELETED if deleted else _COLOR_NORMAL)
-        item.setBackground(_COLOR_BG_DELETED if deleted else _COLOR_BG_NORMAL)
+        item.setForeground(colors["deleted"] if deleted else colors["normal"])
+        item.setBackground(colors["bg_deleted"] if deleted else colors["bg_normal"])
 
 
 # ---------------------------------------------------------------------- 内容控件
@@ -189,7 +196,7 @@ class _TranslationPairsWidget(QWidget, _ClipPlayerMixin):
             tr("translation_review.column_source"),
             tr("translation_review.column_target"),
         ])
-        self._table.setStyleSheet(TABLE_QSS)
+        self._table.setStyleSheet(table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(42)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -254,7 +261,7 @@ class _TtsSegmentsWidget(QWidget, _ClipPlayerMixin):
             tr("viewer.tts.original"),
             tr("viewer.tts.dubbed"),
         ])
-        self._table.setStyleSheet(TABLE_QSS)
+        self._table.setStyleSheet(table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(42)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -862,7 +869,7 @@ class TtsTextViewer(StageViewerWindow):
             tr("tts_voice_review.column_content"),
             tr("tts_voice_review.column_emotion"),
         ])
-        table.setStyleSheet(TABLE_QSS)
+        table.setStyleSheet(table_qss())
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(42)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -944,7 +951,7 @@ class _TtsSentencesWidget(QWidget):
             tr("tts_voice_review.column_emotion"),
             tr("tts_voice_review.column_listen"),
         ])
-        self._table.setStyleSheet(TABLE_QSS)
+        self._table.setStyleSheet(table_qss())
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(42)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
