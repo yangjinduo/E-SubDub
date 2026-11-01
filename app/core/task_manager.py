@@ -118,7 +118,7 @@ class TaskManager(QObject):
         self._id_counter = itertools.count(1)
         # task_id → TaskWindow（窗口生命周期注册表）
         self._windows: dict[str, object] = {}
-        # 推理设备（"cuda"/"mps"/"cpu"，主窗口检测后更新；
+        # 运行环境（"cuda"/"mps"/"cpu"，主窗口检测后更新；
         # 任务窗口构造 TaskConfig 时读取）
         self.device: str = "cpu"
         # 队列快照持久化：结构/状态/进度/流程每次变化即写盘

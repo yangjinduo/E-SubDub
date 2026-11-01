@@ -6,7 +6,7 @@
 
 "运行环境"行位于资源列表最上方（音频提取之上）：检测 TTS 独立虚拟环境
 （.venv-tts）与 llama-server 是否就绪，未就绪时一键搭建（后台 QThread，
-含步骤进度与取消；完成后资源栏的推理设备卡同步刷新）；已部署时提供
+含步骤进度与取消；完成后资源栏的运行环境卡同步刷新）；已部署时提供
 删除按钮（后台线程彻底删除，重新部署即重建）。
 
 TTS 的三个辅助模型（w2v-bert-2.0 / CAM++ / BigVGAN v2）不单独出资源
@@ -399,7 +399,7 @@ class SettingsDialog(QDialog):
             self._rebuild_resource_rows()
 
     def _on_env_delete_finished(self, ok: bool, detail: str) -> None:
-        """运行环境后台删除结束：日志 + 失败弹窗 + 刷新行与设备卡徽标。
+        """运行环境后台删除结束：日志 + 失败弹窗 + 刷新行与环境卡徽标。
 
         detail 为已删除的组件名列表（成功时）或错误文案（失败时）；
         成功但列表为空 = 本机本就没有可删除内容。
@@ -417,7 +417,7 @@ class SettingsDialog(QDialog):
                 msg += f"\n{tr('common.log_hint', path=path)}"
             self.log_requested.emit(tr("settings.env_delete_failed", error=msg))
             QMessageBox.warning(self, tr("common.settings"), msg)
-        # 通知主窗口（设备卡等）运行环境就绪状态已变化
+        # 通知主窗口（环境卡等）运行环境就绪状态已变化
         self._env_mgr.environment_changed.emit()
         self._rebuild_resource_rows()
 

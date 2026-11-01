@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """运行环境搭建：ML 推理环境（.venv-ml）+ TTS 独立环境（.venv-tts）+ llama-server。
 
-设置窗口"运行环境"行 / 资源栏推理设备卡对应的后台逻辑：
+设置窗口"运行环境"行 / 资源栏运行环境卡对应的后台逻辑：
 - ML 环境（人声分离 demucs + MOSS ASR）：ASR 的 remote code 需要
   transformers 5.x，与 TTS 所需 4.x 冲突，两个 venv 严禁合并；冻结态
   （Nuitka 安装包）主程序无 Python 运行时，ML 推理跑在独立的 .venv-ml
@@ -1862,7 +1862,7 @@ class EnvSetupManager(QObject):
         setup_progress(str): 当前步骤文案（含下载百分比）
         setup_finished(bool, str): 搭建结束（成功与否, 完整结果/错误文案）
         setup_cancelled(): 用户取消
-        environment_changed(): 环境就绪状态可能已变化（供设备卡等刷新）
+        environment_changed(): 环境就绪状态可能已变化（供运行环境卡等刷新）
         delete_finished(bool, str): 删除运行环境结束（成功与否, 已删组件/错误文案）
     """
 

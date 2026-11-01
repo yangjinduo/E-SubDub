@@ -6,8 +6,9 @@
 队列与任务窗口不受重建影响）。
 
 启动期的精确设备检测（需导入 torch，数秒）与运行环境状态检查在
-_StartupProbe 守护线程中执行：窗口先用快速粗检测结果立即显示，
-探测完成后经信号回主线程刷新设备卡与徽标，期间窗口始终可操作。
+_StartupProbe 守护线程中执行：窗口先用快速粗检测结果立即显示，探测
+完成后经信号回主线程刷新运行环境卡徽标与队列推理设备，期间窗口始终
+可操作。
 """
 
 import logging
@@ -80,16 +81,17 @@ class MainWindow(QMainWindow):
         # 当前显示的设备信息：启动时为不依赖 torch 的快速粗检测结果，
         # _StartupProbe 完成精确检测后经信号替换
         self._device: DeviceInfo = device_info or detect_device_standalone()
-        # 运行环境（ML / TTS 虚拟环境 / LLAMA 服务）就绪状态，设备卡徽标用；
-        # 探测完成前按上次缓存（首启为未就绪）显示
-        self._env_state: tuple[bool, bool, bool] = (False, False, False)
+        # 运行环境（TTS 虚拟环境 / LLAMA 服务）就绪状态，运行环境卡徽标用
+        # （与设置窗口"运行环境"行同一判定口径）；探测完成前按上次缓存
+        # （首启为未就绪）显示
+        self._env_state: tuple[bool, bool] = (False, False)
         # 任务队列（挂在主窗口本体上：语言切换重建 central widget 不受影响）
         self._task_manager = TaskManager(parent=self)
         self._task_manager.device = self._device.device
         # 启动恢复上次会话的任务列表（运行中/排队中 → 已中断，
         # 不自动执行；TaskListPanel 构造时从队列整表填充）
         self._task_manager.restore_tasks()
-        # 环境搭建完成后刷新设备卡徽标（设置窗口触发，窗口关闭后仍生效）
+        # 环境搭建完成后刷新运行环境卡徽标（设置窗口触发，窗口关闭后仍生效）
         self._env_mgr = get_env_setup_manager()
         self._env_mgr.environment_changed.connect(self._on_env_changed)
         logger.info("环境搭建管理器已连接")
@@ -131,7 +133,6 @@ class MainWindow(QMainWindow):
 
         # ------------------------------ 顶部：资源状态栏 ------------------------------
         self._resource_bar = ResourceStatusBar(self._manager)
-        self._resource_bar.set_device(self._device)
         # 环境徽标先按缓存状态显示，探测完成后由 _on_probe_ready 刷新
         self._resource_bar.set_env_state(*self._env_state)
         self._resource_bar.settings_requested.connect(self._open_settings_dialog)
@@ -165,27 +166,23 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 设备 / 环境
 
     def _on_probe_ready(self, device: DeviceInfo, env: dict) -> None:
-        """启动探测完成：刷新设备卡、环境徽标与队列推理设备。"""
+        """启动探测完成：刷新运行环境卡徽标与队列推理设备。"""
         self._device = device
-        self._env_state = (
-            bool(env.get("ml_ready")), bool(env["tts_ready"]), bool(env["llama_ready"]),
-        )
-        self._resource_bar.set_device(self._device)
+        # 与设置窗口"运行环境"行同一判定口径：仅看 TTS 虚拟环境与 LLAMA 服务
+        self._env_state = (bool(env["tts_ready"]), bool(env["llama_ready"]))
         self._resource_bar.set_env_state(*self._env_state)
         self._task_manager.device = self._device.device
 
     # ------------------------------------------------------------------ 运行环境
 
     def _refresh_env_state(self) -> None:
-        """检测运行环境（ML / TTS 虚拟环境 / LLAMA 服务）并刷新设备卡徽标。"""
+        """检测运行环境（TTS 虚拟环境 / LLAMA 服务）并刷新运行环境卡徽标。"""
         env = environment_status()
-        self._env_state = (
-            bool(env.get("ml_ready")), bool(env["tts_ready"]), bool(env["llama_ready"]),
-        )
+        self._env_state = (bool(env["tts_ready"]), bool(env["llama_ready"]))
         self._resource_bar.set_env_state(*self._env_state)
 
     def _on_env_changed(self) -> None:
-        """环境搭建结束（含取消/失败）：重新检测并刷新设备卡徽标。"""
+        """环境搭建结束（含取消/失败）：重新检测并刷新运行环境卡徽标。"""
         self._refresh_env_state()
 
     def _update_sleep_guard(self, *_args) -> None:

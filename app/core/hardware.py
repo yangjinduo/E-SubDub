@@ -9,8 +9,6 @@ import platform
 import sys
 from dataclasses import dataclass
 
-from app.core.i18n import tr
-
 
 @dataclass(frozen=True)
 class DeviceInfo:
@@ -18,27 +16,15 @@ class DeviceInfo:
 
     属性：
         device: 设备类型，"cuda" / "mps" / "cpu"
-        is_slow: 是否为慢速设备（CPU 视为慢速）
-        name: 显卡名称（仅 CUDA 有值），用于展示
-        description: 人类可读描述（按当前界面语言动态生成）
+        name: 显卡名称（仅 CUDA 有值），随部署日志记录排查用
     """
 
     device: str
-    is_slow: bool
     name: str = ""
 
-    @property
-    def description(self) -> str:
-        """按当前界面语言生成描述，语言切换后无需重新检测。"""
-        if self.device == "cuda":
-            return tr("device.cuda", name=self.name or "GPU")
-        if self.device == "mps":
-            return tr("device.mps")
-        return tr("device.cpu")
 
-
-# 慢速 CPU 的统一描述
-_CPU_SLOW = DeviceInfo(device="cpu", is_slow=True)
+# CPU 的统一回退设备
+_CPU = DeviceInfo(device="cpu")
 
 # Windows 显示适配器设备类的注册表路径（枚举显卡 DriverDesc 用）
 _WIN_GPU_CLASS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -59,7 +45,7 @@ def detect_device() -> DeviceInfo:
         import torch  # 延迟导入：仅在调用时加载
     except Exception:
         # torch 未安装或导入失败，回退 CPU
-        return _CPU_SLOW
+        return _CPU
     return _detect_with_torch(torch)
 
 
@@ -106,12 +92,12 @@ def _detect_device_via_ml_venv() -> DeviceInfo:
             kind = lines[0]
             if kind == "cuda":
                 return DeviceInfo(
-                    device="cuda", is_slow=False,
+                    device="cuda",
                     name=lines[1] if len(lines) > 1 else "",
                 )
             if kind == "mps":
-                return DeviceInfo(device="mps", is_slow=False)
-            return _CPU_SLOW
+                return DeviceInfo(device="mps")
+            return _CPU
     except (OSError, subprocess.SubprocessError):
         pass
     return detect_device_standalone()
@@ -122,7 +108,7 @@ def _detect_with_torch(torch) -> DeviceInfo:
     try:
         if torch.cuda.is_available():
             name = torch.cuda.get_device_name(0)
-            return DeviceInfo(device="cuda", is_slow=False, name=name)
+            return DeviceInfo(device="cuda", name=name)
 
         mps = getattr(torch.backends, "mps", None)
         if (
@@ -131,12 +117,12 @@ def _detect_with_torch(torch) -> DeviceInfo:
             and mps is not None
             and mps.is_available()
         ):
-            return DeviceInfo(device="mps", is_slow=False)
+            return DeviceInfo(device="mps")
     except Exception:
         # 检测过程中出现异常，保守回退到 CPU
-        return _CPU_SLOW
+        return _CPU
 
-    return _CPU_SLOW
+    return _CPU
 
 
 def _iter_windows_gpu_names():
@@ -177,12 +163,12 @@ def detect_device_standalone() -> DeviceInfo:
     if sys.platform == "win32":
         for name in _iter_windows_gpu_names():
             if "nvidia" in name.lower():
-                return DeviceInfo(device="cuda", is_slow=False, name=name)
-        return _CPU_SLOW
+                return DeviceInfo(device="cuda", name=name)
+        return _CPU
 
     if sys.platform == "darwin":
         if platform.machine() == "arm64":
-            return DeviceInfo(device="mps", is_slow=False)
-        return _CPU_SLOW
+            return DeviceInfo(device="mps")
+        return _CPU
 
-    return _CPU_SLOW
+    return _CPU

@@ -54,8 +54,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.log.batch_started": "开始批量处理：共 {count} 个文件",
         "main.log.batch_queued": "其余 {count} 个文件已加入任务队列",
         "main.log.init": "初始化完成：{n}/{total} 项资源就绪（FFmpeg 为内置工具，其余模型待下载）。",
-        "main.log.device_initial": "初始设备检测：{desc}",
-        "main.log.device_done": "设备检测完成：{desc}",
         "main.log.imported": "已导入文件：{name}",
         "main.log.no_file": "请先导入媒体文件。",
         "main.log.task_settings": "源语言 {src} → 目标语言 {dst}",
@@ -99,8 +97,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "runner.tts_env_missing": "TTS 运行环境未就绪：{detail}（IndexTTS-2.5 需独立环境 .venv-tts 与源码 third_party/index-tts）",
         "runner.auto_review_passed": "人工审核自动通过（挂机批量模式）",
         # ---- 资源状态栏 ----
-        "bar.device_title": "推理设备",
-        "bar.device_value": "{value}",
         "bar.env_tts": "TTS 环境",
         "bar.env_ml": "ML 环境",
         "bar.env_llama": "LLAMA 服务",
@@ -145,10 +141,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "env.step.llama_api": "查询 llama.cpp 最新版本…",
         "env.step.llama_download": "下载 llama-server",
         "env.step.llama_extract": "解压 llama-server…",
-        # ---- 推理设备描述 ----
-        "device.cuda": "CUDA（{name}）",
-        "device.mps": "MPS（Apple Silicon 加速）",
-        "device.cpu": "CPU（速度较慢）",
         # ---- 任务设置 ----
         "task.title": "任务设置",
         "task.source_language": "源语言",
@@ -559,8 +551,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.log.batch_started": "Batch started: {count} files in total",
         "main.log.batch_queued": "The other {count} files were added to the task queue",
         "main.log.init": "Initialized: {n}/{total} resources ready (FFmpeg is built in; other models need downloading).",
-        "main.log.device_initial": "Initial device detection: {desc}",
-        "main.log.device_done": "Device detection complete: {desc}",
         "main.log.imported": "File imported: {name}",
         "main.log.no_file": "Please import a media file first.",
         "main.log.task_settings": "Source {src} → Target {dst}",
@@ -604,8 +594,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "runner.tts_env_missing": "TTS runtime environment not ready: {detail} (IndexTTS-2.5 requires .venv-tts and sources in third_party/index-tts)",
         "runner.auto_review_passed": "Reviews auto-accepted (unattended batch mode)",
         # ---- Resource bar ----
-        "bar.device_title": "Inference device",
-        "bar.device_value": "{value}",
         "bar.env_tts": "TTS runtime",
         "bar.env_ml": "ML runtime",
         "bar.env_llama": "LLAMA service",
@@ -650,10 +638,6 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "env.step.llama_api": "Fetching the latest llama.cpp release…",
         "env.step.llama_download": "Downloading llama-server",
         "env.step.llama_extract": "Extracting llama-server…",
-        # ---- Device descriptions ----
-        "device.cuda": "CUDA ({name})",
-        "device.mps": "MPS (Apple Silicon accelerated)",
-        "device.cpu": "CPU (slow)",
         # ---- Task settings ----
         "task.title": "Task settings",
         "task.source_language": "Source language",
