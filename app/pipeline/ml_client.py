@@ -224,6 +224,7 @@ class MLEngine:
         self,
         full_audio_wav: str,
         work_dir: str,
+        model_dir: str,
         device: str = "cpu",
         progress: Optional[ProgressCallback] = None,
     ) -> tuple[str, str]:
@@ -233,7 +234,7 @@ class MLEngine:
         self._send_request({
             "cmd": "separate", "id": rid,
             "audio": str(full_audio_wav), "work_dir": str(work_dir),
-            "device": device,
+            "model_dir": str(model_dir), "device": device,
         })
         msg = self._wait_result(rid, progress)
         return str(msg["vocals"]), str(msg["no_vocals"])

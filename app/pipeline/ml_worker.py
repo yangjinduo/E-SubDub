@@ -15,7 +15,7 @@ app/pipeline/ml_client.py 用 .venv-ml 的 Python 启动（开发态直接用主
 - 启动参数：--ffmpeg <内置 ffmpeg 路径>（ASR 长音频切块用）；
 - 启动完成：{"event": "ready"}；
 - 请求 {"cmd": "separate", "id": int, "audio": str, "work_dir": str,
-         "device": str}
+         "model_dir": str, "device": str}
   进度 {"id": int, "event": "progress", "frac": 0~1, "desc": str}
   完成 {"id": int, "ok": true, "vocals": str, "no_vocals": str}
   失败 {"id": int, "ok": false, "error": str, "kind": "memory"|"error"}；
@@ -121,29 +121,30 @@ def _classify(exc: BaseException) -> str:
 
 MODEL_NAME = "htdemucs"
 
+# htdemucs 官方权重文件名（adefossez/HTDemucs 仓库内 htdemucs.yaml 指向的
+# 签名文件）：safetensors 内嵌 klass/args/kwargs 架构元数据，由 demucs
+# 自带的 load_safetensors_model() 直接重建网络，无需本地维护架构参数
+_HDEMUCS_WEIGHTS = "955717e8.safetensors"
 
-def _load_demucs_model(name: str = MODEL_NAME):
-    """加载 demucs 预训练模型（legacy 仓库优先，直连 AWS 源下载）。
 
-    优先走 demucs 官方 legacy 仓库路径（直接命中 torch hub 缓存，无网络
-    请求；未缓存时从官方 AWS 源下载）；失败再退回标准 get_model()。
-    这样在无法直连 huggingface.co 的环境下不会浪费约 25 秒重试。
+def _load_demucs_model(model_dir: str):
+    """从资源目录加载 htdemucs（HF 官方 safetensors，架构元数据内嵌于文件）。
+
+    权重由资源管理器从 adefossez/HTDemucs（hf-mirror 优先下载）部署到
+    models/demucs/htdemucs/955717e8.safetensors；不再走 demucs 官方
+    get_model()（会向 torch hub 用户缓存目录下载 .th，存在被磁盘清理
+    误删、且与部署目录两份冗余的问题）。
     """
-    from demucs.pretrained import REMOTE_ROOT, _parse_remote_files, get_model
-    from demucs.repo import AnyModelRepo, BagOnlyRepo, RemoteRepo
+    from demucs.hf import load_safetensors_model
 
-    try:
-        models = _parse_remote_files(REMOTE_ROOT / "files.txt")
-        model_repo = RemoteRepo(models)
-        bag_repo = BagOnlyRepo(REMOTE_ROOT, model_repo)
-        repo = AnyModelRepo(model_repo, bag_repo)
-        model = repo.get_model(name)
-        model.eval()
-        return model
-    except Exception as exc:
-        print(f"[ml-worker] legacy 仓库加载 {name} 失败（{exc!r}），改用标准 get_model",
-              file=sys.stderr)
-        return get_model(name)
+    weights = Path(model_dir) / _HDEMUCS_WEIGHTS
+    if not weights.is_file():
+        raise RuntimeError(
+            f"人声分离模型权重不存在：{weights}（请在 设置 → 资源管理 中下载人声分离模型）"
+        )
+    model = load_safetensors_model(weights)
+    model.eval()  # load_safetensors_model 不设 eval，dropout 会参与推理
+    return model
 
 
 def _run_separate(req: dict, send) -> None:
@@ -166,7 +167,8 @@ def _run_separate(req: dict, send) -> None:
     no_vocals_path = work_dir / "no_vocals.wav"
 
     _progress(0.02, f"加载人声分离模型 {MODEL_NAME}")
-    model = _load_demucs_model(MODEL_NAME)
+    model_dir = str(req.get("model_dir") or "")
+    model = _load_demucs_model(model_dir)
     target_device = torch.device(str(req.get("device") or "cpu"))
 
     # 读取音频并适配模型采样率/声道（参考 demucs.api.Separator 写法）

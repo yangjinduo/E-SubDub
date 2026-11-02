@@ -11,8 +11,8 @@
 
 真实检测规则：
 - FFmpeg：内置工具，get_ffmpeg_path() 非 None 即就绪；
-- Demucs：优先检查 torch hub 缓存（~/.cache/torch/hub/checkpoints/ 下的
-  htdemucs .th 权重），models/demucs/htdemucs 目录作为用户手动放置的兜底；
+- Demucs：models/demucs/htdemucs 下存在官方 955717e8.safetensors
+  （内嵌架构元数据，运行时直接本地加载，不经 torch hub 缓存）；
 - ASR / LLM / TTS：检查模型根目录（get_models_root()，默认 APP_ROOT/models，
   可用环境变量 SUBDUB_MODELS_ROOT 覆盖）下的默认子目录，详见各 _detect_* 函数。
 
@@ -192,15 +192,17 @@ RESOURCE_META: dict[str, ResourceMeta] = {
         download_size_gb=0.2,
         homepage_url="https://ffmpeg.org",
     ),
-    # Demucs 主用 torch hub 自动缓存；魔搭仓库为 htdemucs 权重的官方重打包镜像
-    # （model.safetensors 约 84MB，与官方 .th 同源），排除仓库内的示例音频
+    # 官方 HF 仓库：safetensors 内嵌 klass/args/kwargs 架构元数据，
+    # worker 用 demucs 自带 load_safetensors_model() 直接加载（下载走
+    # hf-mirror，huggingface.co 兜底；魔搭重打包镜像缺元数据故不用）
     "demucs": ResourceMeta(
         key="demucs",
-        repo_id="DiffSynth-Studio/Demucs-Repackage",
-        allow_patterns=["model.safetensors", "*.json", "*.md"],
+        repo_id="adefossez/HTDemucs",
+        allow_patterns=["955717e8.safetensors", "htdemucs.yaml", "README.md"],
         download_size_gb=0.08,
-        homepage_url="https://modelscope.cn/models/DiffSynth-Studio/Demucs-Repackage",
+        homepage_url="https://huggingface.co/adefossez/HTDemucs",
         default_subdir="demucs/htdemucs",
+        source="hf",
     ),
     "transcribe": ResourceMeta(
         key="transcribe",
@@ -322,31 +324,23 @@ def remove_path(path: str | Path) -> None:
 
 # ---------------------------------------------------------------- 就绪检测
 
-# torch hub 权重缓存目录与 htdemucs 官方权重文件名（demucs 包 torch.hub 下载名）
-_TORCH_HUB_CHECKPOINTS = Path.home() / ".cache" / "torch" / "hub" / "checkpoints"
-_HTDEMUCS_CHECKPOINT = "955717e8-8726e21a.th"
-_HTDEMUCS_MIN_BYTES = 80_000_000  # htdemucs 权重约 84MB，过小视为损坏/不完整
+# htdemucs 官方权重文件名与最小说积（约 84MB，过小视为损坏/不完整）
+_HTDEMUCS_WEIGHTS = "955717e8.safetensors"
+_HTDEMUCS_MIN_BYTES = 80_000_000
 
 
 def _find_demucs() -> Path | None:
-    """定位 htdemucs 权重：torch hub 缓存优先，models/demucs/htdemucs 手动放置兜底。"""
-    if _TORCH_HUB_CHECKPOINTS.is_dir():
-        known = _TORCH_HUB_CHECKPOINTS / _HTDEMUCS_CHECKPOINT
-        if known.is_file() and known.stat().st_size >= _HTDEMUCS_MIN_BYTES:
-            return known
-        for th in _TORCH_HUB_CHECKPOINTS.glob("*.th"):
-            if "htdemucs" in th.name.lower() and th.stat().st_size >= _HTDEMUCS_MIN_BYTES:
-                return th
-    # 兜底：用户手动放置权重文件的 models/demucs/htdemucs 目录
-    fallback = get_models_root() / RESOURCE_META["demucs"].default_subdir
-    if fallback.is_dir():
-        for f in fallback.rglob("*"):
-            if (
-                f.is_file()
-                and f.suffix.lower() in {".th", ".pt", ".ckpt", ".safetensors"}
-                and f.stat().st_size > 1_000_000
-            ):
-                return fallback
+    """定位 htdemucs 权重目录：models/demucs/htdemucs 下存在官方 955717e8.safetensors。
+
+    该文件内嵌架构元数据，运行时 worker 用 demucs 自带
+    load_safetensors_model() 直接加载（见 ml_worker._load_demucs_model），
+    不再使用 torch hub 用户缓存（.th 曾存在被磁盘清理误删、且与
+    部署目录两份冗余的问题）。
+    """
+    d = get_models_root() / RESOURCE_META["demucs"].default_subdir
+    weights = d / _HTDEMUCS_WEIGHTS
+    if weights.is_file() and weights.stat().st_size >= _HTDEMUCS_MIN_BYTES:
+        return d
     return None
 
 
