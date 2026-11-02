@@ -26,6 +26,7 @@ from app.core.tts_runner import TtsTaskConfig
 from app.resources.downloader import get_model_downloader
 from app.resources.env_setup import environment_status, get_env_setup_manager
 from app.resources.model import get_resource_manager
+from app.ui.dialogs.open_source_dialog import OpenSourceNoticeDialog
 from app.ui.dialogs.resource_dialog import SettingsDialog
 from app.ui.dialogs.task_dialog import (
     DubbingTaskWindow,
@@ -150,6 +151,7 @@ class MainWindow(QMainWindow):
 
         # ------------------------------ 最底部：页脚（合规提示 + 意见反馈） ------------------------------
         self._footer = FooterBar()
+        self._footer.notice_requested.connect(self._open_open_source_dialog)
         logger.info("页脚就绪")
 
         # ------------------------------ 总装 ------------------------------
@@ -272,6 +274,10 @@ class MainWindow(QMainWindow):
         return box.clickedButton() is confirm
 
     # ------------------------------------------------------------------ 设置窗口
+
+    def _open_open_source_dialog(self) -> None:
+        """页脚「开源声明」：打开 THIRD-PARTY-NOTICES 声明窗口。"""
+        OpenSourceNoticeDialog(self).exec()
 
     def _open_settings_dialog(self) -> None:
         """打开统一设置窗口（运行环境 + 资源管理 + 界面语言与主题）。"""

@@ -773,6 +773,17 @@ QLabel#footerFeedback {
     color: ${footer_feedback};
     font-size: 11px;
 }
+QPushButton#footerNotice {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: ${link_text};
+    font-size: 11px;
+}
+QPushButton#footerNotice:hover {
+    color: ${link_hover_text};
+    text-decoration: underline;
+}
 
 /* ------------------------------ 流程结果查看窗口 ------------------------------ */
 QLabel#viewerPathLabel {

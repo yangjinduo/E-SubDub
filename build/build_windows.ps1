@@ -170,6 +170,14 @@ if ($LASTEXITCODE -ge 8) {
     throw "main.dist 移动失败（robocopy exit $LASTEXITCODE）——多为杀毒软件锁定新生成的 exe，建议把项目 build 目录加入 Windows Defender 排除项后重跑"
 }
 
+# 开源声明随包分发（页脚「开源声明」入口在冻结态从安装目录按界面语言
+# 读取 CN/EN 对应文件；许可证义务：Apache-2.0/MIT 等要求分发时随附
+# 声明，PySide6 LGPL 须指明源码获取方式）
+Copy-Item -Force `
+    -Path (Join-Path $ProjectRoot 'THIRD-PARTY-NOTICES-CN.html'), `
+          (Join-Path $ProjectRoot 'THIRD-PARTY-NOTICES-EN.html') `
+    -Destination $AppDist
+
 # 便携 CPython → 发行目录 runtime\python（env_setup 创建 venv 依赖它）；
 # Copy-Item 不创建中间目录，先显式建 runtime
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDist 'runtime') | Out-Null

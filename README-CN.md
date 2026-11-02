@@ -1,5 +1,7 @@
 # E-SubDub
 
+[English](README-EN.md) | 简体中文
+
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
 **E-SubDub** —— 简单易用的视频字幕与 AI 配音生成工具。
@@ -268,6 +270,10 @@ app/
 - **[langid](https://github.com/saffsd/langid)**：感谢 langid 开源文本语言检测工具，实现多语言文本自动识别适配。
 
 同时感谢所有开源社区的开发者、贡献者，正是开源生态的蓬勃发展，让本项目的落地实现成为可能。
+
+### 开源软件声明
+
+本项目使用、随包分发或运行期部署的全部开源软件、模型及其许可证，统一收录于 [THIRD-PARTY-NOTICES-CN.html](THIRD-PARTY-NOTICES-CN.html)（英文版：[THIRD-PARTY-NOTICES-EN.html](THIRD-PARTY-NOTICES-EN.html)；随安装包分发，应用内页脚「开源声明」入口按界面语言展示对应版本）。该声明用于履行 Apache-2.0 / MIT 等许可证的随附义务，并注明 PySide6（LGPLv3）对应源码的获取方式。依赖版本升级时请同步更新该文件：主程序冻结清单见 `build\requirements-freeze.txt`，子环境清单见 `app\resources\env_setup.py`。
 
 ## 未完善功能
 

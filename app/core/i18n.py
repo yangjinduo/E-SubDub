@@ -75,6 +75,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.voice_clone_text": "请确认您拥有原音频中声音的合法使用权利，且生成的配音仅用于合法用途。",
         "main.voice_clone_agree": "我已确认拥有授权",
         "main.feedback": "意见反馈：517382364@qq.com",
+        "main.open_source_notice": "开源声明",
+        "main.open_source_missing": "未找到开源声明文件：{path}",
         # ---- 流程引擎 ----
         "runner.started": "开始处理：{name}",
         "runner.stage_skipped": "跳过{stage}（复用已有产物）",
@@ -572,6 +574,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "main.voice_clone_text": "Please confirm you have the legal right to use the voice in the original audio and that the generated dubbing is for lawful use only.",
         "main.voice_clone_agree": "I confirm I have the right",
         "main.feedback": "Feedback: 517382364@qq.com",
+        "main.open_source_notice": "Open Source Notice",
+        "main.open_source_missing": "Open source notice file not found: {path}",
         # ---- Pipeline engine ----
         "runner.started": "Processing started: {name}",
         "runner.stage_skipped": "Skipped {stage} (reusing existing outputs)",
