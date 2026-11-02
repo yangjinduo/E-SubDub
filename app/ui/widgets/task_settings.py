@@ -83,6 +83,10 @@ class TaskSettingsPanel(QFrame):
         self._subtitle_combo = QComboBox()
         for code, key in SUBTITLE_CHOICES:
             self._subtitle_combo.addItem(tr(key), code)
+        # 默认字幕形式：双语字幕（目标语言在上，最常用）
+        self._subtitle_combo.setCurrentIndex(
+            self._subtitle_combo.findData(SUBTITLE_BILINGUAL_TARGET)
+        )
 
         lang_row = QHBoxLayout()
         lang_row.setSpacing(16)

@@ -1,6 +1,6 @@
 # E-SubDub
 
-English | [简体中文](README-CN.md)
+English | [简体中文](README.md)
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
