@@ -82,6 +82,43 @@ python app/main.py
 
 任务队列支持批量执行；任务列表自动持久化，重启后可恢复。中途取消或失败的任务，可在主窗口点击"继续"一键重新入列（也可重新导入同路径文件断点续跑）。
 
+## 构建安装包（Windows）
+
+打包前的准备（构建机，一次性）：
+
+1. Python 3.13 构建虚拟环境（Nuitka 必须钉 4.2.2：4.3 在 PySide6 6.9.3 冻结态触发确定性崩溃，详见 `build\build_windows.ps1` 头部注释）：
+
+```bash
+py -3.13 -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r build\requirements-freeze.txt nuitka==4.2.2
+```
+
+2. （可选）Inno Setup 6（ISCC 在 PATH）——缺失时自动跳过安装包步骤，只产 onedir 发行目录：
+
+```bash
+winget install -e --id JRSoftware.InnoSetup
+```
+
+3. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时 Nuitka 经 `--assume-yes-for-downloads` 自动下载 MinGW64，二选一即可。
+
+4. 便携 CPython（[python-build-standalone](https://github.com/astral-sh/python-build-standalone)，随安装包分发给最终用户，部署期 `.venv-ml` / `.venv-tts` 以它为基础解释器）：手动下载 [cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz](https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz)，用 Win10+ 自带 tar 解压到 `build\runtime\`：
+
+```bash
+tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz -C build\runtime
+```
+
+解压后应位于 `build\runtime\python\python.exe`。它是标准便携发行版，对任何 x64 Windows 机器通用，从其他机器拷贝亦可。
+
+打包方法（在项目根、已激活构建 venv 的终端中）：
+
+```powershell
+.\build\build_windows.ps1                # 完整构建（含安装包）
+.\build\build_windows.ps1 -SkipInstaller # 只产 onedir 发行目录
+```
+
+产物：`build\dist\ESubDub\`（onedir 发行目录）与 `build\dist\ESubDub-Setup-<版本>.exe`（Inno Setup 安装包）。版本号的唯一真值源是 `app/core/config.py` 的 `APP_VERSION`，脚本自动从该文件解析。
+
 ## 流水线阶段
 
 每个任务在工作目录（默认 `output/`）下按流程顺序分阶段落盘：
@@ -188,6 +225,11 @@ app/
 | 运行必须  | `.venv-ml/`                                        | ML 推理虚拟环境（安装包形态使用，可软件自动重建）                |
 | 运行必须  | `models/`                                          | 五个模型（可软件自动下载，已 gitignore）                       |
 | 运行时生成 | `output/`                                          | 任务工作目录与成品（gitignore）                            |
+| 开发用   | `build\build_windows.ps1`                          | Windows 一键构建脚本（Nuitka 冻结 + Inno Setup，见「构建安装包」） |
+| 开发用   | `build\installer.iss`                              | Inno Setup 安装包配置（每用户安装 / 空间检查 / 分区选择）        |
+| 开发用   | `build\requirements-freeze.txt`                    | 冻结构建最小依赖清单（不含推理大件）                             |
+| 开发用   | `build\runtime\`                                   | 便携 CPython 暂存（手动下载解压，随安装包分发）                  |
+| 开发用   | `build\dist\`、`build\work\`                        | 构建产物与 Nuitka 中间目录（gitignore）                   |
 | 开发用   | `venv/`                                            | 主开发虚拟环境                                         |
 | 开发用   | `requirements.txt`、`.gitignore`、`安装引导打包阶段注意事项.TXT` | 依赖清单 / 打包阶段备忘                                   |
 | 测试    | `test/`                                            | e2e 冒烟、TTS 探针脚本 + 测试视频（gitignore）               |
@@ -203,27 +245,27 @@ app/
 
 ### 开源模型致谢
 
-- **Demucs（htdemucs）**：感谢 Meta 及社区维护者开源的高精度人声分离模型，为本项目音频人声、伴奏分离核心能力提供支撑。
+- **[Demucs（htdemucs）](https://github.com/adefossez/demucs)**：感谢 Meta 及社区维护者开源的高精度人声分离模型，为本项目音频人声、伴奏分离核心能力提供支撑。
 
-- **MOSS\-Transcribe\-Diarize**：感谢 openmoss 团队开源的带说话人区分的语音识别模型，实现精准的音频转写与分句识别。
+- **[MOSS-Transcribe-Diarize](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize)**：感谢 openmoss 团队开源的带说话人区分的语音识别模型，实现精准的音频转写与分句识别。
 
-- **Index 系列模型**：感谢 IndexTeam、Abu\-Dju 等开发者开源的 Index\-Translate\-2B、Index\-Homura\-2B、IndexTTS\-2\.5 模型，为本项目字幕智能翻译、中文时长适配、高质量声音克隆配音提供核心技术支持。
+- **Index 系列模型**：感谢 IndexTeam、Abu-Dju 等开发者开源的 [Index-Translate-2B](https://github.com/bilibili/Index-Translate)、[Index-Homura-2B](https://modelscope.cn/models/Abu-Dju/Index-Homura-2B-Q8_0-GGUF)、[IndexTTS-2.5](https://github.com/IndexTeam/IndexTTS) 模型，为本项目字幕智能翻译、中文时长适配、高质量声音克隆配音提供核心技术支持。
 
 ### 开源工具与引擎致谢
 
-- **llama\.cpp**：感谢 llama\.cpp 开源项目，提供轻量化、高性能的本地大模型推理服务，支撑翻译模型本地高效推理。
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)**：感谢 llama.cpp 开源项目，提供轻量化、高性能的本地大模型推理服务，支撑翻译模型本地高效推理。
 
-- **FFmpeg**：感谢 FFmpeg 开源多媒体框架，为项目提供音频提取、视频封装、音视频混音等全流程多媒体处理能力。
+- **[FFmpeg](https://github.com/FFmpeg/FFmpeg)**：感谢 FFmpeg 开源多媒体框架，为项目提供音频提取、视频封装、音视频混音等全流程多媒体处理能力。
 
 ### 开发框架与社区致谢
 
-- **PySide6**：感谢 PySide6 开源 GUI 框架，支撑本项目跨平台桌面客户端界面开发。
+- **[PySide6](https://wiki.qt.io/Qt_for_Python)**：感谢 PySide6 开源 GUI 框架，支撑本项目跨平台桌面客户端界面开发。
 
-- **PyTorch / Torchaudio**：感谢 PyTorch 深度学习框架及 Torchaudio 音频处理工具库，为模型推理、音频预处理提供基础算力与技术支撑。
+- **[PyTorch](https://github.com/pytorch/pytorch) / [Torchaudio](https://github.com/pytorch/audio)**：感谢 PyTorch 深度学习框架及 Torchaudio 音频处理工具库，为模型推理、音频预处理提供基础算力与技术支撑。
 
-- **魔搭社区（ModelScope）**：感谢魔搭社区提供的模型托管、下载加速服务，为用户提供便捷的模型自动部署能力。
+- **[魔搭社区（ModelScope）](https://github.com/modelscope/modelscope)**：感谢魔搭社区提供的模型托管、下载加速服务，为用户提供便捷的模型自动部署能力。
 
-- **langid**：感谢 langid 开源文本语言检测工具，实现多语言文本自动识别适配。
+- **[langid](https://github.com/saffsd/langid)**：感谢 langid 开源文本语言检测工具，实现多语言文本自动识别适配。
 
 同时感谢所有开源社区的开发者、贡献者，正是开源生态的蓬勃发展，让本项目的落地实现成为可能。
 

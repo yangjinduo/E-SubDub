@@ -35,7 +35,7 @@ jobs:
         run: |
           pip install -r build/requirements-freeze.txt
           # Nuitka 必须钉 4.2.2：4.3 在 PySide6 6.9.3 冻结态触发确定性
-          # access violation（启动即崩，详见 build.ps1 头部注释）
+          # access violation（启动即崩，详见 build_windows.ps1 头部注释）
           pip install nuitka==4.2.2
 
       - name: 缓存便携 CPython（python-build-standalone）
@@ -44,7 +44,7 @@ jobs:
           path: build/runtime
           key: pbs-cpython-3.13.5-20250723-x86_64-win
 
-      # build.ps1 不再自动下载便携 CPython（本地构建由用户手动放置，
+      # build_windows.ps1 不再自动下载便携 CPython（本地构建由用户手动放置，
       # 缺失时打印下载链接中止）；CI 用固定 URL 拉取同一发行包
       - name: 准备便携 CPython（缓存未命中时下载）
         shell: pwsh
@@ -74,7 +74,7 @@ jobs:
 
       - name: 构建（Nuitka + Inno Setup）
         shell: pwsh
-        run: ./build/build.ps1
+        run: ./build/build_windows.ps1
 
       - name: 上传安装包到 GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')

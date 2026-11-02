@@ -38,7 +38,7 @@ from app.ui.style import tokens
 
 # 启动期里程碑日志：冻结态无控制台，启动日志是唯一诊断出口
 # （冻结构建曾出现 TaskListPanel 构造期原生访问违例：根因是 Nuitka
-# 4.3 与 PySide6 互操作缺陷，构建须钉 nuitka==4.2.2，见 build.ps1）
+# 4.3 与 PySide6 互操作缺陷，构建须钉 nuitka==4.2.2，见 build_windows.ps1）
 logger = logging.getLogger(__name__)
 
 # 任务状态 → i18n key（RUNNING 不在此表：_status_text 单独处理，显示当前流程名）
