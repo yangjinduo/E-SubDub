@@ -1,0 +1,42 @@
+# Tasks
+
+- [ ] Task 1: 目录布局重构（app/core/config.py）
+  - [ ] 1.1 重写 `_resolve_roots()`：冻结态检测 `exe 所在目录名 == "current"` 且父目录存在 `Update.exe` → `DATA_ROOT = exe 目录父级`；否则冻结态沿用 `DATA_ROOT = exe 目录`；开发态 `DATA_ROOT = 项目根上一级`（`parents[3]`）
+  - [ ] 1.2 同步更新 config.py 模块 docstring 中的目录布局说明（开发态/冻结态两种形态）
+  - [ ] 1.3 冒烟验证：开发态 `python app/main.py` 启动后确认数据路径指向项目根上一级；裸 onedir（-SkipInstaller 产物）路径行为不变
+- [ ] Task 2: 应用内更新客户端
+  - [ ] 2.1 `requirements.txt` 与 `build/requirements-freeze.txt` 添加 `velopack`
+  - [ ] 2.2 `app/main.py` 入口最先执行 `velopack.App().run()`（先于 QApplication）
+  - [ ] 2.3 新增 `app/core/updater.py`：封装 `GithubSource("https://github.com/yangjinduo/E-SubDub")` + `UpdateManager` 的检查/下载/应用；提供启动后台检查（QThread/QTimer，不阻塞 UI）与供按钮调用的手动检查入口；非 Velopack 环境（`UpdateManager` 未配置/异常）优雅降级（启动静默跳过、手动提示不支持）
+  - [ ] 2.4 `app/ui/dialogs/resource_dialog.py` 的 `pref_row` 中主题下拉右侧新增「检查更新」按钮，接 updater 手动检查；发现新版本弹确认（含版本号/release notes）→ 下载（进度反馈）→ `apply_updates_and_restart`；已是最新则提示
+  - [ ] 2.5 i18n 新增全部相关文案（zh/en）
+- [ ] Task 3: 输出目录必填与持久化
+  - [ ] 3.1 `task_settings.py` 两面板输出目录 `QLineEdit` 默认值清空，加 placeholder（i18n）；面板初始化预填持久化的上次输出目录（可能为空）
+  - [ ] 3.2 设置持久化体系（tasks.json 全局设置）新增 `output_dir` 键；用户设定输出目录时保存
+  - [ ] 3.3 任务开始/确认流程中校验：输出目录为空 → 提示并打开目录选择，选定后回填并持久化，取消则不开始任务
+  - [ ] 3.4 `config.OUTPUT_DIR` 保留为浏览对话框起始定位兜底，不再作为 UI 默认值；i18n 补充新文案
+- [ ] Task 4: 构建脚本改造（build/build_windows.ps1 + 新增 build/installer_velopack.iss）
+  - [ ] 4.1 新增 `build/installer_velopack.iss`：以现有 `build/installer.iss` 的空间检测/分区选择/每用户安装逻辑为基础，融合 `test/installer_windows_velopack.iss` 的模式（内嵌 Setup.exe 至 {tmp}、`--installto "{app}" --silent`、`Uninstallable=no`、postinstall 运行 `current\ESubDub.exe`）
+  - [ ] 4.2 `build_windows.ps1`：Nuitka onedir 之后追加 vpk 定位校验（缺失时打印安装指引中止）、`vpk pack`（参数见 spec R4）、Inno 包装调用（传 `/DMyVeloSetupPath=` 等）、把 Inno 首装包拷贝覆盖 feed 内 `yangjinduo.E-SubDub-win-Setup.exe`
+  - [ ] 4.3 `-SkipInstaller` 语义扩展为跳过 vpk + Inno 全部步骤；删除旧 `build/installer.iss`
+  - [ ] 4.4 本地验证：完整构建产出 onedir + update-feed（releases.win.json/nupkg/Setup.exe）+ Inno 首装包
+- [ ] Task 5: CI 工作流（.github/workflows/release.yml）
+  - [ ] 5.1 新增安装 vpk 步骤（`dotnet tool install -g vpk`）
+  - [ ] 5.2 新增构建前 `vpk download github --repoUrl https://github.com/yangjinduo/E-SubDub --outputDir build\dist\update-feed`（拉上一版以生成增量包；无历史时容错）
+  - [ ] 5.3 新增 tag 与 APP_VERSION 一致性校验（不一致构建失败）
+  - [ ] 5.4 构建后以 `vpk upload github ... --publish --tag v<版本>` 发布，删除 softprops/action-gh-release 步骤；保留 onedir artifact 归档
+- [ ] Task 6: README 更新
+  - [ ] 6.1 构建安装包章节：补充 .NET SDK + vpk 前置、双产物说明、vpk 命令
+  - [ ] 6.2 目录布局说明改为 Velopack 新布局（冻结态数据与 current 同级；开发态数据在项目根上一级），移除过时的 Inno 直装描述
+  - [ ] 6.3 写入开发机存量数据迁移指引（spec 附节内容：models/tools/third_party/.venv-ml/.venv-tts/output 移至上一级，venv 失效则重建）
+- [ ] Task 7: 端到端验证
+  - [ ] 7.1 安装冒烟：Inno 首装包装到自定义目录 → 启动 → 确认 current/数据布局、设置窗口检查更新按钮、输出目录为空提示流程
+  - [ ] 7.2 更新链路：构建两个相邻版本，旧版安装后经（prerelease 或本地 feed）触发检查更新 → 升级成功 → 验证 models 等数据保留、venv 可用、快捷方式仍指向启动桩
+  - [ ] 7.3 按 checklist.md 逐项核对并勾选
+
+# Task Dependencies
+- Task 2、Task 3 依赖 Task 1（目录推导先行）；Task 2 与 Task 3 相互独立可并行
+- Task 4 依赖 Task 1（布局进入冻结产物）
+- Task 5 依赖 Task 4（工作流调用新构建脚本产物结构）
+- Task 6 依赖 Task 4 定稿的构建流程
+- Task 7 依赖全部前序任务

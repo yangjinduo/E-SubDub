@@ -722,6 +722,10 @@ class MediaTaskWindowBase(TaskWindowBase):
                 return False
             set_setting("voice_clone_ack", True)
 
+        # 5. 输出目录必填：为空时提示并选择（选定回填并持久化，取消则不开始）
+        if not self._task_settings.ensure_output_dir():
+            return False
+
         return True
 
     def _build_task_config(self, media_path: str | None = None) -> TaskConfig | None:
@@ -1605,6 +1609,10 @@ class TtsTaskWindow(TaskWindowBase):
             box.exec()
             if box.clickedButton() is not proceed:
                 return False
+
+        # 6. 输出目录必填：为空时提示并选择（选定回填并持久化，取消则不开始）
+        if not self._task_settings.ensure_output_dir():
+            return False
         return True
 
     def _collect_configs(self) -> list:

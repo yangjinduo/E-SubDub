@@ -2,8 +2,11 @@
 # ====================================================================
 # 触发：推送 v* 标签（如 v0.1.0）或手动 workflow_dispatch。
 # 流程：Nuitka standalone 编译（不含 torch 等推理大件，主程序仅
-#       数百 MB）→ 内嵌便携 CPython → Inno Setup 出安装包 →
-#       上传至 GitHub Release（tag 触发时）。
+#       数百 MB）→ 内嵌便携 CPython → vpk pack 产出 Velopack 更新
+#       feed（构建前 vpk download github 拉取上一版以生成增量包）→
+#       Inno 向导包装出首装包并覆盖 feed 内 Setup.exe → vpk upload
+#       github --publish 发布 Release（tag 触发时）。
+# 校验：tag 与 app/core/config.py 的 APP_VERSION 不一致时构建失败。
 # 说明：Windows runner 可用磁盘约 14 GB；因方案 C 不打包 torch /
 #       transformers / demucs（应用内 .venv-ml 按需搭建），
 #       构建依赖仅 PySide6 / librosa 等小件，磁盘富余。
@@ -37,6 +40,24 @@ jobs:
           # Nuitka 必须钉 4.2.2：4.3 在 PySide6 6.9.3 冻结态触发确定性
           # access violation（启动即崩，详见 build_windows.ps1 头部注释）
           pip install nuitka==4.2.2
+
+      - name: 安装 vpk（Velopack 打包 CLI，windows-latest 自带 .NET SDK）
+        run: dotnet tool install -g vpk
+
+      - name: 校验 tag 与 APP_VERSION 一致性
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}' -replace '^v', ''
+          $config = Get-Content -Raw app/core/config.py
+          if ($config -notmatch 'APP_VERSION:\s*str\s*=\s*"([^"]+)"') {
+            throw '无法从 app/core/config.py 解析 APP_VERSION'
+          }
+          $version = $Matches[1]
+          if ($version -ne $tag) {
+            throw "tag($tag) 与 APP_VERSION($version) 不一致：请先在 app/core/config.py 中更新版本号再打 tag"
+          }
+          Write-Host "版本一致：$version"
 
       - name: 缓存便携 CPython（python-build-standalone）
         uses: actions/cache@v4
@@ -72,16 +93,36 @@ jobs:
             Write-Host "ISCC 已预装：$((Get-Command ISCC).Source)"
           }
 
-      - name: 构建（Nuitka + Inno Setup）
+      # 拉取上一版更新包到 feed 目录：vpk pack 据此生成增量 delta 包。
+      # 无历史版本（首版发布）时 vpk download 可能失败，容错继续
+      #（只产全量包，不影响发布正确性）
+      - name: 拉取上一版更新包（vpk download github，增量 delta 所需）
+        shell: pwsh
+        run: |
+          $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
+          New-Item -ItemType Directory -Force -Path 'build/dist/update-feed' | Out-Null
+          & $vpk download github --repoUrl https://github.com/yangjinduo/E-SubDub --outputDir 'build/dist/update-feed'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'vpk download 未拉到历史版本（可能为首版发布），将只产出全量包'
+          }
+
+      - name: 构建（Nuitka + vpk pack + Inno 首装包）
         shell: pwsh
         run: ./build/build_windows.ps1
 
-      - name: 上传安装包到 GitHub Release
+      # vpk upload github：将 feed 目录（releases.win.json + 全量/增量
+      # nupkg + 已被 Inno 首装包覆盖的 Setup.exe）发布为 GitHub Release，
+      # 替代原 softprops/action-gh-release；已安装客户端的增量升级依赖
+      # 此 Release 中的 feed 文件
+      - name: 发布更新 feed 到 GitHub Releases（vpk upload github）
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            build/dist/*.exe
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
+          & $vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag '${{ github.ref_name }}' --outputDir 'build/dist/update-feed'
+          if ($LASTEXITCODE -ne 0) { throw "vpk upload 失败（exit $LASTEXITCODE）" }
 
       - name: 归档 onedir 发行目录（供手动触发时下载验证）
         uses: actions/upload-artifact@v4

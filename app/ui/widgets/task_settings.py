@@ -21,12 +21,39 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
 
 from app.core.config import config
-from app.core.i18n import tr
+from app.core.i18n import get_setting, set_setting, tr
+
+
+def prompt_output_dir_if_empty(edit: QLineEdit, parent=None) -> str:
+    """输出目录为空时提示并打开目录选择；返回最终目录（取消返回空串）。
+
+    选定后回填输入框并立即持久化（tasks.json 顶层 output_dir 键，
+    两个设置面板初始化时预填该值）；非空时原样返回并同步持久化
+    （手动输入的目录同样记为"上次输出目录"）。
+    """
+    text = edit.text().strip()
+    if text:
+        set_setting("output_dir", text)
+        return text
+    QMessageBox.information(
+        parent, tr("task.output_dir_title"), tr("task.output_dir_required")
+    )
+    # 浏览起始定位兜底：config.OUTPUT_DIR（存在时）
+    start = str(config.OUTPUT_DIR) if config.OUTPUT_DIR.is_dir() else ""
+    path = QFileDialog.getExistingDirectory(
+        parent, tr("task.choose_output_dir"), start
+    )
+    if not path:
+        return ""
+    edit.setText(path)
+    set_setting("output_dir", path)
+    return path
 
 # 内容语言选项：(语言代码, i18n key)。源语言含"自动检测"
 SOURCE_LANGUAGE_CODES = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
@@ -115,7 +142,10 @@ class TaskSettingsPanel(QFrame):
         if not show_overlay:
             self._overlay_original_check.hide()
 
-        self._output_edit = QLineEdit(str(config.OUTPUT_DIR))
+        # 输出目录：无默认值（必填），预填上次使用的输出目录（持久化于
+        # tasks.json 顶层 output_dir 键，可能为空），为空时 placeholder 提示
+        self._output_edit = QLineEdit(str(get_setting("output_dir") or ""))
+        self._output_edit.setPlaceholderText(tr("task.output_dir_placeholder"))
         self._browse_button = QPushButton("…")
         self._browse_button.setFixedWidth(44)
         self._browse_button.clicked.connect(self._browse_output_dir)
@@ -228,12 +258,17 @@ class TaskSettingsPanel(QFrame):
 
     # ------------------------------------------------------------------ 交互
 
+    def ensure_output_dir(self) -> str:
+        """输出目录为空时提示并选择（任务开始前校验用）；取消返回空串。"""
+        return prompt_output_dir_if_empty(self._output_edit, self)
+
     def _browse_output_dir(self) -> None:
-        """浏览选择输出目录。"""
+        """浏览选择输出目录（选定即持久化为"上次输出目录"）。"""
         current = self.output_dir() or str(config.OUTPUT_DIR)
         path = QFileDialog.getExistingDirectory(self, tr("task.choose_output_dir"), current)
         if path:
             self._output_edit.setText(path)
+            set_setting("output_dir", path)
 
 
 class TtsSettingsPanel(QFrame):
@@ -297,7 +332,9 @@ class TtsSettingsPanel(QFrame):
         for code, key in TTS_FORMATS:
             self._format_combo.addItem(tr(key), code)
 
-        self._output_edit = QLineEdit(str(config.OUTPUT_DIR))
+        # 输出目录：无默认值（必填），预填上次使用的输出目录（可能为空）
+        self._output_edit = QLineEdit(str(get_setting("output_dir") or ""))
+        self._output_edit.setPlaceholderText(tr("task.output_dir_placeholder"))
         self._browse_button = QPushButton("…")
         self._browse_button.setFixedWidth(44)
         self._browse_button.clicked.connect(self._browse_output_dir)
@@ -439,9 +476,14 @@ class TtsSettingsPanel(QFrame):
 
     # ------------------------------------------------------------------ 交互
 
+    def ensure_output_dir(self) -> str:
+        """输出目录为空时提示并选择（任务开始前校验用）；取消返回空串。"""
+        return prompt_output_dir_if_empty(self._output_edit, self)
+
     def _browse_output_dir(self) -> None:
-        """浏览选择输出目录。"""
+        """浏览选择输出目录（选定即持久化为"上次输出目录"）。"""
         current = self.output_dir() or str(config.OUTPUT_DIR)
         path = QFileDialog.getExistingDirectory(self, tr("task.choose_output_dir"), current)
         if path:
             self._output_edit.setText(path)
+            set_setting("output_dir", path)

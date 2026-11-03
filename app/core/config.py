@@ -1,15 +1,18 @@
 """全局配置：应用信息（名称 / 版本）与目录路径推导。
 
-目录布局（两种形态）：
-- 开发态（python app/main.py）：APP_ROOT = DATA_ROOT = 项目根，一切就地；
-- 冻结态（Nuitka onedir 安装包）：APP_ROOT = DATA_ROOT = 安装目录——
-  安装程序默认按用户安装到可写位置（%LOCALAPPDATA%/Programs），
-  模型、.venv-tts、.venv-ml（ML = Machine Learning（机器学习））、
-  tools、third_party、output 等部署内容与任务产物一律就近落盘，
-  设置窗口的下载 / 环境搭建不再让用户选择目标位置；仅 tasks.json、
-  startup 日志等轻量配置存于用户配置目录（Windows
-  %LOCALAPPDATA%/ESubDub/，macOS ~/Library/Application
-  Support/ESubDub/，见 i18n._config_dir）。
+目录布局（三种形态，见 _resolve_roots）：
+- 冻结态 + Velopack 布局（正式安装）：APP_ROOT = <安装根>\\current\\
+  （程序自身资源：app/resources、runtime/python 等），DATA_ROOT =
+  <安装根>（models、tools、third_party、.venv-ml、.venv-tts 与
+  current 同级）。Velopack 更新时整体替换 current，数据目录不受影响。
+- 冻结态裸 onedir（-SkipInstaller 产物，本地测试）：APP_ROOT =
+  DATA_ROOT = exe 所在目录，行为与旧版一致。
+- 开发态（python app/main.py）：APP_ROOT = 项目根（等价于 current），
+  DATA_ROOT = 项目根的上一级（等价于安装根，镜像冻结态布局）。
+
+仅 tasks.json、startup 日志等轻量配置存于用户配置目录（Windows
+%LOCALAPPDATA%/ESubDub/，macOS ~/Library/Application
+Support/ESubDub/，见 i18n._config_dir）。
 """
 
 import os
@@ -28,19 +31,35 @@ def is_frozen() -> bool:
     return module is not None and "__compiled__" in dir(module)
 
 
+def _is_velopack_layout(exe_dir: Path) -> bool:
+    """冻结 exe 是否位于 Velopack 安装布局的 current 目录内。
+
+    Velopack 安装根结构：<安装根>\\current\\（实际程序）+ Update.exe
+    （更新器）。exe 所在目录名为 current 且父目录存在 Update.exe
+    即认定为 Velopack 布局。
+    """
+    return exe_dir.name == "current" and (exe_dir.parent / "Update.exe").is_file()
+
+
 def _resolve_roots() -> tuple[Path, Path]:
     """推导 (APP_ROOT, DATA_ROOT)。
 
-    - 开发态：均为项目根（app 包上一级）；
-    - 冻结态：APP_ROOT = 可执行文件所在目录（onedir 分发根）；
-      DATA_ROOT = 同 APP_ROOT——部署目标（模型 / 虚拟环境 / 工具 /
-      源码克隆）与任务产物直接使用软件安装目录，无需用户选择位置
-      （安装程序默认按用户安装，目录可写）。
+    - 冻结态 + Velopack 布局：APP_ROOT = exe 所在目录（current，
+      程序自身资源随包分发，更新时被整体替换）；DATA_ROOT = 其父目录
+      （安装根）——模型 / 虚拟环境 / 工具 / 源码克隆等大体积可写数据
+      与 current 同级，跨更新保留；
+    - 冻结态裸 onedir（-SkipInstaller 产物）：APP_ROOT = DATA_ROOT =
+      exe 所在目录，本地测试行为与旧版一致；
+    - 开发态：APP_ROOT = 项目根（app 包上一级，等价于 current），
+      DATA_ROOT = 项目根的上一级（等价于安装根，镜像冻结态布局）。
     """
     if is_frozen():
-        app_root = Path(sys.executable).resolve().parent
-        return app_root, app_root
-    return Path(__file__).resolve().parents[2], Path(__file__).resolve().parents[2]
+        exe_dir = Path(sys.executable).resolve().parent
+        if _is_velopack_layout(exe_dir):
+            return exe_dir, exe_dir.parent
+        return exe_dir, exe_dir
+    app_root = Path(__file__).resolve().parents[2]
+    return app_root, app_root.parent
 
 
 _APP_ROOT, _DATA_ROOT = _resolve_roots()
@@ -53,13 +72,15 @@ class AppConfig:
     APP_NAME: str = "E-SubDub"
 
     # 应用版本（语义化版本）
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = "0.1.1"
 
-    # 应用根目录（开发态=项目根；冻结态=安装目录，只读资源随包分发）
+    # 应用根目录（程序自身资源所在，等价于 Velopack 的 current：
+    # 开发态=项目根；冻结态=exe 所在目录，只读资源随包分发）
     APP_ROOT: Path = _APP_ROOT
 
-    # 数据根目录（开发态=项目根；冻结态=安装目录）：模型、虚拟环境、
-    # 工具、源码克隆、任务产物等一切可写内容均落于此
+    # 数据根目录（大体积可写数据，等价于 Velopack 的安装根）：
+    # 冻结态+Velopack=exe 目录父级；冻结态裸 onedir=exe 目录；
+    # 开发态=项目根上一级。模型、虚拟环境、工具、源码克隆均落于此
     DATA_ROOT: Path = _DATA_ROOT
 
     # 资源目录：app/resources

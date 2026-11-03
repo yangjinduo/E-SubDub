@@ -66,6 +66,10 @@ python app/main.py
 > **注意**：整个应用始终在主虚拟环境（`venv/`）中启动运行；
 > `.venv-tts/` 与 `.venv-ml/`（安装包形态的 ML 推理环境）仅由对应 worker 子进程自动调用，**不要**用它们启动 `app/main.py`。
 
+> **目录布局（开发态）**：`models/`、`tools/`、`third_party/`、`.venv-tts/`、`.venv-ml/` 等大体积数据目录位于**项目根的上一级**（与 `E-SubDub/` 源码目录同级），镜像安装版的 [Velopack](https://velopack.io/) 布局（安装根下，数据与 `current/` 程序目录平级，跨自动更新保留）。首次启动自动创建。
+>
+> **从旧版本升级的开发者**：请把上述目录（`output/` 可选）从项目根手动搬移到上一级；`.venv-*` 搬移后如内部绝对路径失效，在设置窗口删除并一键重建即可（软件支持自动重建）。`app/`、`libs/`、`torchaudio/`、`venv/`、`build/`、`test/` 属于程序自身或开发文件，**不搬移**。
+
 首次启动后：
 
 1. 在主界面右上角 **设置** 中下载所需模型（ASR / 翻译 / 人声分离 / 配音）；
@@ -96,15 +100,22 @@ py -3.13 -m venv venv
 pip install -r build\requirements-freeze.txt nuitka==4.2.2
 ```
 
-2. （可选）Inno Setup 6（ISCC 在 PATH）——缺失时自动跳过安装包步骤，只产 onedir 发行目录：
+2. .NET SDK + vpk（[Velopack](https://velopack.io/) 打包 CLI，缺失时构建脚本打印安装指引并中止；增量更新包与 GitHub Releases 自动更新依赖它）：
+
+```bash
+winget install Microsoft.DotNet.SDK.8
+dotnet tool install -g vpk
+```
+
+3. （可选）Inno Setup 6——缺失时跳过 Inno 首装包步骤（更新 feed 保留 vpk 原生 Setup.exe）；ISCC 从 PATH 与标准安装位置自动探测：
 
 ```bash
 winget install -e --id JRSoftware.InnoSetup
 ```
 
-3. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时 Nuitka 经 `--assume-yes-for-downloads` 自动下载 MinGW64，二选一即可。
+4. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时 Nuitka 经 `--assume-yes-for-downloads` 自动下载 MinGW64，二选一即可。
 
-4. 便携 CPython（[python-build-standalone](https://github.com/astral-sh/python-build-standalone)，随安装包分发给最终用户，部署期 `.venv-ml` / `.venv-tts` 以它为基础解释器）：手动下载 [cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz](https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz)，用 Win10+ 自带 tar 解压到 `build\runtime\`：
+5. 便携 CPython（[python-build-standalone](https://github.com/astral-sh/python-build-standalone)，随安装包分发给最终用户，部署期 `.venv-ml` / `.venv-tts` 以它为基础解释器）：手动下载 [cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz](https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz)，用 Win10+ 自带 tar 解压到 `build\runtime\`：
 
 ```bash
 tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz -C build\runtime
@@ -115,15 +126,57 @@ tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.ta
 打包方法（在项目根、已激活构建 venv 的终端中）：
 
 ```powershell
-.\build\build_windows.ps1                # 完整构建（含安装包）
-.\build\build_windows.ps1 -SkipInstaller # 只产 onedir 发行目录
+.\build\build_windows.ps1                # 完整构建（onedir + Velopack 更新 feed + Inno 首装包）
+.\build\build_windows.ps1 -SkipInstaller # 只产裸 onedir（跳过 vpk pack 与 Inno 全部步骤，本地冻结态测试用）
 ```
 
-产物：`build\dist\ESubDub\`（onedir 发行目录）与 `build\dist\ESubDub-Setup-<版本>.exe`（Inno Setup 安装包）。版本号的唯一真值源是 `app/core/config.py` 的 `APP_VERSION`，脚本自动从该文件解析。
+产物（版本号的唯一真值源是 `app/core/config.py` 的 `APP_VERSION`，脚本自动从该文件解析）：
+
+| 产物 | 说明 |
+| --- | --- |
+| `build\dist\ESubDub\` | onedir 发行目录 |
+| `build\dist\update-feed\` | Velopack 更新 feed：`releases.win.json` + 全量/增量 nupkg + `yangjinduo.E-SubDub-win-Setup.exe`（该 Setup.exe 已被 Inno 首装包覆盖，发布出去的首装入口始终是带向导的 Inno 包） |
+| `build\dist\ESubDub-Setup-<版本>.exe` | Inno 首装包：向导式包装 Velopack Setup.exe（磁盘空间检测 / 分区选择 / 每用户安装），经 `--installto` 静默落盘到用户所选目录 |
+
+### 发版流程（每次出新版本）
+
+发版前修改两个文件（版本相关内容的全部落点）：
+
+| 文件 | 修改内容 |
+| --- | --- |
+| `app\core\config.py` | `APP_VERSION` 改为新版本号（如 `"0.1.1"`），全链路唯一真值源 |
+| `build\release-notes.md` | **整文件重写**为当版更新说明（勿追加旧版内容：vpk 把整个文件内嵌进更新包，客户端「检查更新」弹窗原样展示） |
+
+**方式一：云端发布（推荐）** —— 修改 commit 并 push 后打 tag，触发 `.github/workflows/release.yml` 自动完成构建与发布：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+CI 校验 tag 与 `APP_VERSION` 一致（不一致直接失败）、`vpk download github` 拉取上一版生成增量包、构建后 `vpk upload github --publish` 发布 Release。注意 `release-notes.md` 必须**先提交再打 tag**（CI 只能读到已 push 的内容）。
+
+**方式二：本地构建发布** —— 项目根、已激活构建 venv 的终端：
+
+```powershell
+# 1.（可选）拉取上一版到 feed 目录，供 vpk pack 生成增量包
+vpk download github --repoUrl https://github.com/yangjinduo/E-SubDub --outputDir build\dist\update-feed
+
+# 2. 完整构建
+.\build\build_windows.ps1
+
+# 3. 发布到 GitHub Release（需有写权限的 token；或改用手动网页上传）
+$env:GITHUB_TOKEN = '<你的 GitHub Token>'
+vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed
+```
+
+手动网页上传时，把 `build\dist\update-feed\` 内**全部文件**（`releases.win.json` + 全量/增量 nupkg + `yangjinduo.E-SubDub-win-Setup.exe`）上传到对应 tag 的 Release，覆盖同名旧文件。
+
+发布后，已安装用户启动时后台自动检查（或设置窗口手动「检查更新」）即可增量升级。安装版布局：安装根下 `current\`（程序，随更新整体替换）与 `Update.exe`（更新器），`models\` 等数据目录与 `current\` 平级、跨更新保留。
 
 ## 流水线阶段
 
-每个任务在工作目录（默认 `output/`）下按流程顺序分阶段落盘：
+每个任务在用户设置的输出目录下按流程顺序分阶段落盘（首次创建任务时选择并记忆，可在任务设置面板修改）：
 
 | #  | 阶段   | 目录        | 说明                                                       |
 | -- | ---- | --------- | -------------------------------------------------------- |
@@ -216,22 +269,24 @@ app/
 
 ## 文件夹分类
 
+大体积数据目录（`..\tools\`、`..\third_party\`、`..\.venv-tts\`、`..\.venv-ml\`、`..\models\`）在开发态位于**项目根的上一级**（`..\` 相对项目根，镜像安装版的 Velopack 布局，见「快速开始」）；安装版则位于安装根、与 `current\` 程序目录平级。
+
 | 分类    | 目录                                                 | 说明                                              |
 | ----- | -------------------------------------------------- | ----------------------------------------------- |
 | 运行必须  | `app/`                                             | 全部源代码                                           |
 | 运行必须  | `libs/`                                            | 内置 FFmpeg（windows/ffmpeg.exe、macos/Arm + Intel） |
-| 运行必须  | `tools/llama.cpp/`                                 | llama-server 推理服务 + CUDA DLL（可软件自动下载）           |
-| 运行必须  | `third_party/index-tts/`                           | IndexTTS 引擎源码                                   |
+| 运行必须  | `..\tools\llama.cpp\`                              | llama-server 推理服务 + CUDA DLL（可软件自动下载）           |
+| 运行必须  | `..\third_party\index-tts/`                        | IndexTTS 引擎源码                                   |
 | 运行必须  | `torchaudio/`                                      | torch 2.14 配套垫片包（demucs 依赖，勿 pip 安装覆盖）          |
-| 运行必须  | `.venv-tts/`                                       | TTS 专用虚拟环境（可软件自动重建）                             |
-| 运行必须  | `.venv-ml/`                                        | ML 推理虚拟环境（安装包形态使用，可软件自动重建）                |
-| 运行必须  | `models/`                                          | 五个模型（可软件自动下载，已 gitignore）                       |
-| 运行时生成 | `output/`                                          | 任务工作目录与成品（gitignore）                            |
-| 开发用   | `build\build_windows.ps1`                          | Windows 一键构建脚本（Nuitka 冻结 + Inno Setup，见「构建安装包」） |
-| 开发用   | `build\installer.iss`                              | Inno Setup 安装包配置（每用户安装 / 空间检查 / 分区选择）        |
+| 运行必须  | `..\.venv-tts/`                                    | TTS 专用虚拟环境（可软件自动重建）                             |
+| 运行必须  | `..\.venv-ml/`                                     | ML 推理虚拟环境（安装包形态使用，可软件自动重建）                |
+| 运行必须  | `..\models/`                                       | 五个模型（可软件自动下载，已 gitignore）                       |
+| 运行时生成 | 输出目录                                              | 任务工作目录与成品（用户设置并持久化记忆，gitignore）                 |
+| 开发用   | `build\build_windows.ps1`                          | Windows 一键构建脚本（Nuitka 冻结 + vpk pack + Inno 首装包，见「构建安装包」） |
+| 开发用   | `build\installer_velopack.iss`                     | Inno 首装包配置（向导包装 Velopack Setup.exe：空间检查 / 分区选择 + --installto 静默落盘） |
 | 开发用   | `build\requirements-freeze.txt`                    | 冻结构建最小依赖清单（不含推理大件）                             |
 | 开发用   | `build\runtime\`                                   | 便携 CPython 暂存（手动下载解压，随安装包分发）                  |
-| 开发用   | `build\dist\`、`build\work\`                        | 构建产物与 Nuitka 中间目录（gitignore）                   |
+| 开发用   | `build\dist\`、`build\work\`                        | 构建产物（含 update-feed 更新 feed）与 Nuitka 中间目录（gitignore）   |
 | 开发用   | `venv/`                                            | 主开发虚拟环境                                         |
 | 开发用   | `requirements.txt`、`.gitignore`、`安装引导打包阶段注意事项.TXT` | 依赖清单 / 打包阶段备忘                                   |
 | 测试    | `test/`                                            | e2e 冒烟、TTS 探针脚本 + 测试视频（gitignore）               |

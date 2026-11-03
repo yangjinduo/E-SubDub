@@ -164,6 +164,12 @@ class SettingsDialog(QDialog):
         self._theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         pref_row.addWidget(self._theme_label)
         pref_row.addWidget(self._theme_combo)
+        # 检查更新（主题下拉右侧）：手动触发应用内更新检查
+        # （启动时另有后台静默检查，见 app/ui/updater_flow.py）
+        pref_row.addSpacing(24)
+        self._check_update_button = QPushButton(tr("updater.check_button"))
+        self._check_update_button.clicked.connect(self._on_check_update_clicked)
+        pref_row.addWidget(self._check_update_button)
         pref_row.addStretch(1)
         layout.addLayout(pref_row)
 
@@ -523,7 +529,27 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         return cell
 
-    # ------------------------------------------------------------------ 语言 / 主题
+    # ------------------------------------------------------------------ 语言 / 主题 / 更新
+
+    def _on_check_update_clicked(self) -> None:
+        """点击「检查更新」：手动触发更新检查（非 Velopack 环境提示不支持）。
+
+        检查在后台线程进行，按钮禁用至流程终态（宿主窗口先关闭时
+        恢复回调安全失败，不影响后台流程）。
+        """
+        from app.ui.updater_flow import run_manual_check
+
+        self._check_update_button.setEnabled(False)
+        self._check_update_button.setText(tr("updater.checking"))
+
+        def _restore() -> None:
+            try:
+                self._check_update_button.setEnabled(True)
+                self._check_update_button.setText(tr("updater.check_button"))
+            except RuntimeError:
+                pass  # 窗口已销毁（语言/主题切换重建等），无需恢复
+
+        run_manual_check(self, on_done=_restore)
 
     def _on_language_changed(self, index: int) -> None:
         """切换界面语言：立即生效并通知主窗口重建。"""
@@ -563,6 +589,8 @@ class SettingsDialog(QDialog):
         self._deploy_all_button.setText(tr("settings.deploy_all"))
         self._sleep_check.setText(tr("settings.prevent_sleep"))
         self._sleep_check.setToolTip(tr("settings.prevent_sleep_tooltip"))
+        if self._check_update_button.isEnabled():
+            self._check_update_button.setText(tr("updater.check_button"))
         self._rebuild_resource_rows()
 
     # ------------------------------------------------------------------ 防休眠

@@ -2,7 +2,13 @@
 # ====================================================================
 # 产物：
 #   build\dist\ESubDub\                        onedir 发行目录
-#   build\dist\ESubDub-Setup-<版本>.exe       Inno Setup 安装包
+#   build\dist\update-feed\                    Velopack 更新 feed
+#     releases.win.json + 全量/增量 nupkg + yangjinduo.E-SubDub-win-Setup.exe
+#     （feed 内 Setup.exe 最终被 Inno 首装包覆盖：发布出去的首装入口
+#      始终是带向导的 Inno 包，见阶段 6.5）
+#   build\dist\ESubDub-Setup-<版本>.exe        Inno 首装包
+#     （向导式包装 Velopack Setup.exe：磁盘空间检测 / 分区选择沿用，
+#      经 --installto 静默落盘到用户所选目录，见 installer_velopack.iss）
 #
 # 设计要点（方案 C）：主程序用 Nuitka standalone 冻结，但不含任何推理
 # 依赖（torch / transformers / demucs / silero-vad 全部交给应用内
@@ -17,18 +23,22 @@
 #      0x183ea，两台不同显卡的测试机均复现；升级 Nuitka 前必须重新
 #      做安装包双击启动冒烟测试）：
 #        pip install -r build\requirements-freeze.txt nuitka==4.2.2
-#   2. （可选）Inno Setup 6（ISCC 在 PATH）——缺失时自动跳过安装包
-#      步骤，只产 onedir 目录：
+#   2. .NET SDK + vpk（Velopack 打包 CLI，缺失时本脚本打印安装指引
+#      并中止）：
+#        winget install Microsoft.DotNet.SDK.8
+#        dotnet tool install -g vpk
+#   3. （可选）Inno Setup 6——缺失时跳过 Inno 首装包步骤（feed 保留
+#      vpk 原生 Setup.exe）；ISCC 依次从 PATH 与标准安装位置探测：
 #        winget install -e --id JRSoftware.InnoSetup
-#   3. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时
+#   4. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时
 #      Nuitka 经 --assume-yes-for-downloads 自动下载 MinGW64 也可用。
-#   4. 便携 CPython（python-build-standalone，随安装包分发给最终
+#   5. 便携 CPython（python-build-standalone，随安装包分发给最终
 #      用户）：提前手动下载解压到 build\runtime\python\；缺失时
 #      脚本打印下载链接并中止（不自动下载）
 #
 # 用法（在项目根、已激活构建 venv 的终端中）：
-#   .\build\build_windows.ps1                # 完整构建（含安装包）
-#   .\build\build_windows.ps1 -SkipInstaller # 只产 onedir 发行目录
+#   .\build\build_windows.ps1                # 完整构建（onedir + 更新 feed + Inno 首装包）
+#   .\build\build_windows.ps1 -SkipInstaller # 只产裸 onedir（跳过 vpk pack 与 Inno 全部步骤）
 # ====================================================================
 
 param(
@@ -187,20 +197,99 @@ Copy-Item -Recurse -Force `
 
 Write-Host "== onedir 发行目录就绪：$AppDist ==" -ForegroundColor Green
 
-# ---------- 6. Inno Setup 安装包 ----------
+# ---------- 6. Velopack 更新包（vpk pack）+ Inno 首装包 ----------
+# -SkipInstaller：跳过 vpk + Inno 全部步骤，只产裸 onedir（本地
+# 冻结态测试布局：exe 直接在发行目录，无 current 父结构）
 if ($SkipInstaller) {
-    Write-Host "== 已按 -SkipInstaller 跳过安装包步骤 ==" -ForegroundColor Yellow
+    Write-Host "== 已按 -SkipInstaller 跳过 vpk pack 与 Inno 首装包（仅产裸 onedir）==" -ForegroundColor Yellow
 } else {
-    $Iscc = Get-Command ISCC -ErrorAction SilentlyContinue
-    if (-not $Iscc) {
-        Write-Warning "未找到 ISCC（Inno Setup 6），已跳过安装包步骤。安装后重跑：winget install -e --id JRSoftware.InnoSetup"
+    # ---- 6.1 vpk 定位：优先 dotnet 全局工具默认位置（dotnet tool
+    #      install -g vpk 的产物），兜底 PATH；均缺失时中止并给指引 ----
+    $VpkExe = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
+    if (-not (Test-Path -LiteralPath $VpkExe)) {
+        $VpkCmd = Get-Command vpk -ErrorAction SilentlyContinue
+        if ($VpkCmd) { $VpkExe = $VpkCmd.Source } else { $VpkExe = $null }
+    }
+    if (-not $VpkExe) {
+        throw @"
+未找到 vpk（Velopack 打包 CLI）。请先安装 .NET SDK 与 vpk（一次性）：
+  winget install Microsoft.DotNet.SDK.8
+  dotnet tool install -g vpk
+"@
+    }
+
+    # ---- 6.2 vpk pack：产出更新 feed（releases.win.json + 全量 nupkg +
+    #      原生 Setup.exe + Portable.zip）。增量 delta 需 feed 中已存在
+    #      上一版包：本地构建前可手动执行 vpk download github 拉取上一
+    #      版；CI 由 release.yml 自动拉取。首版（或空 feed）只有全量包 ----
+    $PackId = 'yangjinduo.E-SubDub'
+    $UpdateFeedDir = Join-Path $DistDir 'update-feed'
+    New-Item -ItemType Directory -Force -Path $UpdateFeedDir | Out-Null
+    Write-Host "== vpk pack（Velopack 更新包，channel=win）==" -ForegroundColor Cyan
+    $VpkArgs = @(
+        'pack',
+        '--packId', $PackId,
+        '--packVersion', $Version,
+        '--packDir', $AppDist,
+        '--mainExe', 'ESubDub.exe',
+        '--packTitle', 'E-SubDub',
+        '--channel', 'win',
+        '--outputDir', $UpdateFeedDir,
+        '--icon', (Join-Path $ProjectRoot 'app\resources\logo\E-SubDub.ico')
+    )
+    # 更新说明：build\release-notes.md 存在时随包内嵌，客户端「检查更新」
+    # 弹窗展示的 NotesMarkdown 即来源于此（每次发版前更新该文件）
+    $ReleaseNotes = Join-Path $BuildDir 'release-notes.md'
+    if (Test-Path $ReleaseNotes) {
+        $VpkArgs += @('--releaseNotes', $ReleaseNotes)
     } else {
-        Write-Host "== Inno Setup 编译安装包（lzma2 压缩，约数分钟）==" -ForegroundColor Cyan
-        & $Iscc.Source "/DAppVersion=$Version" "/DDistDir=$AppDist" (Join-Path $BuildDir 'installer.iss')
+        Write-Warning "未找到 $ReleaseNotes，本次更新包不含更新说明"
+    }
+    & $VpkExe @VpkArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "vpk pack 失败（exit $LASTEXITCODE）"
+    }
+    Write-Host "== 更新 feed 就绪：$UpdateFeedDir ==" -ForegroundColor Green
+
+    # ---- 6.3 ISCC 定位：PATH 兜底标准安装位置（含每用户安装） ----
+    $IsccExe = $null
+    $IsccCmd = Get-Command ISCC -ErrorAction SilentlyContinue
+    if ($IsccCmd) {
+        $IsccExe = $IsccCmd.Source
+    } else {
+        foreach ($p in @(
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+            'C:\Program Files\Inno Setup 6\ISCC.exe',
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+        )) {
+            if (Test-Path -LiteralPath $p) { $IsccExe = $p; break }
+        }
+    }
+    if (-not $IsccExe) {
+        Write-Warning "未找到 ISCC（Inno Setup 6），已跳过 Inno 首装包（feed 保留 vpk 原生 Setup.exe）。安装后重跑：winget install -e --id JRSoftware.InnoSetup"
+    } else {
+        # ---- 6.4 Inno 首装包：向导（磁盘空间检测 / 分区选择 / 每用户
+        #      安装）包装 Velopack Setup.exe，经 --installto "{app}"
+        #      --silent 静默落盘到用户所选目录 ----
+        Write-Host "== Inno Setup 编译首装包（lzma2 压缩，约数分钟）==" -ForegroundColor Cyan
+        & $IsccExe `
+            "/DAppVersion=$Version" `
+            "/DVeloSetupPath=$(Join-Path $UpdateFeedDir "$PackId-win-Setup.exe")" `
+            (Join-Path $BuildDir 'installer_velopack.iss')
         if ($LASTEXITCODE -ne 0) {
             throw "ISCC 编译失败（exit $LASTEXITCODE）"
         }
-        Write-Host "== 安装包就绪：$(Join-Path $DistDir "ESubDub-Setup-$Version.exe") ==" -ForegroundColor Green
+
+        # ---- 6.5 Inno 首装包拷贝覆盖 feed 内 Setup.exe：发布出去的首装
+        #      入口始终是带向导的 Inno 包（而非 vpk 原生 Setup.exe）；
+        #      vpk upload github 上传 feed 目录时即带走覆盖后的入口 ----
+        $InnoSetupExe = Join-Path $DistDir "ESubDub-Setup-$Version.exe"
+        if (-not (Test-Path -LiteralPath $InnoSetupExe)) {
+            throw "Inno 首装包未找到：$InnoSetupExe"
+        }
+        Copy-Item -LiteralPath $InnoSetupExe `
+            -Destination (Join-Path $UpdateFeedDir "$PackId-win-Setup.exe") -Force
+        Write-Host "== 首装包就绪（已覆盖 feed 内 Setup.exe）：$InnoSetupExe ==" -ForegroundColor Green
     }
 }
 

@@ -1,17 +1,23 @@
-; E-SubDub Windows 安装脚本（Inno Setup 6/7）
+; E-SubDub Windows 首装包脚本（Inno Setup 6/7，Inno 向导包装 Velopack）
 ; ====================================================================
 ; 由 build/build_windows.ps1 调用 ISCC 编译，可传预定义变量：
-;   ISCC /DAppVersion=0.1.0 /DDistDir=build\dist\ESubDub installer.iss
+;   ISCC /DAppVersion=0.2.0 ^
+;        /DVeloSetupPath=build\dist\update-feed\yangjinduo.E-SubDub-win-Setup.exe ^
+;        installer_velopack.iss
 ;
-; 需求实现：
-;   1. 每用户安装（无需管理员）：PrivilegesRequired=lowest，
-;      默认目录 {userpf}\ESubDub（= %LOCALAPPDATA%\Programs）；
-;   2. 默认选剩余空间最大的固定分区（覆盖系统盘默认，见
-;      InitializeWizard / GetLargestFreeDrive）；
-;   3. 目标分区剩余空间实时显示（目录可编辑时跟随刷新）；
-;   4. 目标分区剩余 < 25 GB 阻止安装（NextButtonClick）；
-;   5. 不显示欢迎页 / 说明页，双击后直接进入目录选择页；"安装+
-;      部署完成后共需约 25 GB"由目录选择页常驻提示行承担。
+; 混合方案（替代旧版 Inno 直装 onedir 的 installer.iss）：
+;   1. 保留向导的磁盘空间检测 / 分区选择 / 每用户安装能力：
+;      默认选剩余空间最大的固定分区（InitializeWizard /
+;      GetLargestFreeDrive），目标分区剩余 < 25 GB 阻止安装
+;      （NextButtonClick），目录页常驻剩余空间实时提示行；
+;   2. [Files] 把 vpk pack 产出的 Velopack Setup.exe 内嵌到 {tmp}，
+;      [Run] 以 --installto "{app}" --silent 静默落盘到用户所选目录
+;      （实际布局：{app}\current\ESubDub.exe + {app}\Update.exe）；
+;   3. Uninstallable=no：卸载不由 Inno 管理（升级由应用内
+;      Velopack 更新完成；卸载即删除安装根目录，models 等数据
+;      随目录整体删除）；
+;   4. 快捷方式指向 current\ESubDub.exe：current 目录名跨 Velopack
+;      更新稳定（更新时整体替换其内容），快捷方式始终有效。
 ;
 ; 注意：[Code] 段是 Pascal 语法，注释只能用 //（分号注释会报
 ; "'BEGIN' expected" 编译错误）。
@@ -21,8 +27,8 @@
 #define AppVersion "0.1.0"
 #endif
 
-#ifndef DistDir
-#define DistDir "..\dist\ESubDub"
+#ifndef VeloSetupPath
+#define VeloSetupPath "..\dist\update-feed\yangjinduo.E-SubDub-win-Setup.exe"
 #endif
 
 ; 安装 + 应用内部署（模型约 15 GB + 双推理虚拟环境数 GB）共需的
@@ -30,12 +36,15 @@
 #define RequiredSpaceGB 25
 
 [Setup]
-AppId={{9B6D4A2C-1F37-4E5A-9C42-8A1B5D0E3F71}
+AppId={{5A1F0E2B-3C4D-4E5F-8A9B-6C7D8E9F0A1B}
 AppName=E-SubDub
 AppVersion={#AppVersion}
 AppPublisher=E-SubDub
-UninstallDisplayName=E-SubDub
-DefaultDirName={userpf}\ESubDub
+; 默认目录经 {code:} 脚本化（见 GetDefaultDir）：剩余空间最大的固定
+; 分区 + \ESubDub。不得在 InitializeWizard 里覆盖 WizardForm.DirEdit
+; ——那会把静默安装的 /DIR= 命令行参数一并覆盖掉
+DefaultDirName={code:GetDefaultDir}
+UsePreviousAppDir=no
 DefaultGroupName=E-SubDub
 DisableProgramGroupPage=yes
 ; 跳过欢迎页：双击安装后直接进入目录选择页
@@ -43,11 +52,13 @@ DisableWelcomePage=yes
 ; 每用户安装：写 HKCU、无 UAC 弹窗、{autoprograms}/{autodesktop}
 ; 均落在当前用户目录
 PrivilegesRequired=lowest
+; 卸载不由 Inno 管理：升级走应用内 Velopack 更新，卸载即删除
+; 安装根目录（含 models 等数据）
+Uninstallable=no
 OutputDir=dist
 OutputBaseFilename=ESubDub-Setup-{#AppVersion}
 SetupIconFile=..\app\resources\logo\E-SubDub.ico
 WizardStyle=modern
-WizardResizable=yes
 ArchitecturesAllowed=x64compatible
 Compression=lzma2/max
 SolidCompression=yes
@@ -59,16 +70,20 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
 [Files]
-; onedir 发行目录整体装入 {app}（主程序 / worker / 内置 ffmpeg /
-; 便携 CPython runtime\python / torchaudio 垫片）
-Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; vpk pack 产出的 Velopack Setup.exe（安装器本体，仅数 MB——模型等
+; 大件由应用内下载器完成），内嵌 {tmp} 静默执行后删除
+Source: "{#VeloSetupPath}"; DestDir: "{tmp}"; DestName: "ESubDub-Velopack-Setup.exe"; Flags: deleteafterinstall
 
 [Icons]
-Name: "{autoprograms}\E-SubDub"; Filename: "{app}\ESubDub.exe"
-Name: "{autodesktop}\E-SubDub"; Filename: "{app}\ESubDub.exe"; Tasks: desktopicon
+; current 目录名跨 Velopack 更新稳定：快捷方式始终指向有效启动桩
+Name: "{autoprograms}\E-SubDub"; Filename: "{app}\current\ESubDub.exe"
+Name: "{autodesktop}\E-SubDub"; Filename: "{app}\current\ESubDub.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\ESubDub.exe"; Description: "启动 E-SubDub"; Flags: nowait postinstall skipifsilent
+; Velopack 静默安装到用户所选目录：产出 {app}\current\（onedir 程序）
+; 与 {app}\Update.exe（更新器），全程无界面
+Filename: "{tmp}\ESubDub-Velopack-Setup.exe"; Parameters: "--installto ""{app}"" --silent"; Flags: waituntilterminated; StatusMsg: "正在安装 E-SubDub…"
+Filename: "{app}\current\ESubDub.exe"; Description: "启动 E-SubDub"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
@@ -148,6 +163,16 @@ begin
 end;
 
 // --------------------------------------------------------------------
+// 默认安装目录（{code:GetDefaultDir}）：剩余空间最大的固定分区 +
+// \ESubDub；用户可在目录页自由修改，静默安装时 /DIR= 参数优先
+// --------------------------------------------------------------------
+
+function GetDefaultDir(Param: String): String;
+begin
+  Result := GetLargestFreeDrive() + 'ESubDub\';
+end;
+
+// --------------------------------------------------------------------
 // 向导页：目录选择页的常驻提示行
 // --------------------------------------------------------------------
 
@@ -180,15 +205,19 @@ end;
 
 procedure InitializeWizard();
 begin
-  // 默认安装目录：剩余空间最大的固定分区（覆盖 {userpf} 的系统盘默认）；
-  // 用户仍可在目录页自由修改
-  WizardForm.DirEdit.Text := GetLargestFreeDrive() + 'ESubDub\';
+  // 注意：不在此处覆盖 WizardForm.DirEdit.Text——DefaultDirName 已由
+  // {code:GetDefaultDir} 提供最大分区默认值，此处覆盖会把静默安装的
+  // /DIR= 命令行参数一并吞掉
 
-  // 目录选择页：剩余空间实时提示行（放在官方磁盘占用标签上方）
+  // [Files] 只内嵌数 MB 的 Velopack Setup.exe，官方磁盘占用标签
+  // （仅统计 [Files]）失去意义，隐藏之
+  WizardForm.DiskSpaceLabel.Visible := False;
+
+  // 目录选择页：剩余空间实时提示行（占用官方磁盘标签的位置）
   SpaceLabel := TLabel.Create(WizardForm);
   SpaceLabel.Parent := WizardForm.SelectDirPage;
   SpaceLabel.Left := WizardForm.DiskSpaceLabel.Left;
-  SpaceLabel.Top := WizardForm.DiskSpaceLabel.Top - ScaleY(28);
+  SpaceLabel.Top := WizardForm.DiskSpaceLabel.Top;
   SpaceLabel.Width := WizardForm.SelectDirPage.Width;
   SpaceLabel.Font.Style := [fsBold];
   SpaceLabel.Caption := '';

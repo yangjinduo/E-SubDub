@@ -96,6 +96,17 @@ def _crash_dialog(log_path: Path | None, exc_text: str) -> None:
 
 
 def main() -> int:
+    # Velopack 安装 / 卸载钩子：必须先于 QApplication 等一切启动逻辑
+    # 执行（安装 / 更新 / 卸载期间以钩子参数拉起本程序，App().run()
+    # 识别后执行对应动作并退出）。开发态 / 裸 onedir 下为无害空跑
+    # （仅打印一条 locator 提示），异常也不阻塞正常启动。
+    try:
+        from velopack import App as VelopackApp
+
+        VelopackApp().run()
+    except Exception:
+        pass
+
     log_path = _init_startup_log()
     logging.info("=== 启动 ===（exe=%s，argv=%s）", sys.executable, sys.argv)
     # 原生层崩溃（非法内存访问等）不是 Python 异常，try/except 抓不到：
@@ -141,6 +152,14 @@ def main() -> int:
         # 窗口已正常显示：取消启动卡死看门狗，避免运行 20 秒后
         # 误倾倒线程栈（faulthandler 的原生崩溃捕获保持注册，全程有效）
         faulthandler.cancel_dump_traceback_later()
+        # 启动后台静默检查更新（延迟数秒让窗口先稳定；不阻塞 UI，
+        # 无更新 / 检查失败均不打扰，发现新版本才弹确认，
+        # 非 Velopack 安装环境自动跳过——见 app/ui/updater_flow.py）
+        from PySide6.QtCore import QTimer
+
+        from app.ui.updater_flow import start_startup_check
+
+        QTimer.singleShot(2000, start_startup_check)
         logging.info("窗口已显示，进入事件循环")
         return app.exec()
     except Exception:

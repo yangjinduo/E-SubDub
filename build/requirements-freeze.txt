@@ -68,3 +68,5 @@ tqdm==4.70.1
 typer==0.27.2
 typing_extensions==4.16.0
 urllib3==2.8.0
+# 应用内自动更新（Velopack 原生库随冻结包分发）
+velopack==1.2.161

@@ -122,7 +122,43 @@ How to package (from the project root, in a terminal with the build venv activat
 .\build\build_windows.ps1 -SkipInstaller # Produce only the onedir distribution
 ```
 
-Artifacts: `build\dist\ESubDub\` (onedir distribution) and `build\dist\ESubDub-Setup-<version>.exe` (Inno Setup installer). The single source of truth for the version number is `APP_VERSION` in `app/core/config.py`; the script parses it from that file automatically.
+Artifacts: `build\dist\ESubDub\` (onedir distribution), `build\dist\update-feed\` (Velopack update feed: `releases.win.json` + full/delta nupkg + Setup.exe) and `build\dist\ESubDub-Setup-<version>.exe` (Inno Setup installer). The single source of truth for the version number is `APP_VERSION` in `app/core/config.py`; the script parses it from that file automatically.
+
+### Release Workflow (per new version)
+
+Before each release, update two files (the only places that carry version-specific content):
+
+| File | What to change |
+| --- | --- |
+| `app\core\config.py` | Bump `APP_VERSION` (e.g. `"0.1.1"`); it is the single source of truth for the whole chain |
+| `build\release-notes.md` | **Rewrite the whole file** with the notes for this version (do not append older entries: vpk embeds the entire file into the update package and the client dialog shows it verbatim) |
+
+**Option 1: cloud build (recommended)** — commit & push the changes, then tag to trigger `.github/workflows/release.yml`:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+CI validates that the tag matches `APP_VERSION` (the build fails otherwise), pulls the previous release with `vpk download github` to generate delta packages, builds, and publishes the Release via `vpk upload github --publish`. Note that `release-notes.md` must be **committed before tagging** (CI can only read pushed content).
+
+**Option 2: local build** — from the project root, in a terminal with the build venv activated:
+
+```powershell
+# 1. (optional) pull the previous release into the feed dir so vpk pack can generate deltas
+vpk download github --repoUrl https://github.com/yangjinduo/E-SubDub --outputDir build\dist\update-feed
+
+# 2. Full build
+.\build\build_windows.ps1
+
+# 3. Publish to GitHub Releases (needs a write-enabled token; or upload manually via the web UI)
+$env:GITHUB_TOKEN = '<your GitHub token>'
+vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed
+```
+
+For manual web upload, upload **all files** inside `build\dist\update-feed\` (`releases.win.json` + full/delta nupkg + `yangjinduo.E-SubDub-win-Setup.exe`) to the Release of the corresponding tag, overwriting same-named files.
+
+Once published, installed users receive incremental upgrades via the automatic background check at startup (or the manual "Check for Updates" in the settings dialog). Installed layout: the install root contains `current\` (the app, replaced wholesale on update) and `Update.exe` (the updater), while data directories such as `models\` sit beside `current\` and survive updates.
 
 ## Pipeline Stages
 

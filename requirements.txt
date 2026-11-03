@@ -67,6 +67,8 @@ transformers==5.17.0
 typer==0.27.2
 typing_extensions==4.16.0
 urllib3==2.8.0
+# 应用内自动更新（Velopack + GitHub Releases，见 app/core/updater.py）
+velopack==1.2.161
 
 # 人声分离 demucs（torch 2.14 无配套 torchaudio，用项目根目录的
 # torchaudio/ soundfile 垫片替代，切勿 pip install torchaudio）

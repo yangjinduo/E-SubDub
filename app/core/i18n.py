@@ -156,6 +156,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         ),
         "task.output_dir": "输出目录",
         "task.choose_output_dir": "选择输出目录",
+        "task.output_dir_placeholder": "必填：点击右侧 … 选择输出目录",
+        "task.output_dir_title": "设置输出目录",
+        "task.output_dir_required": (
+            "尚未设置输出目录，请在接下来弹出的窗口中选择成品保存位置。"
+        ),
         "task.subtitle.single": "单语字幕",
         "task.subtitle.bilingual_target": "双语字幕（目标语言在上）",
         "task.subtitle.bilingual_source": "双语字幕（源语言在上）",
@@ -251,6 +256,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "勾选后，任务执行、模型下载或环境搭建期间系统不会进入休眠"
             "（屏幕仍可自动关闭），防止长任务被中断。"
         ),
+        # ---- 应用内更新（Velopack + GitHub Releases） ----
+        "updater.check_button": "检查更新",
+        "updater.checking": "正在检查更新…",
+        "updater.up_to_date": "当前已是最新版本。",
+        "updater.unsupported": (
+            "当前环境不支持自动更新（仅正式安装版支持），"
+            "请前往 GitHub Releases 手动下载新版本。"
+        ),
+        "updater.available_title": "发现新版本",
+        "updater.available_text": (
+            "新版本 {version} 已发布{size}，是否立即下载并安装？\n"
+            "下载完成后将自动重启应用。"
+        ),
+        "updater.size_hint": "（约 {size} MB）",
+        "updater.release_notes": "更新内容：\n{notes}",
+        "updater.download_title": "下载更新",
+        "updater.downloading": "正在下载新版本 {version}… {pct}%",
+        "updater.restarting": "下载完成，正在安装更新并重启应用…",
+        "updater.download_failed": "下载更新失败：{error}",
+        "updater.apply_failed": "安装更新失败：{error}",
+        "updater.check_failed": "检查更新失败：{error}",
         # ---- ASR 校对对话框 ----
         "asr_review.title": "校对识别结果",
         "asr_review.heading": "核对识别文本",
@@ -657,6 +683,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         ),
         "task.output_dir": "Output directory",
         "task.choose_output_dir": "Choose output directory",
+        "task.output_dir_placeholder": "Required: click … on the right to choose a directory",
+        "task.output_dir_title": "Set output directory",
+        "task.output_dir_required": (
+            "No output directory set yet. Choose where to save the outputs "
+            "in the dialog that opens next."
+        ),
         "task.subtitle.single": "Monolingual subtitles",
         "task.subtitle.bilingual_target": "Bilingual (target language on top)",
         "task.subtitle.bilingual_source": "Bilingual (source language on top)",
@@ -754,6 +786,28 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "model downloads, or environment setup (the display may still turn off), "
             "so long-running jobs are not interrupted."
         ),
+        # ---- In-app updates (Velopack + GitHub Releases) ----
+        "updater.check_button": "Check for updates",
+        "updater.checking": "Checking for updates…",
+        "updater.up_to_date": "You are on the latest version.",
+        "updater.unsupported": (
+            "Automatic updates are unavailable in this environment "
+            "(installed versions only); please download new releases "
+            "from GitHub Releases manually."
+        ),
+        "updater.available_title": "Update available",
+        "updater.available_text": (
+            "Version {version} is available{size}. Download and install it now?\n"
+            "The app will restart automatically when the download finishes."
+        ),
+        "updater.size_hint": " (about {size} MB)",
+        "updater.release_notes": "Release notes:\n{notes}",
+        "updater.download_title": "Downloading update",
+        "updater.downloading": "Downloading version {version}… {pct}%",
+        "updater.restarting": "Download complete; installing the update and restarting…",
+        "updater.download_failed": "Failed to download the update: {error}",
+        "updater.apply_failed": "Failed to apply the update: {error}",
+        "updater.check_failed": "Failed to check for updates: {error}",
         # ---- ASR review dialog ----
         "asr_review.title": "Review transcription",
         "asr_review.heading": "Check transcribed text",
