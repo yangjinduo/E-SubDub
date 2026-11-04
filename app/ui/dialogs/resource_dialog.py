@@ -45,7 +45,14 @@ from PySide6.QtWidgets import (
 
 from app.core import sleep_guard
 from app.core.hardware import DeviceInfo, detect_device_standalone
-from app.core.i18n import SUPPORTED_LANGUAGES, get_language, set_language, tr
+from app.core.i18n import (
+    SUPPORTED_LANGUAGES,
+    get_language,
+    get_setting,
+    set_language,
+    set_setting,
+    tr,
+)
 from app.resources.deploy_log import deploy_log_path
 from app.resources.downloader import get_model_downloader
 from app.resources.env_setup import (
@@ -164,21 +171,33 @@ class SettingsDialog(QDialog):
         self._theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         pref_row.addWidget(self._theme_label)
         pref_row.addWidget(self._theme_combo)
-        # 检查更新（主题下拉右侧）：手动触发应用内更新检查
-        # （启动时另有后台静默检查，见 app/ui/updater_flow.py）
-        pref_row.addSpacing(24)
-        self._check_update_button = QPushButton(tr("updater.check_button"))
-        self._check_update_button.clicked.connect(self._on_check_update_clicked)
-        pref_row.addWidget(self._check_update_button)
         pref_row.addStretch(1)
         layout.addLayout(pref_row)
 
-        # ---- 有任务 / 下载运行时禁止系统休眠（防止长任务被休眠中断） ----
+        # ---- 更新与防休眠（同一行）：检查更新 + 加速镜像在左，防休眠右对齐 ----
+        # 检查更新：手动触发应用内更新检查（启动时另有后台静默检查，
+        # 见 app/ui/updater_flow.py）
+        toggles_row = QHBoxLayout()
+        toggles_row.setSpacing(16)
+        self._check_update_button = QPushButton(tr("updater.check_button"))
+        self._check_update_button.clicked.connect(self._on_check_update_clicked)
+        toggles_row.addWidget(self._check_update_button)
+        # 更新加速镜像（国内网络）：勾选后检查更新与更新包下载改走
+        # gh-proxy.com 镜像（updater.create_update_manager 构造时读取
+        # 该设置，切换后无需重启即生效）
+        self._mirror_check = QCheckBox(tr("settings.update_mirror"))
+        self._mirror_check.setToolTip(tr("settings.update_mirror_tooltip"))
+        self._mirror_check.setChecked(bool(get_setting("update_mirror", False)))
+        self._mirror_check.toggled.connect(self._on_mirror_toggled)
+        toggles_row.addWidget(self._mirror_check)
+        toggles_row.addStretch(1)
+        # 防休眠：任务 / 下载运行期间防止系统休眠中断长任务（行尾右对齐）
         self._sleep_check = QCheckBox(tr("settings.prevent_sleep"))
         self._sleep_check.setToolTip(tr("settings.prevent_sleep_tooltip"))
         self._sleep_check.setChecked(sleep_guard.is_enabled())
         self._sleep_check.toggled.connect(self._on_sleep_toggled)
-        layout.addWidget(self._sleep_check)
+        toggles_row.addWidget(self._sleep_check)
+        layout.addLayout(toggles_row)
 
         # 分隔线
         separator = QLabel()
@@ -589,6 +608,8 @@ class SettingsDialog(QDialog):
         self._deploy_all_button.setText(tr("settings.deploy_all"))
         self._sleep_check.setText(tr("settings.prevent_sleep"))
         self._sleep_check.setToolTip(tr("settings.prevent_sleep_tooltip"))
+        self._mirror_check.setText(tr("settings.update_mirror"))
+        self._mirror_check.setToolTip(tr("settings.update_mirror_tooltip"))
         if self._check_update_button.isEnabled():
             self._check_update_button.setText(tr("updater.check_button"))
         self._rebuild_resource_rows()
@@ -602,6 +623,14 @@ class SettingsDialog(QDialog):
         详见 app/core/sleep_guard.py。
         """
         sleep_guard.set_enabled(checked)
+
+    def _on_mirror_toggled(self, checked: bool) -> None:
+        """切换「更新加速镜像」：持久化设置，下次检查更新即按新源执行。
+
+        源的选择在 updater.create_update_manager() 构造时读取该设置，
+        切换后无需重启应用。
+        """
+        set_setting("update_mirror", checked)
 
     # ------------------------------------------------------------------ 下载
 

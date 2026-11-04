@@ -257,6 +257,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "勾选后，任务执行、模型下载或环境搭建期间系统不会进入休眠"
             "（屏幕仍可自动关闭），防止长任务被中断。"
         ),
+        "settings.update_mirror": "更新加速镜像（国内网络）",
+        "settings.update_mirror_tooltip": (
+            "勾选后，检查更新与更新包下载改经 gh-proxy.com 镜像加速，"
+            "适合直连 GitHub 慢或不稳定的网络。镜像为第三方公益服务，"
+            "如更新异常请取消勾选恢复官方源。"
+        ),
         # ---- 应用内更新（Velopack + GitHub Releases） ----
         "updater.check_button": "检查更新",
         "updater.checking": "正在检查更新…",
@@ -787,6 +793,13 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "When checked, the system will not go to sleep during task execution, "
             "model downloads, or environment setup (the display may still turn off), "
             "so long-running jobs are not interrupted."
+        ),
+        "settings.update_mirror": "Update mirror (for networks in China)",
+        "settings.update_mirror_tooltip": (
+            "When checked, update checks and package downloads go through the "
+            "gh-proxy.com mirror — useful where GitHub is slow or unreachable. "
+            "The mirror is a third-party community service; if updates fail, "
+            "uncheck to return to the official source."
         ),
         # ---- In-app updates (Velopack + GitHub Releases) ----
         "updater.check_button": "Check for updates",
