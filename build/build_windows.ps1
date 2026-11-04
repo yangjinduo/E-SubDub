@@ -238,10 +238,18 @@ if ($SkipInstaller) {
         '--icon', (Join-Path $ProjectRoot 'app\resources\logo\E-SubDub.ico')
     )
     # 更新说明：build\release-notes.md 存在时随包内嵌，客户端「检查更新」
-    # 弹窗展示的 NotesMarkdown 即来源于此（每次发版前更新该文件）
+    # 弹窗展示的 NotesMarkdown 即来源于此（每次发版前更新该文件）。
+    # vpk 会把文件原样内嵌（GitHub Release 正文同样取自它），因此 HTML
+    # 注释 <!-- ... --> 作为本地备注在打包前剔除：写入 work 目录的净化
+    # 副本再交给 vpk，本地文件中的注释不随包发布
     $ReleaseNotes = Join-Path $BuildDir 'release-notes.md'
     if (Test-Path $ReleaseNotes) {
-        $VpkArgs += @('--releaseNotes', $ReleaseNotes)
+        $NotesPublish = Join-Path $WorkDir 'release-notes-publish.md'
+        $NotesContent = [regex]::Replace((Get-Content -Raw $ReleaseNotes), '(?s)<!--.*?-->', '')
+        # 剥离注释后，清掉尾部因此孤立的分隔线（---）与空行
+        $NotesContent = $NotesContent.TrimEnd() -replace '(\r?\n\s*)*-{3,}\s*$', ''
+        [System.IO.File]::WriteAllText($NotesPublish, $NotesContent)
+        $VpkArgs += @('--releaseNotes', $NotesPublish)
     } else {
         Write-Warning "未找到 $ReleaseNotes，本次更新包不含更新说明"
     }

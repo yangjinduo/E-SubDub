@@ -145,7 +145,7 @@ tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.ta
 | 文件 | 修改内容 |
 | --- | --- |
 | `app\core\config.py` | `APP_VERSION` 改为新版本号（如 `"0.1.1"`），全链路唯一真值源 |
-| `build\release-notes.md` | **整文件重写**为当版更新说明（勿追加旧版内容：vpk 把整个文件内嵌进更新包，客户端「检查更新」弹窗原样展示） |
+| `build\release-notes.md` | **整文件重写**为当版更新说明（勿追加旧版内容：vpk 把整个文件内嵌进更新包，客户端「检查更新」弹窗与 GitHub Release 正文原样展示）；本地备注用 HTML 注释 `<!-- -->` 包裹，构建时自动剔除、不随包发布 |
 
 **方式一：云端发布（推荐）** —— 修改 commit 并 push 后打 tag，触发 `.github/workflows/release.yml` 自动完成构建与发布：
 

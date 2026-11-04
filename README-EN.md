@@ -131,7 +131,7 @@ Before each release, update two files (the only places that carry version-specif
 | File | What to change |
 | --- | --- |
 | `app\core\config.py` | Bump `APP_VERSION` (e.g. `"0.1.1"`); it is the single source of truth for the whole chain |
-| `build\release-notes.md` | **Rewrite the whole file** with the notes for this version (do not append older entries: vpk embeds the entire file into the update package and the client dialog shows it verbatim) |
+| `build\release-notes.md` | **Rewrite the whole file** with the notes for this version (do not append older entries: vpk embeds the entire file into the update package, shown verbatim in the client dialog and the GitHub Release body); local-only remarks can be wrapped in HTML comments (`<!-- -->`), which are stripped automatically at build time and never published |
 
 **Option 1: cloud build (recommended)** — commit & push the changes, then tag to trigger `.github/workflows/release.yml`:
 
