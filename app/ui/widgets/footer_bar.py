@@ -1,16 +1,18 @@
-"""主窗口底部页脚：左侧声音克隆合规提示（自动换行）+ 右侧意见反馈邮箱与开源声明入口。
+"""主窗口底部页脚：左侧声音克隆合规提示（自动换行）+ 右侧意见反馈邮箱、GitHub 仓库与开源声明入口。
 
-纯静态展示控件；「开源声明」为唯一交互（点击发信号，由主窗口打开声明窗口）。
-语言切换时随 MainWindow._build_ui() 整体重建，构造期取 tr() 即可跟随界面
-语言。左侧提示与声音克隆授权对话框（task_dialog.py）复用同一键
-main.voice_clone_text。
+静态展示控件之外有两处交互：「GitHub 仓库」点击直接用系统浏览器打开项目主页；
+「开源声明」发信号，由主窗口打开声明窗口。语言切换时随 MainWindow._build_ui()
+整体重建，构造期取 tr() 即可跟随界面语言。左侧提示与声音克隆授权对话框
+（task_dialog.py）复用同一键 main.voice_clone_text。
 """
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCursor
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QCursor, QDesktopServices
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 
 from app.core.i18n import tr
+
+GITHUB_REPO_URL = "https://github.com/yangjinduo/E-SubDub"
 
 
 class FooterBar(QFrame):
@@ -33,6 +35,14 @@ class FooterBar(QFrame):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+        # 中右：GitHub 仓库（链接样式按钮，系统浏览器打开项目主页）
+        self._github_button = QPushButton(tr("main.github_repo"))
+        self._github_button.setObjectName("footerGithub")
+        self._github_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._github_button.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(GITHUB_REPO_URL))
+        )
+
         # 最右：开源声明（链接样式按钮，打开 THIRD-PARTY-NOTICES 声明窗口）
         self._notice_button = QPushButton(tr("main.open_source_notice"))
         self._notice_button.setObjectName("footerNotice")
@@ -45,4 +55,5 @@ class FooterBar(QFrame):
         layout.setSpacing(12)
         layout.addWidget(self._notice_label, 1)
         layout.addWidget(self._feedback_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._github_button, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._notice_button, 0, Qt.AlignmentFlag.AlignVCenter)

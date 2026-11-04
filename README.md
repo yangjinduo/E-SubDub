@@ -12,6 +12,12 @@
 - 平台：Windows / macOS
 - 界面语言：简体中文 / English
 
+## 应用场景
+
+- **短剧出海与多语种译制**：批量导入剧集，自动完成多语种配音与双语字幕，助力短剧出海；也可将喜爱的电视剧译成正在学习的外语，让追剧变成外语学习素材。
+- **有声书批量制作**：提供一段参考音频即可克隆音色，将文本批量合成为有声书音频，并按每句实际时长同步生成 SRT。
+- **音视频字幕生成**：自动识别音视频中的人声，生成带时间轴的分句 SRT 字幕，省去手动听打。
+
 ### 生成效果演示
 - [演示视频1](https://www.bilibili.com/video/BV19ea76RE1A/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
 - [演示视频2](https://www.bilibili.com/video/BV1t1a767ECH/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
@@ -156,7 +162,7 @@ git push origin v0.1.1
 
 CI 校验 tag 与 `APP_VERSION` 一致（不一致直接失败）、`vpk download github` 拉取上一版生成增量包、构建后 `vpk upload github --publish` 发布 Release。注意 `release-notes.md` 必须**先提交再打 tag**（CI 只能读到已 push 的内容）。
 
-若 CI 构建失败：修复、commit、push 之后，删除旧 tag 重新打（tag 必须指向包含修复的新提交；若失败前 Release 已半生成，先在 GitHub 网页上删掉它）：
+若 CI 构建失败：修复、commit、push 之后，删除旧 tag 重新打（tag 必须指向包含修复的新提交）。**注意：删除 tag 不会删除 GitHub 上已生成的 Release**——若上次运行已发布出 v0.1.1 Release（哪怕后续步骤失败），重跑前必须先在 GitHub 网页 Releases 页面把它删掉（连同资产文件），否则 `vpk upload` 会报 "There is already an existing release tagged 'v0.1.1'" 拒绝覆盖。
 例如：
 ```bash
 git tag -d v0.1.1                 # 删除本地 tag
@@ -342,11 +348,12 @@ app/
 
 本项目使用、随包分发或运行期部署的全部开源软件、模型及其许可证，统一收录于 [THIRD-PARTY-NOTICES-CN.html](THIRD-PARTY-NOTICES-CN.html)（英文版：[THIRD-PARTY-NOTICES-EN.html](THIRD-PARTY-NOTICES-EN.html)；随安装包分发，应用内页脚「开源声明」入口按界面语言展示对应版本）。该声明用于履行 Apache-2.0 / MIT 等许可证的随附义务，并注明 PySide6（LGPLv3）对应源码的获取方式。依赖版本升级时请同步更新该文件：主程序冻结清单见 `build\requirements-freeze.txt`，子环境清单见 `app\resources\env_setup.py`。
 
-## 未完善功能
+## 待完善功能
 
-目前软件暂未实现视频硬字幕消除功能，该功能可依托 ProPainter、STTN 等视频修复模型，智能去除视频内嵌硬字幕，还原干净视频画面，进一步完善视频本地化配音、字幕制作全流程。​
+- **视频硬字幕消除**：可依托 ProPainter、STTN 等视频修复模型，智能去除视频内嵌硬字幕，还原干净视频画面，进一步完善视频本地化配音、字幕制作全流程。
+- **唇形同步**：可依托 LatentSync、MuseTalk 等唇形同步模型，让配音后的画面口型与译文语音自然吻合，进一步提升译制视频的观看体验。
 
-受限于本人设备显存资源不足，暂无法完成该功能的完整开发与实测适配。特此开源征集各位开发者、爱好者贡献代码，助力功能迭代完善，欢迎大家提交 PR 与 Issue，共同优化项目体验。
+受限于本人设备显存资源不足，暂无法完成上述功能的完整开发与实测适配。特此开源征集各位开发者、爱好者贡献代码，助力功能迭代完善，欢迎大家提交 PR 与 Issue，共同优化项目体验。
 
 ## 许可证
 

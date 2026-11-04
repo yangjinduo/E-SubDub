@@ -12,6 +12,12 @@ English | [简体中文](README.md)
 - Platforms: Windows / macOS
 - UI languages: 简体中文 / English
 
+## Use Cases
+
+- **Short-drama localization & multi-language dubbing**: batch-import episodes and automatically produce multi-language dubbing with bilingual subtitles — ideal for taking short dramas global. You can also translate your favorite TV series into the language you are learning and turn watching into foreign-language study material.
+- **Audiobook batch production**: provide a single reference audio to clone a voice, batch-synthesize texts into audiobook audio, with SRT subtitles generated from actual sentence durations.
+- **Audio/video subtitling**: automatically recognize speech in audio and video and generate timestamped, sentence-level SRT subtitles — no more manual transcription.
+
 ### Demo Videos
 - [Demo 1](https://www.bilibili.com/video/BV19ea76RE1A/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
 - [Demo 2](https://www.bilibili.com/video/BV1t1a767ECH/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
@@ -142,7 +148,7 @@ git push origin v0.1.1
 
 CI validates that the tag matches `APP_VERSION` (the build fails otherwise), pulls the previous release with `vpk download github` to generate delta packages, builds, and publishes the Release via `vpk upload github --publish`. Note that `release-notes.md` must be **committed before tagging** (CI can only read pushed content).
 
-If the CI build fails: fix, commit & push, then delete the old tag and re-create it (the tag must point to the new commit containing the fix; if a Release was half-created before the failure, delete it on the GitHub web UI first):
+If the CI build fails: fix, commit & push, then delete the old tag and re-create it (the tag must point to the new commit containing the fix). **Note: deleting the tag does NOT delete the GitHub Release** — if a previous run already published the v0.1.1 Release (even if later steps failed), you must delete it on the GitHub Releases page (including its assets) before re-running, otherwise `vpk upload` aborts with "There is already an existing release tagged 'v0.1.1'".
 For example：
 ```bash
 git tag -d v0.1.1                 # delete the local tag
@@ -328,9 +334,10 @@ All open-source software, models, and licenses used, distributed with the packag
 
 ## Known Limitations
 
-The hard-subtitle removal feature is not yet implemented. It could rely on video restoration models such as ProPainter and STTN to intelligently remove burned-in subtitles and restore a clean video, completing the full video localization and dubbing/subtitle production pipeline.
+- **Hard-subtitle removal**: not yet implemented. It could rely on video restoration models such as ProPainter and STTN to intelligently remove burned-in subtitles and restore a clean video, completing the full video localization and dubbing/subtitle production pipeline.
+- **Lip synchronization**: not yet implemented. It could rely on lip-sync models such as LatentSync and MuseTalk to align the actors' mouth movements with the dubbed audio, further improving the look and feel of localized videos.
 
-Due to limited GPU memory on my hardware, I have not been able to complete the development and testing of this feature. Contributions from developers and enthusiasts are warmly welcomed — feel free to open PRs and Issues to help iterate and improve the project.
+Due to limited GPU memory on my hardware, I have not been able to complete the development and testing of these features. Contributions from developers and enthusiasts are warmly welcomed — feel free to open PRs and Issues to help iterate and improve the project.
 
 ## License
 
