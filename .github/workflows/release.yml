@@ -121,7 +121,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
-          & $vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag '${{ github.ref_name }}' --outputDir 'build/dist/update-feed'
+          & $vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag '${{ github.ref_name }}' --outputDir 'build/dist/update-feed' --token $env:GITHUB_TOKEN
           if ($LASTEXITCODE -ne 0) { throw "vpk upload 失败（exit $LASTEXITCODE）" }
 
       - name: 归档 onedir 发行目录（供手动触发时下载验证）

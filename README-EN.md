@@ -160,12 +160,16 @@ vpk download github --repoUrl https://github.com/yangjinduo/E-SubDub --outputDir
 # 2. Full build
 .\build\build_windows.ps1
 
-# 3. Publish to GitHub Releases (needs a write-enabled token; or upload manually via the web UI)
-$env:GITHUB_TOKEN = '<your GitHub token>'
-vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed
+# 3. Publish to GitHub Releases (the token needs write access and must be
+#    passed via --token -- vpk does NOT read the GITHUB_TOKEN env var;
+#    or upload manually via the web UI)
+$token = '<your GitHub token>'
+vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed --token $token
 ```
 
 For manual web upload, upload **all files** inside `build\dist\update-feed\` (`releases.win.json` + full/delta nupkg + `yangjinduo.E-SubDub-win-Setup.exe`) to the Release of the corresponding tag, overwriting same-named files.
+
+Getting a GitHub token (only needed for the CLI upload in Option 2 — neither the web upload nor the cloud build needs one): open https://github.com/settings/personal-access-tokens/new and generate a fine-grained token — under Repository access select only the `E-SubDub` repository, and grant **Contents: Read and write** under Permissions. Copy the generated `github_pat_...` string and paste it into the `$token` variable above when publishing. Use the personal token only at command runtime and **never commit it to any file in the repo** (revoke it immediately on that page if leaked). The token is **not single-use**: within its expiration (selected at creation, 30 days by default, with longer or custom options) it can be reused for multiple releases — simply generate a new one once it expires; for infrequent releases, generating a short-lived token on demand each time is recommended.
 
 Once published, installed users receive incremental upgrades via the automatic background check at startup (or the manual "Check for Updates" in the settings dialog). Installed layout: the install root contains `current\` (the app, replaced wholesale on update) and `Update.exe` (the updater), while data directories such as `models\` sit beside `current\` and survive updates.
 

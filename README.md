@@ -174,12 +174,15 @@ vpk download github --repoUrl https://github.com/yangjinduo/E-SubDub --outputDir
 # 2. 完整构建
 .\build\build_windows.ps1
 
-# 3. 发布到 GitHub Release（需有写权限的 token；或改用手动网页上传）
-$env:GITHUB_TOKEN = '<你的 GitHub Token>'
-vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed
+# 3. 发布到 GitHub Release（token 需有写权限，经 --token 传入——
+#    vpk 不读 GITHUB_TOKEN 环境变量；或改用手动网页上传）
+$token = '<你的 GitHub Token>'
+vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed --token $token
 ```
 
 手动网页上传时，把 `build\dist\update-feed\` 内**全部文件**（`releases.win.json` + 全量/增量 nupkg + `yangjinduo.E-SubDub-win-Setup.exe`）上传到对应 tag 的 Release，覆盖同名旧文件。
+
+GitHub Token 获取（仅方式二的命令行上传需要，网页上传和云端发布都不需要）：打开 https://github.com/settings/personal-access-tokens/new 生成 Fine-grained token——Repository access 只选 `E-SubDub` 仓库，Permissions 里给 **Contents: Read and write**；生成后复制 `github_pat_` 开头的串，发布时贴进上面的 `$token` 变量。个人 token 只在运行命令时临时使用，**切勿写进任何文件提交到仓库**（不慎泄露立即回该页面撤销）。token **不是一次性的**：有效期内（生成时可选，默认 30 天，也可选更长或自定义日期）可反复用于多次发布，到期后重新生成一个即可；发版频率低的话，建议每次现用现生成短有效期 token。
 
 发布后，已安装用户启动时后台自动检查（或设置窗口手动「检查更新」）即可增量升级。安装版布局：安装根下 `current\`（程序，随更新整体替换）与 `Update.exe`（更新器），`models\` 等数据目录与 `current\` 平级、跨更新保留。
 
