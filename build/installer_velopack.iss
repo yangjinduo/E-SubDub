@@ -64,7 +64,9 @@ Compression=lzma2/max
 SolidCompression=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 语言文件随仓库自带（build\innolang\）：CI 上 choco 安装的 Inno Setup
+; 不含 ChineseSimplified.isl，不能依赖 "compiler:Languages\..." 路径
+Name: "chinesesimplified"; MessagesFile: "{#SourcePath}\innolang\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked

@@ -142,6 +142,15 @@ git push origin v0.1.1
 
 CI validates that the tag matches `APP_VERSION` (the build fails otherwise), pulls the previous release with `vpk download github` to generate delta packages, builds, and publishes the Release via `vpk upload github --publish`. Note that `release-notes.md` must be **committed before tagging** (CI can only read pushed content).
 
+If the CI build fails: fix, commit & push, then delete the old tag and re-create it (the tag must point to the new commit containing the fix; if a Release was half-created before the failure, delete it on the GitHub web UI first):
+For example：
+```bash
+git tag -d v0.1.1                 # delete the local tag
+git push origin :refs/tags/v0.1.1 # delete the remote tag
+git tag v0.1.1                    # re-create on the current (fixed) commit
+git push origin v0.1.1            # re-trigger CI
+```
+
 **Option 2: local build** — from the project root, in a terminal with the build venv activated:
 
 ```powershell

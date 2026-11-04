@@ -156,6 +156,15 @@ git push origin v0.1.1
 
 CI 校验 tag 与 `APP_VERSION` 一致（不一致直接失败）、`vpk download github` 拉取上一版生成增量包、构建后 `vpk upload github --publish` 发布 Release。注意 `release-notes.md` 必须**先提交再打 tag**（CI 只能读到已 push 的内容）。
 
+若 CI 构建失败：修复、commit、push 之后，删除旧 tag 重新打（tag 必须指向包含修复的新提交；若失败前 Release 已半生成，先在 GitHub 网页上删掉它）：
+例如：
+```bash
+git tag -d v0.1.1                 # 删除本地 tag
+git push origin :refs/tags/v0.1.1 # 删除远端 tag（触发不了任何构建）
+git tag v0.1.1                    # 在当前已含修复的提交上重新打
+git push origin v0.1.1            # 重新触发 CI
+```
+
 **方式二：本地构建发布** —— 项目根、已激活构建 venv 的终端：
 
 ```powershell
