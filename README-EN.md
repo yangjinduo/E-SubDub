@@ -49,7 +49,7 @@ English | [简体中文](README.md)
 
 - Python 3.13
 - NVIDIA GPU (optional, CUDA acceleration; automatically falls back to CPU without one, which is slower)
-- Disk space: about 20+ GB
+- Disk space: about 16 GB
 
 ### Installation & Launch
 

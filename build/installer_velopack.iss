@@ -8,7 +8,7 @@
 ; 混合方案（替代旧版 Inno 直装 onedir 的 installer.iss）：
 ;   1. 保留向导的磁盘空间检测 / 分区选择 / 每用户安装能力：
 ;      默认选剩余空间最大的固定分区（InitializeWizard /
-;      GetLargestFreeDrive），目标分区剩余 < 25 GB 阻止安装
+;      GetLargestFreeDrive），目标分区剩余 < 18 GB 阻止安装
 ;      （NextButtonClick），目录页常驻剩余空间实时提示行；
 ;   2. [Files] 把 vpk pack 产出的 Velopack Setup.exe 内嵌到 {tmp}，
 ;      [Run] 以 --installto "{app}" --silent 静默落盘到用户所选目录
@@ -31,9 +31,10 @@
 #define VeloSetupPath "..\dist\update-feed\yangjinduo.E-SubDub-win-Setup.exe"
 #endif
 
-; 安装 + 应用内部署（模型约 15 GB + 双推理虚拟环境数 GB）共需的
-; 磁盘空间下限（GB），低于此值阻止安装
-#define RequiredSpaceGB 25
+; 安装 + 应用内部署完成共需约 16 GB（模型 ~12.7 + 双推理虚拟
+; 环境 ~2.7 + 程序 ~0.8）；再留约 2 GB 运行余量，目标分区剩余
+; 低于 18 GB 时阻止安装
+#define RequiredSpaceGB 18
 
 [Setup]
 AppId={{5A1F0E2B-3C4D-4E5F-8A9B-6C7D8E9F0A1B}
@@ -189,7 +190,7 @@ begin
     Exit;
   end;
   SpaceLabel.Caption :=
-    Format('目标分区剩余空间：%.1f GB（安装 + 部署完成后共需约 25 GB）', [G]);
+    Format('目标分区剩余空间：%.1f GB（安装 + 部署完成后共需约 16 GB）', [G]);
   if G < {#RequiredSpaceGB} then
     SpaceLabel.Font.Color := clRed
   else
@@ -228,7 +229,7 @@ begin
 end;
 
 // --------------------------------------------------------------------
-// < 25 GB 阻止安装
+// < 18 GB 阻止安装
 // --------------------------------------------------------------------
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -247,7 +248,7 @@ begin
     else if G < {#RequiredSpaceGB} then
     begin
       MsgBox(
-        Format('目标分区剩余空间仅 %.1f GB，不足所需的 25 GB。'#13#10#13#10 +
+        Format('目标分区剩余空间仅 %.1f GB，不足所需的 18 GB。'#13#10#13#10 +
           '请先清理该分区，或返回上一步选择剩余空间充足的其他分区。', [G]),
         mbError, MB_OK);
       Result := False;
