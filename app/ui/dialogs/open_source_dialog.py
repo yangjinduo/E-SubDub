@@ -43,6 +43,7 @@ _COLOR_TOKEN_MAP = {
     "#9CA3AF": "text_faint",   # 页脚弱化文字
     "#F3F4F6": "window_bg",    # 表头行底色
     "#E5E7EB": "card_border",  # 表格边框
+    "#F9FAFB": "card_bg",      # 附录许可证全文 pre 块底色（bilibili 协议附录）
 }
 
 

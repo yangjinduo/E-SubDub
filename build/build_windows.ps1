@@ -188,6 +188,20 @@ Copy-Item -Force `
           (Join-Path $ProjectRoot 'THIRD-PARTY-NOTICES-EN.html') `
     -Destination $AppDist
 
+# 用户协议与免责声明随包分发（legal\ 四份 txt：EULA/disclaimer 各中英
+# 一份）。放 onedir 根（与 exe 同目录）而非经 Inno [Files] 落 {app}：
+# 应用实际运行于 {app}\current\，与 exe 同目录便于应用内「免责声明」
+# 入口按 exe 旁路径读取（同「开源声明」的定位逻辑）；vpk 原生
+# Setup.exe / Portable 安装的用户同样拿得到；且随 Velopack 更新整体
+# 替换 current\，协议版本自动跟随应用刷新。文件须保持 UTF-8 带 BOM
+# （Inno 许可页与运行期读取均依赖），修改时勿另存为 ANSI。
+Copy-Item -Force `
+    -Path (Join-Path $ProjectRoot 'legal\EULA-zh.txt'), `
+          (Join-Path $ProjectRoot 'legal\EULA-en.txt'), `
+          (Join-Path $ProjectRoot 'legal\DISCLAIMER-zh.txt'), `
+          (Join-Path $ProjectRoot 'legal\DISCLAIMER-en.txt') `
+    -Destination $AppDist
+
 # 便携 CPython → 发行目录 runtime\python（env_setup 创建 venv 依赖它）；
 # Copy-Item 不创建中间目录，先显式建 runtime
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDist 'runtime') | Out-Null

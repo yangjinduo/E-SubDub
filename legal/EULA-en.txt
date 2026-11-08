@@ -1,0 +1,104 @@
+﻿E-SubDub End User License Agreement (EULA)
+
+Version: v1.0    Effective date: November 7, 2026
+
+IMPORTANT: This Agreement is a legal agreement between you and the copyright holder of this software (the "Developer") covering the E-SubDub installer and its bundled components. Please read it in full before installing, in particular Section 3 (Restrictions on Use) and Section 5 (Disclaimer), which set out your obligations and the allocation of risk. By clicking "I accept the agreement", or by continuing to install or run this software, you confirm that you have read, understood and agree to be bound by all of its terms. If you do not agree, click "Cancel" to exit the installer and delete the downloaded file.
+
+1. Definitions
+
+1.1 "Software" means the E-SubDub desktop application, including the program files in the installer, the bundled FFmpeg, third-party runtimes and components, samples and documentation, and any version subsequently delivered through automatic updates.
+
+1.2 "Developer" means the copyright holder of the Software and its authorized distributors. Contact details are in Section 9.
+
+1.3 "Generated Content" means dubbing audio, synthesized speech, transcription text, translated text and subtitle files produced with the Software, together with the packaged audio or video deliverables.
+
+1.4 "Voice Cloning" means the Software's function of synthesizing speech whose timbre resembles a reference audio you supply; it is an application of deep synthesis technology.
+
+2. Scope of License
+
+2.1 Source code. The source code of the Software is released under the Apache License 2.0 ("Apache-2.0"), and anyone may use, modify and redistribute it under that license. This Agreement does not restrict, replace or diminish any right Apache-2.0 grants you in the source code; as to the source code, Apache-2.0 prevails over this Agreement to the extent of any conflict. This Agreement governs only the binary programs distributed in the installer, the bundled third-party components, and your conduct when using the Software's functions.
+
+2.2 Installer license. The Developer grants you a free, non-exclusive, non-transferable license to install and run the Software on devices you own or control, for personal study, research and lawful commercial creation. You may make a reasonable number of copies for backup purposes.
+
+2.3 Local, offline nature. The Software is a local, offline tool and provides no cloud service. Except for the network activity described in Section 6, the Developer neither hosts, receives nor stores your input materials or Generated Content.
+
+2.4 Reservation of rights. All rights not expressly granted are reserved by the Developer. This Agreement grants you no right to use the "E-SubDub" name or marks for commercial promotion, other than fair use permitted by Section 6 of Apache-2.0 and objectively descriptive references.
+
+3. Restrictions on Use (core provisions — please read carefully)
+
+3.1 Lawful-rights precondition. You may use Voice Cloning only where you hold lawful rights to every audio and video material, audio recording and text you process, and to the voice of every individual appearing in them, or where you have obtained the right holder's express authorization (including authorization for AI synthesis and public release). You represent and warrant this precondition at the first use of that function and on a continuing basis.
+
+3.2 Prohibited conduct. You must not use the Software, or its Generated Content, to:
+  (a) synthesize or imitate the voice of any political figure, public figure, or any natural person without authorization;
+  (b) create or disseminate content that insults, defames, discriminates against or harasses others, or harms their reputation or personality rights;
+  (c) commit fraud, impersonate any person, make false claims, or engage in any other unlawful or criminal activity;
+  (d) create or disseminate false information or fake news, or content that may cause public panic or disrupt public order;
+  (e) infringe any copyright, related right, portrait right, voice right, trademark right, privacy right or personal-information right of others;
+  (f) create improper content involving minors, or content that victimizes minors;
+  (g) endanger national security, disclose state secrets, or create any other content prohibited by law or administrative regulation;
+  (h) remove, tamper with or forge any AI-generated-content label required by law, or otherwise evade labeling obligations;
+  (i) engage in unlawful deepfake-related activity, or violate the laws and regulations of your jurisdiction concerning deep synthesis or generative artificial intelligence.
+
+3.3 Film, television and published material. The Software supports batch import of episodes for dubbing and subtitling. You are responsible for securing the rights, or the right holder's authorization, to translate, dub, reproduce and distribute any work you import. The Software supplies and bundles no film or television material, and makes no determination or warranty as to the licensing status of any work.
+
+3.4 Labeling obligations. Under the Measures for the Labeling of AI-Generated Synthetic Content of the People's Republic of China and the rules of distribution platforms, when you make Generated Content available to the public you must add a conspicuous explicit label such as "AI-generated", by voice prompt, audio rhythm cue or textual notice, and must not remove, tamper with or forge the implicit labels in file metadata. The Software writes an "AI dubbing" track title into packaged deliverables; this is an aid only and does not relieve you of your statutory labeling obligations.
+
+3.5 Model restrictions. Models bundled or invoked by the Software, including IndexTTS-2.5 and MOSS-Transcribe-Diarize, are subject to their own license terms. You must not use the Software or its Generated Content to train, fine-tune or distill any other commercial artificial-intelligence model. If you or your affiliates had more than 100 million monthly active users in the preceding calendar month, or annual revenue exceeding RMB 1 billion in the preceding calendar year, you must obtain a separate license from the respective model right holder.
+
+3.6 High-risk scenarios. Output may contain recognition errors, translation drift, audio-video desynchronization or timbre distortion. The Software must not be used for medical diagnosis, forensic investigation, financial decision-making, autonomous driving, control of critical infrastructure, military purposes, or any other high-risk scenario, nor for news broadcasting or similar purposes demanding strict accuracy without human verification.
+
+4. Intellectual Property
+
+4.1 Copyright in the Software belongs to the Developer. The source code is licensed under Apache-2.0, as set out in the LICENSE file of the project repository.
+
+4.2 Rights in your input materials remain with you or their right holders. The Developer acquires no rights in your input materials or Generated Content by virtue of your use of the Software.
+
+4.3 Title to, and all legal responsibility for, Generated Content rests with you. To the extent permitted by law, the Developer asserts no rights in Generated Content.
+
+4.4 Third-party components. The third-party open-source software, models and licenses distributed with, or deployed at runtime by, the Software are fully listed in THIRD-PARTY-NOTICES-EN.html (Chinese edition: THIRD-PARTY-NOTICES-CN.html) in the installation directory. That file forms an integral part of this Agreement and its license conditions apply to you.
+
+5. Disclaimer
+
+5.1 Provided "as is". The Software and all third-party components are provided "AS IS", without any express or implied warranty, including warranties of merchantability, fitness for a particular purpose, non-infringement, absence of errors, uninterrupted operation, accuracy, reliability or stability.
+
+5.2 No assurance given. The Developer does not warrant that the Software will meet all of your requirements; that network-dependent steps such as model download, automatic runtime-environment setup and the llama.cpp inference service will always be available; that third-party platform interfaces or model-hosting services will remain available; or that Generated Content will meet any standard of quality, duration, voice similarity or lip-sync fidelity.
+
+5.3 Human review required. Speech recognition, machine translation, voice cloning and duration alignment are probabilistic technologies and may produce erroneous, incomplete or unintended output. You must complete human review before public release or commercial use, and bear full responsibility for the content you publish.
+
+5.4 No liability of third-party right holders. Models such as IndexTTS-2.5 bundled with the Software are released by third parties. The Developer is not the copyright holder of those models; their right holders have not endorsed, warranted or guaranteed the Software and assume no liability for it or for its output.
+
+5.5 Limitation of liability. To the maximum extent permitted by applicable law, the Developer shall not be liable for any indirect, incidental, special, punitive or consequential damages arising from the use of, or inability to use, the Software, including lost profits, lost data, business interruption, reputational harm, third-party claims, administrative proceedings or criminal exposure. In no event shall the Developer's aggregate liability exceed the amount you actually paid for the Software (which is zero where the Software is distributed free of charge).
+
+5.6 Non-excludable liability. Nothing in this Section excludes or limits any liability that may not be excluded or limited by law, including liability for property loss caused by intent or gross negligence, and statutory liability for personal injury.
+
+6. Privacy and Data
+
+6.1 All speech recognition, translation, voice cloning, mixing and packaging run on your local device.
+
+6.2 The Software's network activity is limited to: downloading model weights from ModelScope; checking for and downloading software updates from GitHub; downloading the llama.cpp and portable CPython runtimes. Those requests disclose your network address and client information to the respective providers, whose privacy policies apply.
+
+6.3 The Software does not collect or upload your audio/video materials, text or Generated Content, and contains no analytics, telemetry or advertising components.
+
+7. Changes and Termination
+
+7.1 The Developer may revise this Agreement in line with version updates, and a revised Agreement takes effect with the installation or update of the new version. Continued use constitutes acceptance of the revision.
+
+7.2 If you breach this Agreement, the license granted to you terminates automatically; you must immediately stop using the Software and delete it together with its Generated Content.
+
+7.3 Termination does not affect the continuing validity of Sections 4, 5 and 8.
+
+8. Governing Law and Dispute Resolution
+
+8.1 This Agreement is governed by the laws of the People's Republic of China (excluding, for the purposes of this Agreement, the laws of the Hong Kong SAR, the Macao SAR and the Taiwan region).
+
+8.2 The parties shall first seek to resolve any dispute arising from this Agreement through friendly negotiation; failing that, either party may bring an action before the competent people's court at the Developer's domicile.
+
+8.3 If any provision is held invalid or unenforceable, the remaining provisions remain in full force and effect.
+
+9. Miscellaneous
+
+9.1 This Agreement is written in Simplified Chinese, under which it is concluded and effective. The English version is provided for convenience only; in case of ambiguity or conflict, the Simplified Chinese version prevails.
+
+9.2 Notices, objections and enquiries relating to this Agreement may be submitted through the project issue tracker: https://github.com/yangjinduo/E-SubDub/issues
+
+(End of Agreement)

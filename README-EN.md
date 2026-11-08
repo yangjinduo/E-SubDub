@@ -132,12 +132,13 @@ Artifacts: `build\dist\ESubDub\` (onedir distribution), `build\dist\update-feed\
 
 ### Release Workflow (per new version)
 
-Before each release, update two files (the only places that carry version-specific content):
+Before each release, check the following files (the only places that carry version-specific content):
 
 | File | What to change |
 | --- | --- |
 | `app\core\config.py` | Bump `APP_VERSION` (e.g. `"0.1.1"`); it is the single source of truth for the whole chain |
 | `build\release-notes.md` | **Rewrite the whole file** with the notes for this version (do not append older entries: vpk embeds the entire file into the update package, shown verbatim in the client dialog and the GitHub Release body); local-only remarks can be wrapped in HTML comments (`<!-- -->`), which are stripped automatically at build time and never published |
+| `legal\` agreements | Only when the agreements change **substantively** (not typo fixes): bump the version number in the first line of each file and mention "User agreement / disclaimer updated" in `release-notes.md` so the update dialog surfaces it. Keep the files **UTF-8 with BOM** (the Inno license page depends on it); never re-save them as ANSI |
 
 **Option 1: cloud build (recommended)** — commit & push the changes, then tag to trigger `.github/workflows/release.yml`:
 
@@ -292,11 +293,16 @@ app/
 | Development | `build\dist\`, `build\work\` | Build artifacts and Nuitka intermediate directories (gitignored) |
 | Development | `venv/` | Main development virtual environment |
 | Development | `requirements.txt`, `.gitignore`, `安装引导打包阶段注意事项.TXT` | Dependency list / packaging-phase notes |
+| Development | `legal\` | EULA and disclaimer, Chinese & English (referenced by the installer license page, bundled with the distribution) |
 | Testing | `test/` | e2e smoke tests, TTS probe scripts + test videos (gitignored) |
 
 ## Voice Cloning Notice
 
 The voice cloning features of this software (video dubbing and text-to-speech) may only be used when you hold the legal right to use the voice in the original audio, and the generated dubbing and speech may only be used for lawful purposes. An authorization confirmation dialog is shown on first use.
+
+The complete legal documents live in the [legal/](legal/) directory: [End User License Agreement (Chinese)](legal/EULA-zh.txt) and [Notice & Disclaimer (Chinese)](legal/DISCLAIMER-zh.txt) (English editions: [legal/EULA-en.txt](legal/EULA-en.txt), [legal/DISCLAIMER-en.txt](legal/DISCLAIMER-en.txt); the installer wizard license page and the install directory ship the same versions).
+
+> **IndexTTS-2.5 model license statement**: This software integrates IndexTTS-2.5 (bilibili indextts2), which is governed by the bilibili Model Use License Agreement (full text in the Appendix of [THIRD-PARTY-NOTICES-EN.html](THIRD-PARTY-NOTICES-EN.html)). Pursuant to Section 4.1(a) of that Agreement: any modifications made to the original model in this software are not connected to bilibili, the original right-holder; the original right-holder does not endorse, warrant, or guarantee this software or its derivative works, and assumes no liability for them.
 
 ## Acknowledgements
 
@@ -334,10 +340,11 @@ All open-source software, models, and licenses used, distributed with the packag
 
 ## Known Limitations
 
+- **Separate timbre and emotion references**: a single reference audio currently serves both voice cloning and emotion, while IndexTTS-2.5 itself supports specifying different reference files for timbre and for emotion. Not yet implemented for lack of immediate demand; extending to dual-reference input would decouple timbre reuse from emotion customization.
 - **Hard-subtitle removal**: not yet implemented. It could rely on video restoration models such as ProPainter and STTN to intelligently remove burned-in subtitles and restore a clean video, completing the full video localization and dubbing/subtitle production pipeline.
 - **Lip synchronization**: not yet implemented. It could rely on lip-sync models such as LatentSync and MuseTalk to align the actors' mouth movements with the dubbed audio, further improving the look and feel of localized videos.
 
-Due to limited GPU memory on my hardware, I have not been able to complete the development and testing of these features. Contributions from developers and enthusiasts are warmly welcomed — feel free to open PRs and Issues to help iterate and improve the project.
+Of these, hard-subtitle removal and lip synchronization cannot be completed and field-tested on my hardware due to limited GPU memory. Contributions from developers and enthusiasts are warmly welcomed — feel free to open PRs and Issues to help iterate and improve the project.
 
 ## License
 

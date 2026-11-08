@@ -63,6 +63,11 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 Compression=lzma2/max
 SolidCompression=yes
+; 安装向导许可协议页：用户必须点"我接受"才能继续（EULA-zh/en 已随
+; onedir 落盘 {app}\current\ 供装后查阅，Inno 页面只放中文版向导语言
+; 一致；/SILENT、/VERYSILENT 与 --installto 静默安装下本页自动视为
+; 已接受）。文件为 UTF-8 带 BOM（否则许可页乱码），见 legal\ 目录
+LicenseFile=..\legal\EULA-zh.txt
 
 [Languages]
 ; 语言文件随仓库自带（build\innolang\）：CI 上 choco 安装的 Inno Setup
