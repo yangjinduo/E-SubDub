@@ -27,8 +27,8 @@
 #      并中止）：
 #        winget install Microsoft.DotNet.SDK.8
 #        dotnet tool install -g vpk
-#   3. （可选）Inno Setup 6——缺失时跳过 Inno 首装包步骤（feed 保留
-#      vpk 原生 Setup.exe）；ISCC 依次从 PATH 与标准安装位置探测：
+#   3. Inno Setup 6（必需——唯一安装入口 Inno 首装包及其许可协议页
+#      依赖它，缺失即中止构建）；ISCC 依次从 PATH 与标准安装位置探测：
 #        winget install -e --id JRSoftware.InnoSetup
 #   4. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时
 #      Nuitka 经 --assume-yes-for-downloads 自动下载 MinGW64 也可用。
@@ -191,10 +191,10 @@ Copy-Item -Force `
 # 用户协议与免责声明随包分发（legal\ 四份 txt：EULA/disclaimer 各中英
 # 一份）。放 onedir 根（与 exe 同目录）而非经 Inno [Files] 落 {app}：
 # 应用实际运行于 {app}\current\，与 exe 同目录便于应用内「免责声明」
-# 入口按 exe 旁路径读取（同「开源声明」的定位逻辑）；vpk 原生
-# Setup.exe / Portable 安装的用户同样拿得到；且随 Velopack 更新整体
-# 替换 current\，协议版本自动跟随应用刷新。文件须保持 UTF-8 带 BOM
-# （Inno 许可页与运行期读取均依赖），修改时勿另存为 ANSI。
+# 入口按 exe 旁路径读取（同「开源声明」的定位逻辑）；且随 Velopack
+# 更新整体替换 current\，协议版本自动跟随应用刷新。文件须保持 UTF-8
+# 带 BOM（运行期读取依赖），修改时勿另存为 ANSI。安装向导许可页不用
+# 这四份 txt——它用 6.4 阶段生成的加粗 RTF（496 条格式条款提示义务）。
 Copy-Item -Force `
     -Path (Join-Path $ProjectRoot 'legal\EULA-zh.txt'), `
           (Join-Path $ProjectRoot 'legal\EULA-en.txt'), `
@@ -233,7 +233,9 @@ if ($SkipInstaller) {
     }
 
     # ---- 6.2 vpk pack：产出更新 feed（releases.win.json + 全量 nupkg +
-    #      原生 Setup.exe + Portable.zip）。增量 delta 需 feed 中已存在
+    #      原生 Setup.exe；--noPortable 不产便携 zip——便携包解压即用、
+    #      绕过 Inno 许可协议页，本项目只保留 Inno 首装包一种安装入口）。
+    #      增量 delta 需 feed 中已存在
     #      上一版包：本地构建前可手动执行 vpk download github 拉取上一
     #      版；CI 由 release.yml 自动拉取。首版（或空 feed）只有全量包 ----
     $PackId = 'yangjinduo.E-SubDub'
@@ -248,6 +250,8 @@ if ($SkipInstaller) {
         '--mainExe', 'ESubDub.exe',
         '--packTitle', 'E-SubDub',
         '--channel', 'win',
+        # 不产 Portable.zip：便携包无许可协议页，与"唯一安装入口"冲突
+        '--noPortable',
         '--outputDir', $UpdateFeedDir,
         '--icon', (Join-Path $ProjectRoot 'app\resources\logo\E-SubDub.ico')
     )
@@ -288,21 +292,79 @@ if ($SkipInstaller) {
         }
     }
     if (-not $IsccExe) {
-        Write-Warning "未找到 ISCC（Inno Setup 6），已跳过 Inno 首装包（feed 保留 vpk 原生 Setup.exe）。安装后重跑：winget install -e --id JRSoftware.InnoSetup"
+        throw @"
+未找到 ISCC（Inno Setup 6）。本项目唯一安装入口是带许可协议页的 Inno
+首装包，ISCC 缺失时中止构建（不再回退 vpk 原生 Setup.exe——它没有
+许可协议页，无法履行《民法典》496 条的格式条款提示义务）。请先安装后重跑：
+  winget install -e --id JRSoftware.InnoSetup
+"@
     } else {
-        # ---- 6.4 Inno 首装包：向导（磁盘空间检测 / 分区选择 / 每用户
+        # ---- 6.4 EULA RTF：构建期从 legal\EULA-zh.txt 生成带加粗的 RTF
+        #      交 Inno 许可页渲染（许可页为 RichEdit 控件，识别到 RTF
+        #      开头 {\rtf 才按富文本渲染，\b 加粗生效）。依《民法典》
+        #      第 496 条，免除/减轻己方责任、加重对方责任、限制对方
+        #      主要权利的格式条款（第三条使用限制、第五条免责声明）须
+        #      以加粗等合理方式提示，纯 txt 无格式能力。txt 仍是唯一
+        #      真值源（随包分发的裸文本形态不变），RTF 为构建中间产物
+        #      不进仓库；输出为纯 ASCII（非 ASCII 全部 \u 转义）且不
+        #      带 BOM——BOM 会破坏 "{\rtf" 文件头识别 ----
+        function ConvertTo-RtfEscape {
+            param([string]$Text)
+            $sb = [System.Text.StringBuilder]::new()
+            foreach ($ch in $Text.ToCharArray()) {
+                if ($ch -eq '\' -or $ch -eq '{' -or $ch -eq '}') {
+                    [void]$sb.Append('\').Append($ch)
+                } elseif ([int]$ch -lt 128) {
+                    [void]$sb.Append($ch)
+                } else {
+                    # \uc1 语义下 '?' 为单字符回退占位（RichEdit 读 \u 时跳过）
+                    $code = [int]$ch
+                    if ($code -gt 32767) { $code -= 65536 }
+                    [void]$sb.Append('\u').Append($code).Append('?')
+                }
+            }
+            $sb.ToString()
+        }
+
+        $EulaRtfPath = Join-Path $WorkDir 'EULA-zh.rtf'
+        $EulaLines = ([System.IO.File]::ReadAllText((Join-Path $ProjectRoot 'legal\EULA-zh.txt')) -replace "`r`n", "`n").Trim() -split "`n"
+        $EulaRtfSb = [System.Text.StringBuilder]::new()
+        [void]$EulaRtfSb.Append("{\rtf1\ansi\deff0{\fonttbl{\f0\fnil\fcharset134 SimSun;}}\uc1`n")
+        $InKeySection = $false
+        foreach ($EulaLine in $EulaLines) {
+            # 加粗范围：重要提示段 + 第三条（使用限制）+ 第五条（免责
+            # 声明）全文（含各自小节），其余章节标题关闭加粗状态
+            if ($EulaLine -match '^三、使用限制' -or $EulaLine -match '^五、免责声明') {
+                $InKeySection = $true
+            } elseif ($EulaLine -match '^[一二四六七八九]、') {
+                $InKeySection = $false
+            }
+            if ($InKeySection -or $EulaLine.StartsWith('重要提示：')) {
+                [void]$EulaRtfSb.Append('{\b ').Append((ConvertTo-RtfEscape $EulaLine)).Append("\par}`n")
+            } else {
+                # 注意此处 \par 后没有 }：非加粗行无开组，多余的 } 会提前
+                # 闭合整个 RTF 文档组，后续内容全部不被渲染
+                [void]$EulaRtfSb.Append((ConvertTo-RtfEscape $EulaLine)).Append("\par`n")
+            }
+        }
+        [void]$EulaRtfSb.Append('}')
+        [System.IO.File]::WriteAllText($EulaRtfPath, $EulaRtfSb.ToString(), [System.Text.Encoding]::ASCII)
+        Write-Host "== EULA RTF 已生成（加粗重要提示 + 第三/五条全文）：$EulaRtfPath ==" -ForegroundColor Green
+
+        # ---- 6.5 Inno 首装包：向导（磁盘空间检测 / 分区选择 / 每用户
         #      安装）包装 Velopack Setup.exe，经 --installto "{app}"
         #      --silent 静默落盘到用户所选目录 ----
         Write-Host "== Inno Setup 编译首装包（lzma2 压缩，约数分钟）==" -ForegroundColor Cyan
         & $IsccExe `
             "/DAppVersion=$Version" `
             "/DVeloSetupPath=$(Join-Path $UpdateFeedDir "$PackId-win-Setup.exe")" `
+            "/DEulaRtfPath=$EulaRtfPath" `
             (Join-Path $BuildDir 'installer_velopack.iss')
         if ($LASTEXITCODE -ne 0) {
             throw "ISCC 编译失败（exit $LASTEXITCODE）"
         }
 
-        # ---- 6.5 Inno 首装包拷贝覆盖 feed 内 Setup.exe：发布出去的首装
+        # ---- 6.6 Inno 首装包拷贝覆盖 feed 内 Setup.exe：发布出去的首装
         #      入口始终是带向导的 Inno 包（而非 vpk 原生 Setup.exe）；
         #      vpk upload github 上传 feed 目录时即带走覆盖后的入口 ----
         $InnoSetupExe = Join-Path $DistDir "ESubDub-Setup-$Version.exe"

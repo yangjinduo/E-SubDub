@@ -3,6 +3,7 @@
 ; 由 build/build_windows.ps1 调用 ISCC 编译，可传预定义变量：
 ;   ISCC /DAppVersion=0.2.0 ^
 ;        /DVeloSetupPath=build\dist\update-feed\yangjinduo.E-SubDub-win-Setup.exe ^
+;        /DEulaRtfPath=build\work\EULA-zh.rtf ^
 ;        installer_velopack.iss
 ;
 ; 混合方案（替代旧版 Inno 直装 onedir 的 installer.iss）：
@@ -66,8 +67,16 @@ SolidCompression=yes
 ; 安装向导许可协议页：用户必须点"我接受"才能继续（EULA-zh/en 已随
 ; onedir 落盘 {app}\current\ 供装后查阅，Inno 页面只放中文版向导语言
 ; 一致；/SILENT、/VERYSILENT 与 --installto 静默安装下本页自动视为
-; 已接受）。文件为 UTF-8 带 BOM（否则许可页乱码），见 legal\ 目录
-LicenseFile=..\legal\EULA-zh.txt
+; 已接受）。
+; 依《民法典》第 496 条，免除/减轻己方责任、加重对方责任、限制对方
+; 主要权利的条款（第三条使用限制、第五条免责声明）须以加粗等合理方
+; 式提示——纯 txt 无格式能力，故许可页改用 build_windows.ps1 构建期
+; 从 EULA-zh.txt 自动生成的 RTF（加粗重要提示与第三/五条全文），经
+; /DEulaRtfPath 传入；独立编译本脚本未传该参数时回退 legal\ 纯文本
+#ifndef EulaRtfPath
+#define EulaRtfPath "..\legal\EULA-zh.txt"
+#endif
+LicenseFile={#EulaRtfPath}
 
 [Languages]
 ; 语言文件随仓库自带（build\innolang\）：CI 上 choco 安装的 Inno Setup
