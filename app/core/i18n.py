@@ -41,6 +41,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.not_ready": "未就绪",
         "common.close": "关闭",
         "common.cancel": "取消",
+        "common.save": "保存",
         "common.confirm": "确认",
         "common.settings": "设置",
         "common.delete": "删除",
@@ -431,6 +432,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts.choose_ref": "选择参考音频",
         "tts.choose_ref_title": "选择参考音频文件",
         "tts.ref_filter": "音频文件",
+        "tts.record_ref": "录制参考音频",
+        "tts.recorded_audio": "已录制音频",
+        "tts.record_title": "录制参考音频",
+        "tts.record_hint": "请用自然的语气朗读以下文字（3-10 秒，满 10 秒自动停止）",
+        "tts.record_text_lang": "文本语言",
+        "tts.record_start": "开始录制",
+        "tts.record_stop": "停止",
+        "tts.record_again": "重新录制",
+        "tts.record_duration": "{sec:.1f} 秒",
+        "tts.record_too_short": "录音需 3-10 秒（当前 {sec:.1f} 秒）",
+        "tts.record_name_label": "文件名",
+        "tts.record_saved": "已保存录制音频：{name}",
+        "tts.record_name_required": "请填写录制音频的文件名。",
+        "tts.record_unavailable": "当前环境缺少 QtMultimedia 或录音设备，无法录制。",
+        "tts.record_delete_title": "删除录制音频",
+        "tts.record_delete_confirm": "确定删除已录制的音频 {name} 吗？",
+        "tts.record_delete_in_use": (
+            "该音频正被当前任务用作参考音频，删除后将清空参考音频。"
+        ),
+        "tts.record_deleted": "已删除录制音频：{name}",
+        "tts.record_delete_failed": "删除录制音频失败：{error}",
         "tts.task_name": "任务名",
         "tts.task_name_hint": "用作成品文件名与工作夹名",
         "tts.language": "文本语言",
@@ -573,6 +595,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.not_ready": "Not ready",
         "common.close": "Close",
         "common.cancel": "Cancel",
+        "common.save": "Save",
         "common.confirm": "OK",
         "common.settings": "Settings",
         "common.delete": "Delete",
@@ -970,6 +993,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts.choose_ref": "Choose reference audio",
         "tts.choose_ref_title": "Choose a reference audio file",
         "tts.ref_filter": "Audio files",
+        "tts.record_ref": "Record reference audio",
+        "tts.recorded_audio": "Recorded audio",
+        "tts.record_title": "Record reference audio",
+        "tts.record_hint": "Read the text below naturally (3-10 s, auto-stops at 10 s)",
+        "tts.record_text_lang": "Text language",
+        "tts.record_start": "Start recording",
+        "tts.record_stop": "Stop",
+        "tts.record_again": "Record again",
+        "tts.record_duration": "{sec:.1f} s",
+        "tts.record_too_short": "Recording must be 3-10 seconds (now {sec:.1f} s)",
+        "tts.record_name_label": "File name",
+        "tts.record_saved": "Recorded audio saved: {name}",
+        "tts.record_name_required": "Please enter a file name for the recording.",
+        "tts.record_unavailable": "QtMultimedia or a microphone is unavailable; cannot record.",
+        "tts.record_delete_title": "Delete recorded audio",
+        "tts.record_delete_confirm": "Delete the recorded audio {name}?",
+        "tts.record_delete_in_use": (
+            "This audio is the current reference audio; deleting will clear it."
+        ),
+        "tts.record_deleted": "Recorded audio deleted: {name}",
+        "tts.record_delete_failed": "Failed to delete recorded audio: {error}",
         "tts.task_name": "Task name",
         "tts.task_name_hint": "Used as the output file name and work folder name",
         "tts.language": "Text language",
@@ -1172,6 +1216,18 @@ def _merge_legacy_settings(root: Path) -> None:
 def _app_state_path() -> Path:
     """全局状态文件路径：tasks.json（任务列表 + 全局设置顶层键）。"""
     return _config_dir() / "tasks.json"
+
+
+def recorded_refs_dir() -> Path:
+    """已录制参考音频目录（用户配置目录 recorded/）。
+
+    录制的参考音频属轻量用户数据，与 tasks.json 同存用户配置目录
+    （Windows %LOCALAPPDATA%/ESubDub、macOS ~/Library/Application
+    Support/ESubDub），跨版本更新与重装保留；首次调用时创建。
+    """
+    directory = _config_dir() / "recorded"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 def _load_language() -> str:

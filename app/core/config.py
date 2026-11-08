@@ -72,7 +72,7 @@ class AppConfig:
     APP_NAME: str = "E-SubDub"
 
     # 应用版本（语义化版本）
-    APP_VERSION: str = "0.1.2"
+    APP_VERSION: str = "0.1.3"
 
     # 应用根目录（程序自身资源所在，等价于 Velopack 的 current：
     # 开发态=项目根；冻结态=exe 所在目录，只读资源随包分发）

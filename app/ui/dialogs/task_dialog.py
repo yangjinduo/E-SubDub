@@ -19,13 +19,15 @@
 """
 
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -41,7 +43,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.i18n import get_setting, set_setting, tr
+from app.core.config import AppConfig
+from app.core.i18n import get_setting, recorded_refs_dir, set_setting, tr
 from app.core.langid_util import (
     is_tts_supported,
     langid_available,
@@ -53,7 +56,7 @@ from app.core.tts_runner import TtsTaskConfig, split_sentences
 from app.core.workspace import STAGE_REVIEW
 from app.pipeline.llm_engine import resolve_llama_server_exe
 from app.resources.model import get_resource_manager
-from app.ui.style import tokens
+from app.ui.style import themed_icon, tokens
 from app.ui.widgets.import_area import ImportArea
 from app.ui.widgets.pipeline_panel import (
     PIPELINE_STEPS,
@@ -1183,6 +1186,9 @@ class _ManualTextCard(QFrame):
         super().mousePressEvent(event)
 
 
+
+
+
 class TtsTaskWindow(TaskWindowBase):
     """文本转语音任务窗口：文本卡（左右两栏）+ 参考音频卡 + 3 步流程。
 
@@ -1291,11 +1297,33 @@ class TtsTaskWindow(TaskWindowBase):
         ref_row.setContentsMargins(0, 0, 0, 0)
         choose_button = QPushButton(tr("tts.choose_ref"))
         choose_button.clicked.connect(self._choose_ref_audio)
+        self._record_button = QPushButton(tr("tts.record_ref"))
+        self._record_button.setIcon(themed_icon(AppConfig.ICONS_DIR / "mic.svg"))
+        self._record_button.clicked.connect(self._on_record_ref_clicked)
+        self._recorded_combo = QComboBox()
+        self._recorded_combo.activated.connect(self._on_recorded_activated)
         self._ref_label = QLabel(tr("tts.ref_unset"))
         self._ref_label.setStyleSheet("color: #6B7280;")
+        # 紧挨文件名标签右侧：删除当前选中的已录制音频（无选中时禁用）
+        self._recorded_delete_button = QPushButton()
+        self._recorded_delete_button.setFixedSize(30, 26)
+        self._recorded_delete_button.setIcon(
+            themed_icon(AppConfig.ICONS_DIR / "delete.svg")
+        )
+        self._recorded_delete_button.setIconSize(QSize(16, 16))
+        self._recorded_delete_button.setToolTip(tr("tts.record_delete_title"))
+        self._recorded_delete_button.setEnabled(False)
+        self._recorded_delete_button.clicked.connect(self._delete_recorded)
+        self._refresh_recorded_combo()
         ref_row.addWidget(choose_button)
+        ref_row.addSpacing(8)
+        ref_row.addWidget(self._record_button)
+        ref_row.addSpacing(8)
+        ref_row.addWidget(self._recorded_combo)
         ref_row.addSpacing(12)
-        ref_row.addWidget(self._ref_label, 1)
+        ref_row.addWidget(self._ref_label)
+        ref_row.addWidget(self._recorded_delete_button)
+        ref_row.addStretch(1)
         ref_layout.addLayout(ref_row)
 
         self._audio_player = AudioPlayerBar()
@@ -1498,6 +1526,147 @@ class TtsTaskWindow(TaskWindowBase):
         self._ref_label.setText(Path(path).name)
         self._ref_label.setToolTip(str(path))
         self._audio_player.set_source(str(path))
+        self._sync_recorded_selection(str(path))
+
+    # ------------------------------------------------------------ 录制参考音频
+
+    def _on_record_ref_clicked(self) -> None:
+        """打开录制对话框；朗读文本初始语言按任务语言/检测结果推导。"""
+        from app.ui.dialogs.record_ref_dialog import RecordRefDialog
+
+        lang = self._task_settings.lang_code()
+        if lang == "auto":
+            lang = self._detected_lang
+        if lang == "zhen":  # 中英混合按中文朗读
+            lang = "zh"
+        dialog = RecordRefDialog(initial_lang=lang, parent=self)
+        dialog.saved.connect(self._on_recorded_saved)
+        dialog.exec()
+
+    def _on_recorded_saved(self, path: str) -> None:
+        """录制保存完成：设为当前参考音频并刷新已录制下拉。"""
+        self._set_ref_audio(path)
+        self._panel.log(tr("tts.record_saved", name=Path(path).name))
+        self._refresh_recorded_combo(select_path=path)
+
+    def _refresh_recorded_combo(self, select_path: str = "") -> None:
+        """重建"已录制音频"下拉（录制目录内 WAV，新→旧排序）。
+
+        首项为占位标题；select_path 非空且在列表中时选中。
+        """
+        combo = self._recorded_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(tr("tts.recorded_audio"), "")
+        try:
+            paths = sorted(
+                recorded_refs_dir().glob("*.wav"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            paths = []
+        select_index = 0
+        for row, path in enumerate(paths, start=1):
+            combo.addItem(path.stem, str(path))
+            if select_path and str(path) == select_path:
+                select_index = row
+        combo.blockSignals(False)
+        combo.setCurrentIndex(select_index)
+        self._update_recorded_delete_button()
+
+    def _sync_recorded_selection(self, path: str) -> None:
+        """参考音频变化后同步下拉选中项（外部文件 → 回到占位首项）。"""
+        combo = getattr(self, "_recorded_combo", None)
+        if combo is None:
+            return
+        for row in range(combo.count()):
+            if combo.itemData(row) == path:
+                combo.setCurrentIndex(row)
+                break
+        else:
+            combo.setCurrentIndex(0)
+        self._update_recorded_delete_button()
+
+    def _update_recorded_delete_button(self) -> None:
+        """删除按钮仅在当前选中已录制音频时可用。
+
+        禁用时把图标渲染成与禁用背景同色（视觉上隐去，避免灰色图标
+        仍然醒目）；恢复可用时换回正文色图标。
+        """
+        combo = getattr(self, "_recorded_combo", None)
+        button = getattr(self, "_recorded_delete_button", None)
+        if combo is None or button is None:
+            return
+        enabled = bool(combo.currentData())
+        button.setEnabled(enabled)
+        button.setIcon(
+            themed_icon(
+                AppConfig.ICONS_DIR / "delete.svg",
+                color_token="text" if enabled else "btn_disabled_bg",
+            )
+        )
+
+    def _on_recorded_activated(self, index: int) -> None:
+        """选用某条已录制音频：设为参考音频（试听用下方播放条）。"""
+        path = self._recorded_combo.itemData(index)
+        if path:
+            self._set_ref_audio(path)
+
+    @staticmethod
+    def _unlink_with_retry(
+        path: Path, attempts: int = 10, delay: float = 0.05
+    ) -> OSError | None:
+        """删除文件；句柄被暂占（WinError 32）时短暂重试。
+
+        QMediaPlayer 后端释放音源文件句柄是异步的：release() 之后
+        立刻删除仍可能报"另一个程序正在使用此文件"。这里轮询重试
+        （合计最多约 0.5 秒），期间驱动事件循环让后端完成释放；
+        重试耗尽仍失败则返回最后一个异常，其他 OSError 原样抛出。
+        """
+        last_error: PermissionError | None = None
+        for _ in range(attempts):
+            try:
+                path.unlink()
+                return None
+            except PermissionError as exc:
+                last_error = exc
+                QCoreApplication.processEvents()
+                time.sleep(delay)
+        return last_error
+
+    def _delete_recorded(self) -> None:
+        """删除当前选中的已录制音频（确认后彻底删除；正被使用时连带清空参考）。"""
+        path = self._recorded_combo.currentData()
+        if not path:
+            return
+        name = Path(path).name
+        in_use = path == self._ref_audio_path
+        message = tr("tts.record_delete_confirm", name=name)
+        if in_use:
+            message += "\n\n" + tr("tts.record_delete_in_use")
+        answer = QMessageBox.question(
+            self, tr("tts.record_delete_title"), message,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        # 试听条可能仍持有该文件句柄（见 _unlink_with_retry 注释）：
+        # 无论是否为当前参考音频，只要加载着就先释放
+        if in_use or self._audio_player.source() == path:
+            self._audio_player.release()
+        if in_use:
+            self._ref_audio_path = ""
+            self._ref_label.setText(tr("tts.ref_unset"))
+            self._ref_label.setToolTip("")
+        try:
+            error = self._unlink_with_retry(Path(path))
+        except OSError as exc:
+            error = exc
+        if error is not None:
+            self._panel.log(tr("tts.record_delete_failed", error=str(error)))
+            return
+        self._panel.log(tr("tts.record_deleted", name=name))
+        self._refresh_recorded_combo()
 
     # ------------------------------------------------------------------ 编辑
 
