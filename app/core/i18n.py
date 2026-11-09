@@ -285,6 +285,13 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "updater.download_failed": "下载更新失败：{error}",
         "updater.apply_failed": "安装更新失败：{error}",
         "updater.check_failed": "检查更新失败：{error}",
+        "updater.check_timeout": (
+            "检查更新超时：网络无响应。请检查网络或代理设置后重试。"
+        ),
+        "updater.download_stalled": (
+            "下载长时间无进展，已中止。请检查网络或代理设置后重试。"
+        ),
+        "updater.download_cancelled": "已取消下载更新。",
         # ---- ASR 校对对话框 ----
         "asr_review.title": "校对识别结果",
         "asr_review.heading": "核对识别文本",
@@ -846,6 +853,15 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "updater.download_failed": "Failed to download the update: {error}",
         "updater.apply_failed": "Failed to apply the update: {error}",
         "updater.check_failed": "Failed to check for updates: {error}",
+        "updater.check_timeout": (
+            "The update check timed out: the network is unresponsive. "
+            "Check your network / proxy settings and retry."
+        ),
+        "updater.download_stalled": (
+            "No download progress for a while; aborted. Check your "
+            "network / proxy settings and retry."
+        ),
+        "updater.download_cancelled": "Update download cancelled.",
         # ---- ASR review dialog ----
         "asr_review.title": "Review transcription",
         "asr_review.heading": "Check transcribed text",

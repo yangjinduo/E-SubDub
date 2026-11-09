@@ -57,12 +57,14 @@ logger = logging.getLogger(__name__)
 LANG_NAMES = {
     "zh": "中文", "en": "英语", "ja": "日语", "ko": "韩语",
     "fr": "法语", "de": "德语", "es": "西班牙语", "ru": "俄语",
+    "ar": "阿拉伯语",
 }
 
 # 内容语言代码 → ffmpeg MKV 元数据用的 ISO 639-2 代码
 FFMPEG_LANGS = {
     "zh": "chi", "en": "eng", "ja": "jpn", "ko": "kor",
     "fr": "fre", "de": "ger", "es": "spa", "ru": "rus",
+    "ar": "ara",
 }
 
 # 字幕形式：task_settings 代码 → subtitle.py 模式

@@ -55,12 +55,24 @@ def prompt_output_dir_if_empty(edit: QLineEdit, parent=None) -> str:
     set_setting("output_dir", path)
     return path
 
-# 内容语言选项：(语言代码, i18n key)。源语言含"自动检测"
-SOURCE_LANGUAGE_CODES = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
-TARGET_LANGUAGE_CODES = ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
+# 内容语言选项：(语言代码, i18n key)。源语言含"自动检测"。
+# ar（阿拉伯语）：翻译（Index-Translate-2B）与时长修正（Homura）均已
+# 支持，与主力语言并列进入媒体任务
+SOURCE_LANGUAGE_CODES = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "ru", "ar"]
+
+# IndexTTS-2.5 原生支持的语言（实测其余语种合成发音错误，不得开放）：
+# 配音目标语言的译文要交给 IndexTTS 合成，必须限定在此清单内；
+# 与文本转语音任务共享，保证"能选的就能正确发声"
+TTS_NATIVE_LANG_CODES = ["zh", "en", "ja", "es", "ar"]
+
+# 配音与字幕：目标语言 = TTS 原生语言（译文要合成配音）
+DUBBING_TARGET_LANGUAGE_CODES = TTS_NATIVE_LANG_CODES
+
+# 生成字幕：只翻译不合成，目标语言不受 TTS 限制，全语言开放
+TARGET_LANGUAGE_CODES = ["zh", "en", "ja", "ko", "fr", "de", "es", "ru", "ar"]
 
 # 文本转语音：文本语言（auto = 自动识别 + zhen 中英混合）
-TTS_LANG_CODES = ["auto", "zh", "en", "ja", "es", "ar", "zhen"]
+TTS_LANG_CODES = ["auto"] + TTS_NATIVE_LANG_CODES + ["zhen"]
 
 # 文本转语音：语速档位（0.5-2.0，步进 0.1；1.0 正常）
 TTS_SPEEDS = [round(0.5 + 0.1 * i, 1) for i in range(16)]
@@ -102,10 +114,21 @@ class TaskSettingsPanel(QFrame):
             self._source_combo.addItem(tr(f"lang.{code}"), code)
 
         self._target_combo = QComboBox()
-        for code in TARGET_LANGUAGE_CODES:
+        # 目标语言按任务窗口区分：配音（show_overlay=True）的译文要
+        # 交给 IndexTTS 合成，与文本转语音任务同款语言清单（TTS 原生
+        # 语种，保证"能选的就能正确发声"）；生成字幕只翻译不合成，
+        # 全语言开放
+        target_codes = (
+            DUBBING_TARGET_LANGUAGE_CODES
+            if show_overlay
+            else TARGET_LANGUAGE_CODES
+        )
+        for code in target_codes:
             self._target_combo.addItem(tr(f"lang.{code}"), code)
         # 默认目标语言：英语（最常用）
-        self._target_combo.setCurrentIndex(TARGET_LANGUAGE_CODES.index("en"))
+        self._target_combo.setCurrentIndex(
+            self._target_combo.findData("en")
+        )
 
         self._subtitle_combo = QComboBox()
         for code, key in SUBTITLE_CHOICES:
