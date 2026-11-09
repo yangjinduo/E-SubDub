@@ -275,13 +275,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "updater.available_title": "发现新版本",
         "updater.available_text": (
             "新版本 {version} 已发布{size}，是否立即下载并安装？\n"
-            "下载完成后将自动重启应用。"
+            "下载完成后可选择立即重启或稍后重启。"
         ),
         "updater.size_hint": "（约 {size} MB）",
         "updater.release_notes": "更新内容：\n{notes}",
         "updater.download_title": "下载更新",
         "updater.downloading": "正在下载新版本 {version}… {pct}%",
-        "updater.restarting": "下载完成，正在安装更新并重启应用…",
         "updater.download_failed": "下载更新失败：{error}",
         "updater.apply_failed": "安装更新失败：{error}",
         "updater.check_failed": "检查更新失败：{error}",
@@ -291,7 +290,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "updater.download_stalled": (
             "下载长时间无进展，已中止。请检查网络或代理设置后重试。"
         ),
-        "updater.download_cancelled": "已取消下载更新。",
+        "updater.restart_title": "更新就绪",
+        "updater.restart_text": "更新包已下载完成，是否立即重启应用以完成安装？",
+        "updater.restart_now": "立即重启",
+        "updater.restart_later": "稍后重启",
+        # 手动下载逃生链接（下载窗口 / 失败警告框共用）
+        "updater.manual_links_hint": "下载失败或速度过慢？可手动下载安装包：",
+        "updater.link_github": "GitHub 仓库下载地址，点击跳转",
+        "updater.link_mirror": "镜像地址（gh-proxy），点击跳转",
         # ---- ASR 校对对话框 ----
         "asr_review.title": "校对识别结果",
         "asr_review.heading": "核对识别文本",
@@ -843,13 +849,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "updater.available_title": "Update available",
         "updater.available_text": (
             "Version {version} is available{size}. Download and install it now?\n"
-            "The app will restart automatically when the download finishes."
+            "You can choose to restart right away or later after the download."
         ),
         "updater.size_hint": " (about {size} MB)",
         "updater.release_notes": "Release notes:\n{notes}",
         "updater.download_title": "Downloading update",
         "updater.downloading": "Downloading version {version}… {pct}%",
-        "updater.restarting": "Download complete; installing the update and restarting…",
         "updater.download_failed": "Failed to download the update: {error}",
         "updater.apply_failed": "Failed to apply the update: {error}",
         "updater.check_failed": "Failed to check for updates: {error}",
@@ -861,7 +866,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "No download progress for a while; aborted. Check your "
             "network / proxy settings and retry."
         ),
-        "updater.download_cancelled": "Update download cancelled.",
+        "updater.restart_title": "Update ready",
+        "updater.restart_text": (
+            "The update has been downloaded. Restart the app now to "
+            "finish installing?"
+        ),
+        "updater.restart_now": "Restart now",
+        "updater.restart_later": "Restart later",
+        # Manual-download escape links (shared by the progress dialog and
+        # failure boxes)
+        "updater.manual_links_hint": (
+            "Download failed or too slow? Get the installer manually:"
+        ),
+        "updater.link_github": "GitHub releases page (click to open)",
+        "updater.link_mirror": "Mirror via gh-proxy (click to open)",
         # ---- ASR review dialog ----
         "asr_review.title": "Review transcription",
         "asr_review.heading": "Check transcribed text",
