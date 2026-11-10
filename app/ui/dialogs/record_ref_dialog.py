@@ -142,7 +142,6 @@ class RecordRefDialog(QDialog):
         self._recording = False
         self._io = None                  # 采集 IO 设备（readyRead 数据源）
         self._preview_path: Path | None = None  # 试听用临时 WAV
-        self._warmed_up = False          # 音频后端是否已预热（showEvent 触发一次）
 
         # ---- 顶部：提示 + 语言切换 ----
         hint_label = QLabel(tr("tts.record_hint"))
@@ -293,29 +292,25 @@ class RecordRefDialog(QDialog):
             f"QPushButton:disabled {{ background-color: {c['btn_disabled_bg']}; }}"
         )
 
-    def _warm_up_source(self) -> None:
-        """空跑一次 start/stop 打开音频后端，把首次打开的耗时前移。
-
-        QAudioSource 构造并不真正打开设备，第一次 start() 才初始化
-        WASAPI 等音频后端（数百毫秒）：若等到点"开始录制"才做，按钮
-        状态会迟滞半秒、易误以为没点到。前移到开窗后（用户读提示
-        文案的时段）完成，之后点击即为"热"路径。
-        """
-        if self._source is None or self._recording or self._io is not None:
-            return  # 设备不可用，或用户已抢先开始录制：不干扰
-        if self._source.start() is not None:
-            self._source.stop()
-
     def _start_recording(self) -> None:
         # 丢弃上一段（先释放试听音源句柄，Windows 上临时文件才能覆盖/删除）
         self._discard_preview()
         self._pcm.clear()
         self._waveform.clear()
         self._duration = 0.0
-        self._record_start = time.monotonic()
         self._time_label.setText(tr("tts.record_duration", sec=0.0))
+        # 先切"录制中"并同步重绘，再启动采集：QAudioSource.start() 首次
+        # 调用需激活音频设备（Windows 实测约 0.9 秒）并阻塞事件循环，若
+        # 状态刷新放在其后，按钮换色要等阻塞结束才画得上屏
+        self._recording = True
+        self._refresh_record_button()
+        self._set_controls_recording(True)
+        self._record_button.repaint()  # 立即同步重绘，不等事件队列
         self._io = self._source.start()
         if self._io is None:
+            self._recording = False
+            self._refresh_record_button()
+            self._set_controls_recording(False)
             QMessageBox.warning(
                 self, self.windowTitle(), tr("tts.record_unavailable")
             )
@@ -326,9 +321,7 @@ class RecordRefDialog(QDialog):
         except (TypeError, RuntimeError):
             pass
         self._io.readyRead.connect(self._on_ready_read)
-        self._recording = True
-        self._refresh_record_button()
-        self._set_controls_recording(True)
+        self._record_start = time.monotonic()  # 从设备真正开始采集计时
         self._timer.start()
 
     def _stop_recording(self) -> None:
@@ -454,14 +447,6 @@ class RecordRefDialog(QDialog):
         self.accept()
 
     # ------------------------------------------------------------------ 其他
-
-    def showEvent(self, event) -> None:
-        """首次显示后预热音频采集（只做一次，见 _warm_up_source）。"""
-        super().showEvent(event)
-        if not self._warmed_up:
-            self._warmed_up = True
-            # singleShot(0)：先让窗口完成首帧绘制，再空跑 start/stop
-            QTimer.singleShot(0, self._warm_up_source)
 
     def _on_lang_changed(self, index: int) -> None:
         code = self._lang_combo.itemData(index)
