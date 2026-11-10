@@ -1,16 +1,42 @@
-# E-SubDub
+<div align="center">
 
-[English](README-EN.md) | 简体中文
+# E-SubDub
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
-**E-SubDub** —— 简单易用的视频字幕与 AI 配音生成工具。
+## E-SubDub —— 简单易用的视频字幕与 AI 配音生成工具。
+
+[English](README-EN.md) | 简体中文
+
+</div>
 
 > **名称由来**：E = Easy（容易，与中文“易”同音，操作简单）；SubDub = Subtitle + Dubbing（字幕 + 配音）。
 
-- 版本：v0.1.0
 - 平台：Windows / macOS
 - 界面语言：简体中文 / English
+
+## 界面预览
+
+![主界面](assets/main-window.png)
+
+<table>
+  <tr>
+    <td><img src="assets/dubbing-subtitles.png" width="400"></td>
+    <td><img src="assets/generate-subtitles.png" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center">配音与字幕</td>
+    <td align="center">生成字幕</td>
+  </tr>
+  <tr>
+    <td><img src="assets/text-to-speech.png" width="400"></td>
+    <td><img src="assets/settings.png" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center">文本转语音</td>
+    <td align="center">设置</td>
+  </tr>
+</table>
 
 ## 应用场景
 
@@ -19,8 +45,9 @@
 - **音视频字幕生成**：自动识别音视频中的人声，生成带时间轴的分句 SRT 字幕，省去手动听打。
 
 ### 生成效果演示
-- [演示视频1](https://www.bilibili.com/video/BV19ea76RE1A/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
-- [演示视频2](https://www.bilibili.com/video/BV1t1a767ECH/?spm_id_from=333.1387.homepage.video_card.click&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
+
+- [演示视频1](https://www.bilibili.com/video/BV19ea76RE1A/?spm_id_from=333.1387.homepage.video_card.click\&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
+- [演示视频2](https://www.bilibili.com/video/BV1t1a767ECH/?spm_id_from=333.1387.homepage.video_card.click\&vd_source=de34c79a1e39f39a29a1f3ea3b98cad7)
 
 ## 功能特性
 
@@ -120,8 +147,7 @@ winget install -e --id JRSoftware.InnoSetup
 ```
 
 4. C 编译器：优先 MSVC（VS Build Tools 的 VCTools）；缺失时 Nuitka 经 `--assume-yes-for-downloads` 自动下载 MinGW64，二选一即可。
-
-5. 便携 CPython（[python-build-standalone](https://github.com/astral-sh/python-build-standalone)，随安装包分发给最终用户，部署期 `.venv-ml` / `.venv-tts` 以它为基础解释器）：手动下载 [cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz](https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz)，用 Win10+ 自带 tar 解压到 `build\runtime\`：
+5. 便携 CPython（[python-build-standalone](https://github.com/astral-sh/python-build-standalone)，随安装包分发给最终用户，部署期 `.venv-ml` / `.venv-tts` 以它为基础解释器）：手动下载 [cpython-3.13.5+20250723-x86\_64-pc-windows-msvc-install\_only\_stripped.tar.gz](https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz)，用 Win10+ 自带 tar 解压到 `build\runtime\`：
 
 ```bash
 tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.tar.gz -C build\runtime
@@ -138,21 +164,21 @@ tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.ta
 
 产物（版本号的唯一真值源是 `app/core/config.py` 的 `APP_VERSION`，脚本自动从该文件解析）：
 
-| 产物 | 说明 |
-| --- | --- |
-| `build\dist\ESubDub\` | onedir 发行目录 |
-| `build\dist\update-feed\` | Velopack 更新 feed：`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-<版本>.exe`（feed 内首装入口：Inno 向导包以统一命名取代 vpk 原生 `yangjinduo.E-SubDub-win-Setup.exe`，发布资产名与本地构建产物一致） |
-| `build\dist\ESubDub-Setup-<版本>.exe` | Inno 首装包：向导式包装 Velopack Setup.exe（磁盘空间检测 / 分区选择 / 每用户安装），经 `--installto` 静默落盘到用户所选目录 |
+| 产物                                  | 说明                                                                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build\dist\ESubDub\`               | onedir 发行目录                                                                                                                                                         |
+| `build\dist\update-feed\`           | Velopack 更新 feed：`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-<版本>.exe`（feed 内首装入口：Inno 向导包以统一命名取代 vpk 原生 `yangjinduo.E-SubDub-win-Setup.exe`，发布资产名与本地构建产物一致） |
+| `build\dist\ESubDub-Setup-<版本>.exe` | Inno 首装包：向导式包装 Velopack Setup.exe（磁盘空间检测 / 分区选择 / 每用户安装），经 `--installto` 静默落盘到用户所选目录                                                                                |
 
 ### 发版流程（每次出新版本）
 
 发版前检查以下文件（版本相关内容的全部落点）：
 
-| 文件 | 修改内容 |
-| --- | --- |
-| `app\core\config.py` | `APP_VERSION` 改为新版本号（如 `"0.1.1"`），全链路唯一真值源 |
-| `build\release-notes.md` | **整文件重写**为当版更新说明（勿追加旧版内容：vpk 把整个文件内嵌进更新包，客户端「检查更新」弹窗与 GitHub Release 正文原样展示）；本地备注用 HTML 注释 `<!-- -->` 包裹，构建时自动剔除、不随包发布 |
-| `legal\` 协议文件 | 仅当协议内容**实质变更**（非错字修正）时修改：更新文件首行版本号，并在 `release-notes.md` 里提一句"已更新用户协议/免责声明"让更新弹窗露出。协议文件须保持 **UTF-8 带 BOM**（Inno 许可页依赖），改完勿另存为 ANSI |
+| 文件                       | 修改内容                                                                                                                               |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `app\core\config.py`     | `APP_VERSION` 改为新版本号（如 `"0.1.1"`），全链路唯一真值源                                                                                         |
+| `build\release-notes.md` | **整文件重写**为当版更新说明（勿追加旧版内容：vpk 把整个文件内嵌进更新包，客户端「检查更新」弹窗与 GitHub Release 正文原样展示）；本地备注用 HTML 注释 `<!-- -->` 包裹，构建时自动剔除、不随包发布             |
+| `legal\` 协议文件            | 仅当协议内容**实质变更**（非错字修正）时修改：更新文件首行版本号，并在 `release-notes.md` 里提一句"已更新用户协议/免责声明"让更新弹窗露出。协议文件须保持 **UTF-8 带 BOM**（Inno 许可页依赖），改完勿另存为 ANSI |
 
 **方式一：云端发布（推荐）** —— 修改 commit 并 push 后打 tag，触发 `.github/workflows/release.yml` 自动完成构建与发布：
 
@@ -165,6 +191,7 @@ CI 校验 tag 与 `APP_VERSION` 一致（不一致直接失败）、`vpk downloa
 
 若 CI 构建失败：修复、commit、push 之后，删除旧 tag 重新打（tag 必须指向包含修复的新提交）。**注意：删除 tag 不会删除 GitHub 上已生成的 Release**——若上次运行已发布出 v0.1.1 Release（哪怕后续步骤失败），重跑前必须先在 GitHub 网页 Releases 页面把它删掉（连同资产文件），否则 `vpk upload` 会报 "There is already an existing release tagged 'v0.1.1'" 拒绝覆盖。
 例如：
+
 ```bash
 git tag -d v0.1.1                 # 删除本地 tag
 git push origin :refs/tags/v0.1.1 # 删除远端 tag（触发不了任何构建）
@@ -189,7 +216,7 @@ vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --t
 
 手动网页上传时，把 `build\dist\update-feed\` 内**全部文件**（`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-<版本>.exe`）上传到对应 tag 的 Release，覆盖同名旧文件。
 
-GitHub Token 获取（仅方式二的命令行上传需要，网页上传和云端发布都不需要）：打开 https://github.com/settings/personal-access-tokens/new 生成 Fine-grained token——Repository access 只选 `E-SubDub` 仓库，Permissions 里给 **Contents: Read and write**；生成后复制 `github_pat_` 开头的串，发布时贴进上面的 `$token` 变量。个人 token 只在运行命令时临时使用，**切勿写进任何文件提交到仓库**（不慎泄露立即回该页面撤销）。token **不是一次性的**：有效期内（生成时可选，默认 30 天，也可选更长或自定义日期）可反复用于多次发布，到期后重新生成一个即可；发版频率低的话，建议每次现用现生成短有效期 token。
+GitHub Token 获取（仅方式二的命令行上传需要，网页上传和云端发布都不需要）：打开 <https://github.com/settings/personal-access-tokens/new> 生成 Fine-grained token——Repository access 只选 `E-SubDub` 仓库，Permissions 里给 **Contents: Read and write**；生成后复制 `github_pat_` 开头的串，发布时贴进上面的 `$token` 变量。个人 token 只在运行命令时临时使用，**切勿写进任何文件提交到仓库**（不慎泄露立即回该页面撤销）。token **不是一次性的**：有效期内（生成时可选，默认 30 天，也可选更长或自定义日期）可反复用于多次发布，到期后重新生成一个即可；发版频率低的话，建议每次现用现生成短有效期 token。
 
 发布后，已安装用户启动时后台自动检查（或设置窗口手动「检查更新」）即可增量升级。安装版布局：安装根下 `current\`（程序，随更新整体替换）与 `Update.exe`（更新器），`models\` 等数据目录与 `current\` 平级、跨更新保留。
 
@@ -290,26 +317,26 @@ app/
 
 大体积数据目录（`..\tools\`、`..\third_party\`、`..\.venv-tts\`、`..\.venv-ml\`、`..\models\`）在开发态位于**项目根的上一级**（`..\` 相对项目根，镜像安装版的 Velopack 布局，见「快速开始」）；安装版则位于安装根、与 `current\` 程序目录平级。
 
-| 分类    | 目录                                                 | 说明                                              |
-| ----- | -------------------------------------------------- | ----------------------------------------------- |
-| 运行必须  | `app/`                                             | 全部源代码                                           |
-| 运行必须  | `libs/`                                            | 内置 FFmpeg（windows/ffmpeg.exe、macos/Arm + Intel） |
-| 运行必须  | `..\tools\llama.cpp\`                              | llama-server 推理服务 + CUDA DLL（可软件自动下载）           |
-| 运行必须  | `..\third_party\index-tts/`                        | IndexTTS 引擎源码                                   |
-| 运行必须  | `torchaudio/`                                      | torch 2.14 配套垫片包（demucs 依赖，勿 pip 安装覆盖）          |
-| 运行必须  | `..\.venv-tts/`                                    | TTS 专用虚拟环境（可软件自动重建）                             |
-| 运行必须  | `..\.venv-ml/`                                     | ML 推理虚拟环境（安装包形态使用，可软件自动重建）                |
-| 运行必须  | `..\models/`                                       | 五个模型（可软件自动下载，已 gitignore）                       |
-| 运行时生成 | 输出目录                                              | 任务工作目录与成品（用户设置并持久化记忆，gitignore）                 |
-| 开发用   | `build\build_windows.ps1`                          | Windows 一键构建脚本（Nuitka 冻结 + vpk pack + Inno 首装包，见「构建安装包」） |
+| 分类    | 目录                                                 | 说明                                                                 |
+| ----- | -------------------------------------------------- | ------------------------------------------------------------------ |
+| 运行必须  | `app/`                                             | 全部源代码                                                              |
+| 运行必须  | `libs/`                                            | 内置 FFmpeg（windows/ffmpeg.exe、macos/Arm + Intel）                    |
+| 运行必须  | `..\tools\llama.cpp\`                              | llama-server 推理服务 + CUDA DLL（可软件自动下载）                              |
+| 运行必须  | `..\third_party\index-tts/`                        | IndexTTS 引擎源码                                                      |
+| 运行必须  | `torchaudio/`                                      | torch 2.14 配套垫片包（demucs 依赖，勿 pip 安装覆盖）                             |
+| 运行必须  | `..\.venv-tts/`                                    | TTS 专用虚拟环境（可软件自动重建）                                                |
+| 运行必须  | `..\.venv-ml/`                                     | ML 推理虚拟环境（安装包形态使用，可软件自动重建）                                         |
+| 运行必须  | `..\models/`                                       | 五个模型（可软件自动下载，已 gitignore）                                          |
+| 运行时生成 | 输出目录                                               | 任务工作目录与成品（用户设置并持久化记忆，gitignore）                                    |
+| 开发用   | `build\build_windows.ps1`                          | Windows 一键构建脚本（Nuitka 冻结 + vpk pack + Inno 首装包，见「构建安装包」）           |
 | 开发用   | `build\installer_velopack.iss`                     | Inno 首装包配置（向导包装 Velopack Setup.exe：空间检查 / 分区选择 + --installto 静默落盘） |
-| 开发用   | `build\requirements-freeze.txt`                    | 冻结构建最小依赖清单（不含推理大件）                             |
-| 开发用   | `build\runtime\`                                   | 便携 CPython 暂存（手动下载解压，随安装包分发）                  |
-| 开发用   | `build\dist\`、`build\work\`                        | 构建产物（含 update-feed 更新 feed）与 Nuitka 中间目录（gitignore）   |
-| 开发用   | `venv/`                                            | 主开发虚拟环境                                         |
-| 开发用   | `requirements.txt`、`.gitignore`、`安装引导打包阶段注意事项.TXT` | 依赖清单 / 打包阶段备忘                                   |
-| 开发用   | `legal\`                                           | 用户协议（EULA）与免责声明中英文版（安装向导许可页引用，随包分发）          |
-| 测试    | `test/`                                            | e2e 冒烟、TTS 探针脚本 + 测试视频（gitignore）               |
+| 开发用   | `build\requirements-freeze.txt`                    | 冻结构建最小依赖清单（不含推理大件）                                                 |
+| 开发用   | `build\runtime\`                                   | 便携 CPython 暂存（手动下载解压，随安装包分发）                                       |
+| 开发用   | `build\dist\`、`build\work\`                        | 构建产物（含 update-feed 更新 feed）与 Nuitka 中间目录（gitignore）                |
+| 开发用   | `venv/`                                            | 主开发虚拟环境                                                            |
+| 开发用   | `requirements.txt`、`.gitignore`、`安装引导打包阶段注意事项.TXT` | 依赖清单 / 打包阶段备忘                                                      |
+| 开发用   | `legal\`                                           | 用户协议（EULA）与免责声明中英文版（安装向导许可页引用，随包分发）                                |
+| 测试    | `test/`                                            | e2e 冒烟、TTS 探针脚本 + 测试视频（gitignore）                                  |
 
 ## 声音克隆使用声明
 
@@ -319,7 +346,6 @@ app/
 
 > **IndexTTS-2.5 模型协议声明**：本软件集成了 IndexTTS-2.5（bilibili indextts2，受《bilibili 模型使用许可协议》约束，全文见 [THIRD-PARTY-NOTICES-CN.html](THIRD-PARTY-NOTICES-CN.html) 附录）。依该协议第 4.1a 条：本软件对原模型所作的任何改动均与原模型权利人 bilibili 无关，原权利人不对本软件及其衍生品进行背书、保证或担保，亦不对其承担任何责任。
 
-
 ## 特别感谢
 
 本项目基于诸多优秀的开源模型、工具与框架开发完成，在此向所有开源开发者与社区致以诚挚的感谢！
@@ -327,25 +353,20 @@ app/
 ### 开源模型致谢
 
 - **[Demucs（htdemucs）](https://github.com/adefossez/demucs)**：感谢 Meta 及社区维护者开源的高精度人声分离模型，为本项目音频人声、伴奏分离核心能力提供支撑。
-
 - **[MOSS-Transcribe-Diarize](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize)**：感谢 openmoss 团队开源的带说话人区分的语音识别模型，实现精准的音频转写与分句识别。
-
 - **Index 系列模型**：感谢 IndexTeam、Abu-Dju 等开发者开源的 [Index-Translate-2B](https://github.com/bilibili/Index-Translate)、[Index-Homura-2B](https://modelscope.cn/models/Abu-Dju/Index-Homura-2B-Q8_0-GGUF)、[IndexTTS-2.5](https://github.com/IndexTeam/IndexTTS) 模型，为本项目字幕智能翻译、中文时长适配、高质量声音克隆配音提供核心技术支持。
 
 ### 开源工具与引擎致谢
 
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)**：感谢 llama.cpp 开源项目，提供轻量化、高性能的本地大模型推理服务，支撑翻译模型本地高效推理。
-
 - **[FFmpeg](https://github.com/FFmpeg/FFmpeg)**：感谢 FFmpeg 开源多媒体框架，为项目提供音频提取、视频封装、音视频混音等全流程多媒体处理能力。
+- **[Velopack](https://github.com/velopack/veloppack)**：感谢 Velopack 开源的安装与自动更新框架（MIT），为 Windows 安装包制作、增量更新与 GitHub Releases 自动更新提供核心支撑。
 
 ### 开发框架与社区致谢
 
 - **[PySide6](https://wiki.qt.io/Qt_for_Python)**：感谢 PySide6 开源 GUI 框架，支撑本项目跨平台桌面客户端界面开发。
-
 - **[PyTorch](https://github.com/pytorch/pytorch) / [Torchaudio](https://github.com/pytorch/audio)**：感谢 PyTorch 深度学习框架及 Torchaudio 音频处理工具库，为模型推理、音频预处理提供基础算力与技术支撑。
-
 - **[魔搭社区（ModelScope）](https://github.com/modelscope/modelscope)**：感谢魔搭社区提供的模型托管、下载加速服务，为用户提供便捷的模型自动部署能力。
-
 - **[langid](https://github.com/saffsd/langid)**：感谢 langid 开源文本语言检测工具，实现多语言文本自动识别适配。
 
 同时感谢所有开源社区的开发者、贡献者，正是开源生态的蓬勃发展，让本项目的落地实现成为可能。

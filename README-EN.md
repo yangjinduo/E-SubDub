@@ -1,16 +1,42 @@
-# E-SubDub
+<div align="center">
 
-English | [简体中文](README.md)
+# E-SubDub
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
-**E-SubDub** — An easy-to-use tool for video subtitles and AI dubbing.
+## E-SubDub — An easy-to-use tool for video subtitles and AI dubbing.
+
+English | [简体中文](README.md)
+
+</div>
 
 > **About the name**: E = Easy (simple to use); SubDub = Subtitle + Dubbing.
 
-- Version: v0.1.0
 - Platforms: Windows / macOS
 - UI languages: 简体中文 / English
+
+## Screenshots
+
+![Main Window](assets/main-window.png)
+
+<table>
+  <tr>
+    <td><img src="assets/dubbing-subtitles.png" width="400"></td>
+    <td><img src="assets/generate-subtitles.png" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center">Dubbing & Subtitles</td>
+    <td align="center">Generate Subtitles</td>
+  </tr>
+  <tr>
+    <td><img src="assets/text-to-speech.png" width="400"></td>
+    <td><img src="assets/settings.png" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center">Text-to-Speech</td>
+    <td align="center">Settings</td>
+  </tr>
+</table>
 
 ## Use Cases
 
@@ -321,6 +347,8 @@ This project is built on many outstanding open-source models, tools, and framewo
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)**: Thanks to the llama.cpp project for its lightweight, high-performance local LLM inference service, powering efficient local inference for the translation model.
 
 - **[FFmpeg](https://github.com/FFmpeg/FFmpeg)**: Thanks to the FFmpeg open-source multimedia framework for full-pipeline multimedia processing — audio extraction, video packaging, and audio/video mixing.
+
+- **[Velopack](https://github.com/velopack/veloppack)**: Thanks to Velopack for its open-source installation and auto-update framework (MIT), powering the Windows installer packaging, delta updates, and automatic updates from GitHub Releases.
 
 ### Development Framework & Community Acknowledgements
 
