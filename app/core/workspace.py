@@ -403,7 +403,7 @@ class Workspace:
 
     @property
     def tts_ref_audio(self) -> Path:
-        """01_文本处理：规范化后的参考音频（22050Hz 单声道 WAV）。"""
+        """01_文本处理：规范化后的参考音频（22050Hz 单声道 WAV，RMS 响度归一化）。"""
         return self.stage_dir(STAGE_TTS_TEXT) / "ref_audio.wav"
 
     @property

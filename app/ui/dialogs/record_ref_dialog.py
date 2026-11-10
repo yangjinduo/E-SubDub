@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""录制参考音频对话框：麦克风采集 → 实时波形 → 试听/重录 → 保存。
+"""录制参考音频对话框：麦克风采集 → 实时波形 → 试听 → 保存。
 
 朗读文本为多语言内容（非界面文案）：每种语言一条固定文本，初始语言
 由调用方按 TTS 任务语言/检测结果推导（默认中文），用户可在对话框内
 切换。采集用 QtMultimedia 的 QAudioSource（44.1kHz 单声道 16bit PCM），
 波形按每个读块的峰值绘制滚动柱状图；音频先留在内存并写入临时 WAV
 供试听，点"保存"才落到用户配置目录 recorded/（i18n.recorded_refs_dir，
-跨更新保留）。时长约束 3-10 秒：不足 3 秒禁止保存，满 10 秒自动停止。
+跨更新保留）。时长下限 3 秒（不足禁止保存），无上限：录制由中央圆形
+按钮（待录 mic / 录制中 stop 双态配色）手动开始与停止，确保朗读句子
+完整、结尾自然收束。
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
@@ -35,8 +37,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.config import AppConfig
 from app.core.i18n import recorded_refs_dir, tr
-from app.ui.style import tokens
+from app.ui.style import themed_icon, tokens
 from app.ui.widgets.audio_player import AudioPlayerBar
 
 try:  # QtMultimedia 随 PySide6 提供，个别精简环境可能缺失
@@ -66,9 +69,12 @@ RECORD_TEXTS: dict[str, str] = {
     "ar": "مرحبًا، الطقس جميل اليوم. سعيد بلقائك. دعنا نتحدث عن أمور ممتعة معًا.",
 }
 
-_RECORD_MIN_SECONDS = 3.0   # 时长下限（不足禁止保存）
-_RECORD_MAX_SECONDS = 10.0  # 时长上限（到时自动停止）
+_RECORD_MIN_SECONDS = 3.0   # 时长下限（不足禁止保存；无上限，手动停止）
 _SAMPLE_RATE = 44100        # 采样率（单声道 16bit PCM，与保存的 WAV 一致）
+_REC_BTN_PX = 56            # 圆形录制按钮直径
+_REC_ICON_PX = 26           # 按钮图标边长（mic.svg / stop.svg）
+_RECORDING_BG = "#DC2626"        # 录制中按钮底色（实底红，两主题通用）
+_RECORDING_HOVER_BG = "#B91C1C"  # 录制中悬停底色
 _WAVEFORM_BARS = 120        # 波形柱数上限（约每秒 12 块）
 _WAVEFORM_GAIN = 8.0        # 波形增益：语音峰值通常只有 0.1~0.3，放大后起伏更明显；嫌大/小改这个值
 _ILLEGAL_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')  # Windows 文件名非法字符
@@ -136,6 +142,7 @@ class RecordRefDialog(QDialog):
         self._recording = False
         self._io = None                  # 采集 IO 设备（readyRead 数据源）
         self._preview_path: Path | None = None  # 试听用临时 WAV
+        self._warmed_up = False          # 音频后端是否已预热（showEvent 触发一次）
 
         # ---- 顶部：提示 + 语言切换 ----
         hint_label = QLabel(tr("tts.record_hint"))
@@ -177,14 +184,15 @@ class RecordRefDialog(QDialog):
         wave_row.addWidget(self._waveform, 1)
         wave_row.addWidget(self._time_label)
 
-        # ---- 操作行：开始/停止 + 重新录制 ----
+        # ---- 操作行：居中圆形录制按钮（待录 mic / 录制中 stop 双态）----
         action_row = QHBoxLayout()
-        self._record_button = QPushButton(tr("tts.record_start"))
+        self._record_button = QPushButton()
+        self._record_button.setFixedSize(_REC_BTN_PX, _REC_BTN_PX)
+        self._record_button.setIconSize(QSize(_REC_ICON_PX, _REC_ICON_PX))
+        self._record_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._record_button.clicked.connect(self._on_record_clicked)
-        self._again_button = QPushButton(tr("tts.record_again"))
-        self._again_button.clicked.connect(self._on_again_clicked)
+        action_row.addStretch(1)
         action_row.addWidget(self._record_button)
-        action_row.addWidget(self._again_button)
         action_row.addStretch(1)
 
         # ---- 试听 ----
@@ -239,23 +247,64 @@ class RecordRefDialog(QDialog):
                 self._source = QAudioSource(device, fmt, self)
         if self._source is None:
             self._record_button.setEnabled(False)
-            self._again_button.setEnabled(False)
             hint_label.setText(
                 f"{hint_label.text()}\n{tr('tts.record_unavailable')}"
             )
+        self._refresh_record_button()  # 按"可用 / 录制中"态初始化图标与底色
 
     # ------------------------------------------------------------------ 采集
 
     def _on_record_clicked(self) -> None:
-        """开始/停止切换。"""
+        """开始/停止切换（停止后再次点击即重新开始，丢弃上一段）。"""
         if self._recording:
             self._stop_recording()
         else:
             self._start_recording()
 
-    def _on_again_clicked(self) -> None:
-        """重新录制：丢弃当前段并立即开始新一轮采集。"""
-        self._start_recording()
+    def _refresh_record_button(self) -> None:
+        """按"设备可用 / 录制中"刷新圆形按钮的图标、底色与提示。
+
+        待录：主操作蓝底 + mic 图标（on_accent 白）；录制中：实底红 +
+        stop 图标（红为通用"正在录制"信号，两主题下白图标对比均足够）；
+        设备不可用：灰底 + 灰 mic 图标。图标经 themed_icon 按当前主题重
+        着色，底色取自主题令牌，深浅主题自动适配。
+        """
+        c = tokens()
+        btn = self._record_button
+        if not btn.isEnabled():
+            icon = themed_icon(AppConfig.ICONS_DIR / "mic.svg", "btn_disabled_text")
+            bg = hover = c["btn_disabled_bg"]
+            tip = ""
+        elif self._recording:
+            icon = themed_icon(AppConfig.ICONS_DIR / "stop.svg", "on_accent")
+            bg, hover = _RECORDING_BG, _RECORDING_HOVER_BG
+            tip = tr("tts.record_stop")
+        else:
+            icon = themed_icon(AppConfig.ICONS_DIR / "mic.svg", "on_accent")
+            bg, hover = c["primary_bg"], c["primary_hover_bg"]
+            tip = tr("tts.record_start")
+        btn.setIcon(icon)
+        btn.setToolTip(tip)
+        btn.setAccessibleName(tip)
+        btn.setStyleSheet(
+            f"QPushButton {{ border: none; border-radius: {_REC_BTN_PX // 2}px;"
+            f" background-color: {bg}; }}"
+            f"QPushButton:hover {{ background-color: {hover}; }}"
+            f"QPushButton:disabled {{ background-color: {c['btn_disabled_bg']}; }}"
+        )
+
+    def _warm_up_source(self) -> None:
+        """空跑一次 start/stop 打开音频后端，把首次打开的耗时前移。
+
+        QAudioSource 构造并不真正打开设备，第一次 start() 才初始化
+        WASAPI 等音频后端（数百毫秒）：若等到点"开始录制"才做，按钮
+        状态会迟滞半秒、易误以为没点到。前移到开窗后（用户读提示
+        文案的时段）完成，之后点击即为"热"路径。
+        """
+        if self._source is None or self._recording or self._io is not None:
+            return  # 设备不可用，或用户已抢先开始录制：不干扰
+        if self._source.start() is not None:
+            self._source.stop()
 
     def _start_recording(self) -> None:
         # 丢弃上一段（先释放试听音源句柄，Windows 上临时文件才能覆盖/删除）
@@ -278,7 +327,7 @@ class RecordRefDialog(QDialog):
             pass
         self._io.readyRead.connect(self._on_ready_read)
         self._recording = True
-        self._record_button.setText(tr("tts.record_stop"))
+        self._refresh_record_button()
         self._set_controls_recording(True)
         self._timer.start()
 
@@ -293,7 +342,7 @@ class RecordRefDialog(QDialog):
         except Exception:
             pass
         self._io = None
-        self._record_button.setText(tr("tts.record_start"))
+        self._refresh_record_button()
         self._set_controls_recording(False)
         if not self._pcm:
             self._save_button.setEnabled(False)
@@ -323,8 +372,7 @@ class RecordRefDialog(QDialog):
             peak = max(abs(v) for v in values) / 32768.0
         self._waveform.append_level(peak)
         self._duration = time.monotonic() - self._record_start
-        if self._duration >= _RECORD_MAX_SECONDS:
-            self._stop_recording()  # 满 10 秒自动停止
+        # 无时长上限：由用户点击圆形按钮手动停止，保证朗读句子完整收尾
 
     def _on_tick(self) -> None:
         """录制中刷新计时显示。"""
@@ -333,9 +381,8 @@ class RecordRefDialog(QDialog):
             self._time_label.setText(tr("tts.record_duration", sec=self._duration))
 
     def _set_controls_recording(self, recording: bool) -> None:
-        """录制期间禁用语言切换/重录/文件名，避免状态混乱。"""
+        """录制期间禁用语言切换/文件名/试听，避免状态混乱。"""
         self._lang_combo.setEnabled(not recording)
-        self._again_button.setEnabled(not recording)
         self._name_edit.setEnabled(not recording)
         self._audio_player.setEnabled(not recording)
 
@@ -407,6 +454,14 @@ class RecordRefDialog(QDialog):
         self.accept()
 
     # ------------------------------------------------------------------ 其他
+
+    def showEvent(self, event) -> None:
+        """首次显示后预热音频采集（只做一次，见 _warm_up_source）。"""
+        super().showEvent(event)
+        if not self._warmed_up:
+            self._warmed_up = True
+            # singleShot(0)：先让窗口完成首帧绘制，再空跑 start/stop
+            QTimer.singleShot(0, self._warm_up_source)
 
     def _on_lang_changed(self, index: int) -> None:
         code = self._lang_combo.itemData(index)

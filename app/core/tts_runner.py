@@ -4,7 +4,8 @@
 阶段（与 pipeline_panel 的 TTS_PIPELINE_STEPS 对应）：
 01 文本处理 → 分句（。！？!?… 换行，英文句点仅后随空白时切分）、
     语言自动检测（langid + 中英混排判 zhen）、参考音频 ffmpeg 规范化
-    （22050Hz 单声道 WAV，规避解码兼容问题）；
+    （22050Hz 单声道 WAV，规避解码兼容问题）+ RMS 响度归一化
+    （低电平参考会连累克隆输出整体偏低，见 _loudness_normalize）；
 02 语音合成 → IndexTTS-2.5 逐句克隆合成（自由时长：不向原片时长对齐，
     只裁首尾静音），句级断点续跑（synthesis.json 已有且 WAV 存在的句子
     直接复用）；情绪按句定制（emo_vector），语速经 duration_factor=1/语速；
@@ -68,6 +69,14 @@ INTERVAL_SILENCE_SEC = 0.2
 # TTS 输出采样率（IndexTTS-2.5 固定 22050Hz PCM16）
 TTS_SAMPLE_RATE = 22050
 
+# 参考音频响度归一化目标（整体 RMS，dBFS）。IndexTTS 克隆输出电平跟随
+# 参考音频，且引擎内部不做归一（infer_v2_5._load_and_cut_audio 为裸
+# librosa.load）；低电平参考会让生成语音整体偏低——轻则成品音量过小，
+# 重则尾部衰减被合成后的静音裁剪误切（见 pipeline/tts.py._trim_silence）
+REF_TARGET_RMS_DB = -20.0
+# 峰值安全上限（线性，约 -3 dBFS）：目标增益会削波时以峰值封顶
+REF_PEAK_CEILING = 0.7
+
 # TTS 流程布局版本：2 = 四阶段（新增 03_语音复核，封装输出 03→04）；
 # 旧版（三阶段）工作夹在 _execute 开头全量重跑（产物目录已变）
 TTS_FLOW_VERSION = 2
@@ -82,9 +91,33 @@ def emotion_vector(key: str | None) -> list[float] | None:
     return vector
 
 
+def _loudness_normalize(data: "object") -> "object":
+    """RMS 响度归一化：整体电平拉到 REF_TARGET_RMS_DB，峰值封顶防削波。
+
+    响度过高的参考同样被拉回目标（克隆输出电平不随参考漂移）；全静音
+    （RMS 近零）原样返回——无从归一，也不放大底噪。
+    """
+    import numpy as np
+
+    d = np.asarray(data, dtype=np.float32).ravel()
+    if d.size == 0:
+        return d
+    rms = float(np.sqrt(np.mean(d.astype(np.float64) ** 2)))
+    if rms <= 1e-8:
+        return d
+    gain = (10.0 ** (REF_TARGET_RMS_DB / 20.0)) / rms
+    peak = float(np.abs(d).max())
+    if peak > 0.0 and peak * gain > REF_PEAK_CEILING:
+        gain = REF_PEAK_CEILING / peak
+    return d * gain
+
+
 def normalize_ref_audio(src: Path, out: Path) -> None:
-    """参考音频规范化为 22050Hz 单声道 PCM16 WAV（ffmpeg 优先，回退
-    soundfile+soxr）。
+    """参考音频规范化：22050Hz 单声道 PCM16 WAV + RMS 响度归一化。
+
+    ffmpeg 优先（解码为 f32le 原始流；响度归一化统一由 numpy 执行，
+    两条路径行为一致，也避开 loudnorm 单遍动态归一化的抽吸感与内部
+    192k 上采样），回退 soundfile+soxr。
 
     runner 的文本处理阶段与流程查看窗口的"更换参考音频"共用（主进程
     执行——回退不得用 librosa：其数据包子包在 Nuitka 冻结态缺失，
@@ -96,18 +129,25 @@ def normalize_ref_audio(src: Path, out: Path) -> None:
 
     ffmpeg = get_ffmpeg_path()
     if ffmpeg:
+        import numpy as np
+        import soundfile as sf
+
         cmd = [
             ffmpeg, "-y", "-i", str(src),
             "-ac", "1", "-ar", str(TTS_SAMPLE_RATE),
-            "-sample_fmt", "s16", str(out),
+            "-f", "f32le", "-",
         ]
         proc = subprocess.run(
             cmd, capture_output=True, timeout=120, check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        if proc.returncode == 0 and out.is_file():
-            return
-        logger.warning("ffmpeg 参考音频规范化失败，回退 soundfile+soxr: %s",
+        if proc.returncode == 0 and len(proc.stdout) >= 4:
+            data = np.frombuffer(proc.stdout, dtype="<f4")
+            if data.size:
+                sf.write(str(out), _loudness_normalize(data),
+                         TTS_SAMPLE_RATE, subtype="PCM_16")
+                return
+        logger.warning("ffmpeg 参考音频解码失败，回退 soundfile+soxr: %s",
                       proc.stderr[-300:] if proc.stderr else "")
 
     # 回退：soundfile 解码 + soxr 重采样 + 均值混缩单声道（ffmpeg 不可
@@ -121,7 +161,7 @@ def normalize_ref_audio(src: Path, out: Path) -> None:
         data = data.mean(axis=1, keepdims=True)  # 多声道均值混缩为单声道
     if sr != TTS_SAMPLE_RATE:
         data = soxr.resample(data, sr, TTS_SAMPLE_RATE)
-    sf.write(str(out), data, TTS_SAMPLE_RATE, subtype="PCM_16")
+    sf.write(str(out), _loudness_normalize(data), TTS_SAMPLE_RATE, subtype="PCM_16")
 
 
 def split_sentences(text: str) -> list[str]:

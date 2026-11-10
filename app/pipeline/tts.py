@@ -193,28 +193,39 @@ def tts_runtime_ready() -> tuple[bool, str]:
     return True, ""
 
 
-def _trim_silence(wav, threshold_db: float = -45.0) -> "object":
-    """去掉首尾近静音（按帧 RMS 阈值），全静音时原样返回。
+def _trim_silence(wav, sr: int) -> "object":
+    """去掉首尾近静音（帧 RMS 相对阈值），全静音时原样返回。
 
-    使用 30ms 帧长扫描，从首/尾找到第一个超阈帧，向前/向后多保留 60ms 余量，
-    保证起音自然。
+    阈值为自适应相对阈值：取帧 RMS 的 95 分位（语音电平基准，个别爆音
+    /毛刺帧不抬基准）回退 -30 dB，并以 -60 dBFS 绝对下限兜底防保住底
+    噪。不能用固定绝对 dBFS 阈值：IndexTTS 克隆输出电平跟随参考音频
+    （引擎内部不做归一化），低电平参考会让整句输出偏低，绝对阈值会把
+    最后一个字的衰减尾巴当静音切掉（实测：低电平参考 + 旧 -45 dBFS
+    绝对阈值时，文本转语音任务几乎每句切尾）。
+
+    使用 30ms 帧长（按实际采样率计算）扫描，从首/尾找到第一个超阈帧，
+    向前/向后各多保留 3 帧（约 90ms）余量，保证起音与尾音自然。
     """
     import numpy as np
 
     if wav is None or len(wav) == 0:
         return wav
     data = np.asarray(wav, dtype=np.float32)
-    frame = max(1, int(0.03 * 24000))  # 帧长按采样率无关的近似值扫描
+    frame = max(1, int(0.03 * sr))  # 30ms 帧长
     n = len(data) // frame
     if n < 3:
         return data
     frames = data[: n * frame].reshape(n, frame)
     rms = np.sqrt((frames ** 2).mean(axis=1))
-    thr = 10.0 ** (threshold_db / 20.0)
+    speech_ref = float(np.percentile(rms, 95))
+    if speech_ref <= 0.0:
+        return data
+    rel_thr = speech_ref * (10.0 ** (-30.0 / 20.0))  # 相对语音电平 -30 dB
+    thr = max(rel_thr, 10.0 ** (-60.0 / 20.0))        # 绝对下限兜底
     nonzero = np.nonzero(rms > thr)[0]
     if len(nonzero) == 0:
         return data
-    pad_frames = 2  # 约 60ms 余量
+    pad_frames = 3  # 约 90ms 余量（尾字韵母衰减长，防切字）
     start = max(0, (nonzero[0] - pad_frames) * frame)
     end = min(len(data), (nonzero[-1] + 1 + pad_frames) * frame)
     return data[start:end]
@@ -450,7 +461,7 @@ class TTSEngine:
         # 后处理（父进程）：裁静音；配音任务再做时长对齐
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         wav, sr = sf.read(str(out_path), dtype="float32", always_2d=True)
-        trimmed = _trim_silence(wav[:, 0])
+        trimmed = _trim_silence(wav[:, 0], sr)
         sf.write(str(out_path), trimmed, sr, subtype="PCM_16")
         raw_duration = len(trimmed) / sr
 
