@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """流程编排引擎：QThread 中按阶段串行执行流水线，支持人工审核暂停点。
 
-阶段顺序（配音模式全量；仅字幕模式跳过 人声分离 / TTS / 配音复核 / 混音，
-封装输出退化为归档字幕副本）：
+阶段顺序（配音模式全量；仅字幕模式默认执行 人声分离（可关）并跳过
+TTS / 配音复核 / 混音，封装输出退化为归档字幕副本）：
 音频提取 → 人声分离 → ASR → 文本审核（人工）→
 LLM 翻译（Index-Translate-2B，配音任务追加 Index-Homura-2B 时长修正）→
 [译文人工审核] → SRT 字幕 → 参考音色挑选/[音色管理] →
@@ -197,6 +197,9 @@ class TaskConfig:
     task_category: str = ""        # 任务类别（工作夹名后缀，固定中文）
     auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
     overlay_original_audio: bool = True  # 混音后将配音对白按时间线覆盖回原声（保留句间语气词，默认开启）
+    separate_enabled: bool = True  # 生成字幕任务的人声分离开关（配音任务
+    # 恒分离，忽略此字段；开关状态记 manifest 标记，切换后 ASR 及下游
+    # 失效重跑）
     asr_model_dir: str = ""
     tts_model_dir: str = ""
     llm_model_path: str = ""       # 翻译模型 GGUF 路径（Index-Translate-2B）
@@ -331,11 +334,12 @@ class PipelineRunner(QThread):
     def _execute(self) -> RunResult:
         cfg = self._cfg
         dub = cfg.dubbing_enabled
+        separate = dub or cfg.separate_enabled
         is_video = Path(cfg.media_path).suffix.lower() in VIDEO_EXTS
         translate_needed = cfg.source_lang_code != cfg.target_lang_code or cfg.source_lang_code == "auto"
 
         self._log(tr("runner.started", name=Path(cfg.media_path).name))
-        self._build_weights(dub, is_video, translate_needed)
+        self._build_weights(dub, is_video, translate_needed, separate)
 
         # 1. 音频提取
         self._stage_begin(STAGE_EXTRACT)
@@ -351,10 +355,28 @@ class PipelineRunner(QThread):
         full_audio = str(self._ws.full_audio)
         self._check()
 
-        # 2. 人声分离（仅配音模式）
+        # 2. 人声分离（配音任务恒开；生成字幕任务按"人声分离"开关，
+        #    开启后 ASR 识别纯人声、背景音较大时准确率更高）
         vocals = full_audio
         no_vocals = ""
-        if dub:
+        if not dub:
+            # 分离开关与上次运行不一致：ASR 输入音源改变，ASR 及下游
+            # 全部失效重跑。未记录过开关的旧任务按"分离阶段已完成"
+            # 推断上次音源（配音旧任务已分离过，不误伤；字幕旧任务
+            # 从未分离，首次开启时 ASR 重跑）
+            flag = self._ws.stage_flag("separate_enabled")
+            prev = (
+                bool(flag) if flag is not None
+                else self._ws.is_done(STAGE_SEPARATE)
+            )
+            if prev != cfg.separate_enabled:
+                self._ws.reset_stages([
+                    STAGE_ASR, STAGE_REVIEW, STAGE_TRANSLATE,
+                    STAGE_REVIEW_TRANSLATION, STAGE_TTS, STAGE_TTS_REVIEW,
+                    STAGE_MIX, STAGE_MUX,
+                ])
+            self._ws.set_stage_flag("separate_enabled", cfg.separate_enabled)
+        if separate:
             self._stage_begin(STAGE_SEPARATE)
             if self._ws.is_done(STAGE_SEPARATE):
                 self._skip_stage(STAGE_SEPARATE)
@@ -1084,11 +1106,14 @@ class PipelineRunner(QThread):
 
     # ------------------------------------------------------------------ 进度/日志
 
-    def _build_weights(self, dub: bool, is_video: bool, translate_needed: bool) -> None:
+    def _build_weights(
+        self, dub: bool, is_video: bool, translate_needed: bool,
+        separate: bool = False,
+    ) -> None:
         weights: list[tuple[str, float]] = [
             (STAGE_EXTRACT, 3.0),
         ]
-        if dub:
+        if dub or separate:
             weights.append((STAGE_SEPARATE, 12.0))
         weights += [
             (STAGE_ASR, 25.0),

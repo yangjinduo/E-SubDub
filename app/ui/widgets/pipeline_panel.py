@@ -45,6 +45,18 @@ SUBTITLE_PIPELINE_STEPS: list[tuple[str, str]] = [
     ("mux", "step.mux"),
 ]
 
+# 生成字幕任务勾选"人声分离"后的步骤（字幕任务的默认形态）：ASR 用
+# 分离出的纯人声识别，背景音较大时准确率更高
+SUBTITLE_SEPARATE_PIPELINE_STEPS: list[tuple[str, str]] = [
+    ("extract", "step.extract"),
+    ("separate", "step.separate"),
+    ("asr", "step.asr"),
+    ("proofread", "step.proofread"),
+    ("translate", "step.translate"),
+    ("review_translation", "step.review_translation"),
+    ("mux", "step.mux"),
+]
+
 # 文本转语音任务的步骤：03 语音复核 = 合成后的试听/删除/重生成暂停点；
 # 末步封装输出 = 拼接复核保留句 + 转码 + SRT，成品直落 04_封装输出
 TTS_PIPELINE_STEPS: list[tuple[str, str]] = [
@@ -113,22 +125,12 @@ class PipelinePanel(QFrame):
         title.setObjectName("sectionTitle")
 
         # 步骤链：步骤标签带序号（与流程子夹序号对应），之间以箭头分隔
-        step_list = steps if steps is not None else PIPELINE_STEPS
+        self._steps = steps if steps is not None else PIPELINE_STEPS
         self._chips: dict[str, StepChip] = {}
-        steps_row = QHBoxLayout()
-        steps_row.setContentsMargins(0, 0, 0, 0)
-        steps_row.setSpacing(4)
-        for index, (step_id, key) in enumerate(step_list):
-            if index > 0:
-                arrow = QLabel("→")
-                arrow.setObjectName("stepArrow")
-                steps_row.addWidget(arrow, 0)
-            chip = StepChip(f"{index + 1:02d} {tr(key)}")
-            chip.clicked.connect(
-                lambda sid=step_id: self.stage_clicked.emit(sid)
-            )
-            self._chips[step_id] = chip
-            steps_row.addWidget(chip)
+        self._steps_row = QHBoxLayout()
+        self._steps_row.setContentsMargins(0, 0, 0, 0)
+        self._steps_row.setSpacing(4)
+        self._rebuild_steps()
 
         # 总进度条
         progress_row = QHBoxLayout()
@@ -154,11 +156,44 @@ class PipelinePanel(QFrame):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
         layout.addWidget(title)
-        layout.addLayout(steps_row)
+        layout.addLayout(self._steps_row)
         layout.addLayout(progress_row)
         layout.addWidget(self._log_box, 1)
 
+    def _rebuild_steps(self) -> None:
+        """按 self._steps 重建步骤链控件（初建与 set_steps 换装共用）。"""
+        while True:
+            item = self._steps_row.takeAt(0)
+            if item is None:
+                break
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._chips = {}
+        for index, (step_id, key) in enumerate(self._steps):
+            if index > 0:
+                arrow = QLabel("→")
+                arrow.setObjectName("stepArrow")
+                self._steps_row.addWidget(arrow, 0)
+            chip = StepChip(f"{index + 1:02d} {tr(key)}")
+            chip.clicked.connect(
+                lambda sid=step_id: self.stage_clicked.emit(sid)
+            )
+            self._chips[step_id] = chip
+            self._steps_row.addWidget(chip)
+
     # ------------------------------------------------------------------ 对外接口
+
+    def set_steps(self, steps: list) -> None:
+        """切换流程步骤列表（字幕任务"人声分离"开关切换时换装）。
+
+        重建后各步骤回到 pending 态；调用方负责随后按任务当前进度
+        重新恢复各步骤状态（_restore_pipeline）。
+        """
+        if steps == self._steps:
+            return
+        self._steps = steps
+        self._rebuild_steps()
 
     def set_step_state(self, step_id: str, state: str) -> None:
         """设置指定步骤的状态（供流程引擎调用，参数为步骤 ID）。"""

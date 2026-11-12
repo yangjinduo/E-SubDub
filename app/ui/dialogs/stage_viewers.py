@@ -24,7 +24,7 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -70,6 +70,10 @@ from app.core.workspace import (
     TTS_TASK_STAGE_ORDER,
     Workspace,
     downstream_stages,
+)
+from app.pipeline.ref_separate import (
+    is_pure_voice_file,
+    separate_reference_audio,
 )
 from app.ui.dialogs.tts_edit_dialog import emotion_color, emotion_label
 from app.ui.style import table_qss, tokens
@@ -839,11 +843,47 @@ def _fmt_secs(seconds: float) -> str:
     return f"{minutes:02d}:{seconds - minutes * 60:04.1f}"
 
 
+class _RefSeparateThread(QThread):
+    """参考音频人声分离后台线程（查看窗口更换参考时执行）。
+
+    Demucs 分离耗时数分钟：放后台线程执行并经信号回传进度/结果，
+    避免阻塞 UI 线程；缓存命中时立即返回，同样走本线程统一路径。
+    """
+
+    progressed = Signal(int)    # 进度百分比 0-100
+    finished_ok = Signal(str)   # 实际使用的音频路径
+    failed = Signal(str)        # 错误信息
+
+    def __init__(
+        self, src: Path, fallback_dir: Path, device: str, parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._src = src
+        self._fallback_dir = fallback_dir
+        self._device = device
+
+    def run(self) -> None:
+        try:
+            effective = separate_reference_audio(
+                self._src, self._fallback_dir, device=self._device,
+                progress=self._emit_progress,
+            )
+        except Exception as exc:  # noqa: BLE001 - 经信号回传由调用方提示
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(str(effective))
+
+    def _emit_progress(self, fraction: float, _message: str) -> None:
+        self.progressed.emit(int(min(max(fraction, 0.0), 1.0) * 100))
+
+
 class TtsTextViewer(StageViewerWindow):
     """文本处理（文本转语音）：分句/情绪表 + 参考音频试听（可更换）。
 
-    更换参考音频：规范化覆盖 01_文本处理/ref_audio.wav 并回写任务配置
-    的源路径（输入指纹随源路径变化，下次执行四阶段全量重跑）。
+    更换参考音频：按任务的"参考音频人声分离"开关先分离（后台线程，
+    按钮文案显示进度），再规范化覆盖 01_文本处理/ref_audio.wav 并回写
+    任务配置的源路径（输入指纹含源内容与分离开关，下次执行四阶段
+    全量重跑）。分离失败提示后用原始参考规范化继续。
     """
 
     def _build_content(self) -> None:
@@ -897,24 +937,76 @@ class TtsTextViewer(StageViewerWindow):
         ref_row.setSpacing(10)
         self._ref_player = AudioPlayerBar(self)
         self._ref_player.set_source(str(self._ws.tts_ref_audio))
-        change_button = QPushButton(tr("viewer.tts.change_ref"))
-        change_button.setObjectName("cardSettingButton")
-        change_button.clicked.connect(self._on_change_ref)
+        self._change_ref_button = QPushButton(tr("viewer.tts.change_ref"))
+        self._change_ref_button.setObjectName("cardSettingButton")
+        self._change_ref_button.clicked.connect(self._on_change_ref)
         ref_row.addWidget(self._ref_player, 1)
-        ref_row.addWidget(change_button)
+        ref_row.addWidget(self._change_ref_button)
         self._content.addLayout(ref_row)
+        self._sep_thread: _RefSeparateThread | None = None
 
     def _on_change_ref(self) -> None:
-        """更换参考音频：规范化覆盖产物并回写配置源路径。"""
+        """更换参考音频：按任务开关先分离（后台线程）再规范化。"""
         path, _filter = QFileDialog.getOpenFileName(
             self, tr("viewer.tts.change_ref_title"), "",
             "Audio (*.wav *.mp3 *.m4a *.flac *.aac *.ogg *.opus)",
         )
         if not path:
             return
+        cfg = self._item.config
+        need_sep = (
+            isinstance(cfg, TtsTaskConfig)
+            and cfg.ref_separate_enabled
+            and not is_pure_voice_file(path)
+        )
+        if not need_sep:
+            self._apply_new_ref(path, Path(path))
+            return
+        self._ref_player.release()  # 先释放文件句柄，避免覆盖被占用
+        button = self._change_ref_button
+        button.setEnabled(False)
+        button.setText(tr("viewer.tts.separating", pct=0))
+        self._sep_thread = _RefSeparateThread(
+            Path(path), self._ws.ensure_stage_dir(STAGE_TTS_TEXT), cfg.device,
+            parent=self,
+        )
+        self._sep_thread.progressed.connect(
+            lambda pct: button.setText(tr("viewer.tts.separating", pct=pct))
+        )
+        self._sep_thread.finished_ok.connect(
+            lambda effective: self._on_ref_separated(path, effective)
+        )
+        self._sep_thread.failed.connect(
+            lambda error: self._on_ref_separate_failed(path, error)
+        )
+        self._sep_thread.start()
+
+    def _on_ref_separated(self, src_path: str, effective: str) -> None:
+        """分离完成：规范化分离产物并回写。"""
+        self._finish_ref_separate()
+        self._apply_new_ref(src_path, Path(effective))
+
+    def _on_ref_separate_failed(self, src_path: str, error: str) -> None:
+        """分离失败：提示后用原始参考规范化继续（与 runner 行为一致）。"""
+        self._finish_ref_separate()
+        QMessageBox.warning(
+            self, tr("viewer.tts.change_ref"),
+            tr("tts_runner.ref_separate_failed", error=error),
+        )
+        self._apply_new_ref(src_path, Path(src_path))
+
+    def _finish_ref_separate(self) -> None:
+        """分离结束（成功/失败共用）：恢复按钮。"""
+        self._sep_thread = None
+        button = self._change_ref_button
+        button.setEnabled(True)
+        button.setText(tr("viewer.tts.change_ref"))
+
+    def _apply_new_ref(self, src_path: str, effective: Path) -> None:
+        """规范化（分离产物或原始参考）覆盖产物并回写配置源路径。"""
         self._ref_player.release()  # 先释放文件句柄，避免覆盖被占用
         try:
-            normalize_ref_audio(Path(path), self._ws.tts_ref_audio)
+            normalize_ref_audio(effective, self._ws.tts_ref_audio)
         except Exception as exc:  # noqa: BLE001 - 规范化失败提示后保持原状
             QMessageBox.warning(
                 self, tr("viewer.tts.change_ref"), str(exc)
@@ -923,11 +1015,24 @@ class TtsTextViewer(StageViewerWindow):
             return
         cfg = self._item.config
         if isinstance(cfg, TtsTaskConfig):
-            cfg.ref_audio_path = path  # 指纹含源路径 → 下次执行全量重跑
+            cfg.ref_audio_path = src_path  # 指纹含源内容 → 下次执行全量重跑
         self._ref_player.set_source(str(self._ws.tts_ref_audio))
         QMessageBox.information(
             self, tr("viewer.tts.change_ref"), tr("viewer.tts.ref_changed")
         )
+
+    def closeEvent(self, event) -> None:
+        """分离线程仍在运行时阻止关闭（QThread 运行中被销毁会崩溃）。"""
+        # _build_content 无分句时提前返回（无更换入口），属性可能不存在
+        thread = getattr(self, "_sep_thread", None)
+        if thread is not None and thread.isRunning():
+            QMessageBox.warning(
+                self, tr("viewer.tts.change_ref"),
+                tr("viewer.tts.still_separating"),
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class _TtsSentencesWidget(QWidget):

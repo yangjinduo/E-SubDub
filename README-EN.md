@@ -52,7 +52,7 @@ English | [简体中文](README.md)
 
 - **Three task entry points**: The top of the task list provides three independent entries — **＋ Dubbing & Subtitles** (full pipeline), **＋ Generate Subtitles** (up to translation review only), and **＋ Text-to-Speech** (pure TTS).
 - **Dubbing & Subtitles**: Import a video, choose source and target languages, and the full pipeline runs automatically from audio extraction to final packaging.
-- **Text-to-Speech (pure TTS)**: Type or drop in a TXT file, choose a reference audio to clone a voice, and synthesize speech sentence by sentence; supports automatic language identification (langid), speed from 0.5–2.0×, per-sentence emotion customization, output to WAV / MP3 / M4A / FLAC, and optional SRT subtitles generated from actual sentence durations. After synthesis, a speech review step lets you audition / play continuously, delete sentences, and change emotions by clicking the emotion column with instant re-generation.
+- **Text-to-Speech (pure TTS)**: Type or drop in a TXT file, choose a reference audio to clone a voice, and synthesize speech sentence by sentence; the reference audio can be vocal-separated first (Demucs removes background noise; the result is cached next to the reference file so the same reference is never separated twice; enabled by default). Supports automatic language identification (langid), speed from 0.5–2.0×, per-sentence emotion customization, output to WAV / MP3 / M4A / FLAC, and optional SRT subtitles generated from actual sentence durations. After synthesis, a speech review step lets you audition / play continuously, delete sentences, and change emotions by clicking the emotion column with instant re-generation.
 - **Speaker-diarized transcription**: Based on MOSS-Transcribe-Diarize, automatically distinguishes speakers and produces sentence-level text with timestamps.
 - **Translation specially optimized for Chinese**:
   - Subtitles are translated with the Index-Translate-2B model;
@@ -107,7 +107,7 @@ After first launch:
 2. In the settings window, use the **Runtime Environment** row to set up the TTS virtual environment (.venv-tts) and the LLAMA inference service (llama.cpp) — when running from source, ML inference (vocal separation / speech recognition) reuses the main virtual environment directly; only the installer build automatically sets up a separate ML inference environment (.venv-ml);
 3. Create tasks with the buttons at the top of the task list:
    - **＋ Dubbing & Subtitles**: import a video, configure source/target languages, and run the full pipeline;
-   - **＋ Generate Subtitles**: same as above, but only produces subtitles (no vocal separation or dubbing stages);
+   - **＋ Generate Subtitles**: same as above, but only produces subtitles (no dubbing stages; vocal separation runs by default and can be turned off);
    - **＋ Text-to-Speech**: input TXT text + a reference audio, and synthesize speech with a cloned voice.
 
 ### Workflow
@@ -223,13 +223,13 @@ Each task writes its output stage by stage, in pipeline order, under its working
 | 09 | Mixing | `09_混音` | Dubbing mixed with background audio |
 | 10 | Packaging | `10_封装输出` | Final output: MKV packaging (audio track named `AI dubbing {language}`) + bilingual SRT; SRT copy for subtitle-only tasks |
 
-**Generate Subtitles** tasks run only stages 01 / 03 / 04 / 05 / 06 / 10 (no vocal separation or dubbing stages; the final SRT is archived to `10_封装输出`).
+**Generate Subtitles** tasks run stages 01 / 02 / 03 / 04 / 05 / 06 / 10 by default (the "Separate vocals" checkbox is checked by default: recognition works on the isolated vocals, which is noticeably more accurate when the background sound is loud; unchecking it skips stage 02 and recognizes the extracted full audio track directly. Toggling it invalidates recognition and all downstream stages); the final SRT is archived to `10_封装输出`.
 
 **Text-to-Speech** tasks use a separate four-stage pipeline (same working-directory naming):
 
 | #  | Stage | Directory | Description |
 | -- | ----- | --------- | ----------- |
-| 01 | Text processing | `01_文本处理` | Sentence splitting, language detection (langid), editing (emotion) results written to disk |
+| 01 | Text processing | `01_文本处理` | Sentence splitting, language detection (langid), optional reference-audio vocal separation (Demucs; the result is cached next to the reference file), editing (emotion) results written to disk |
 | 02 | Speech synthesis | `02_语音合成` | IndexTTS-2.5 clones a voice from the reference audio and synthesizes sentence by sentence (with speed and emotion vectors) |
 | 03 | Speech review | `03_语音复核` | Audition / play continuously, delete sentences, change emotions from the emotion column with instant re-generation (skippable) |
 | 04 | Packaging | `04_封装输出` | Concatenates inter-sentence silence, writes the WAV / MP3 / M4A / FLAC output named after the task, and generates SRT from actual durations |
@@ -254,6 +254,7 @@ app/
 ├── pipeline/                # Pipeline stage implementations
 │   ├── audio_extract.py     # 01 audio extraction
 │   ├── separate.py          # 02 vocal separation (Demucs)
+│   ├── ref_separate.py      # Reference-audio vocal separation (TTS / change-ref; dual-suffix cache, recognized across languages)
 │   ├── asr.py               # 03 speech recognition (MOSS-Transcribe-Diarize + VAD chunking)
 │   ├── ml_client.py         # ML inference engine: demucs / ASR worker subprocess management
 │   ├── ml_worker.py         # ML subprocess worker (runs in .venv-ml when frozen)

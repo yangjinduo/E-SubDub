@@ -156,6 +156,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "句间等其余时段保留原声，笑声、惊叹等语气词与现场氛围因此得以保留；\n"
             "不勾选：整轨使用分离出的纯背景音配新配音，原声中的语气词不会保留。"
         ),
+        "task.separate": "人声分离",
+        "task.separate.tooltip": "过滤背景音，仅保留人声，提升识别效果。",
         "task.output_dir": "输出目录",
         "task.choose_output_dir": "选择输出目录",
         "task.output_dir_placeholder": "必填：点击右侧 … 选择输出目录",
@@ -471,6 +473,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts.lang_auto_detected": "自动识别（{lang}）",
         "tts.speed": "语速",
         "tts.generate_srt": "生成 SRT 字幕",
+        "tts.ref_separate": "参考音频人声分离",
+        "tts.ref_separate.tooltip": (
+            "过滤参考音频的背景音，仅保留人声用作参考。\n"
+            "所选文件名已带纯人声标记（●纯人声 / ●Vocals）时本开关自动关闭。"
+        ),
+        "tts.ref_separate.pure_hint": (
+            "所选文件已是纯人声（●纯人声 / ●Vocals），无需再提取。"
+        ),
         "tts.output_format": "输出格式",
         "tts.format.wav": "WAV 无损",
         "tts.format.mp3": "MP3 通用",
@@ -521,6 +531,17 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "edit_dialog.deleted": "（已删除）",
         # ---- 文本转语音流程引擎 ----
         "tts_runner.started": "开始文本转语音：{name}",
+        "tts_runner.ref_cache_hit": "命中参考人声缓存，直接复用：{name}",
+        "tts_runner.ref_separated": "参考音频人声分离完成：{name}",
+        "tts_runner.ref_separate_device_fallback": (
+            "人声分离在 {device} 上失败（{error}），改用 CPU 重试。"
+        ),
+        "tts_runner.ref_cache_fallback": (
+            "参考音频所在目录不可写，分离结果改存任务目录：{name}"
+        ),
+        "tts_runner.ref_separate_failed": (
+            "参考音频人声分离失败：{error}；将使用原始参考音频继续。"
+        ),
         "tts_runner.no_text": "文本分句后为空，无法合成。",
         "tts_runner.sentences": "分句完成：共 {count} 句（语言：{lang}）",
         "tts_runner.lang_detect_failed": "未能识别文本语言，按中文合成。",
@@ -592,6 +613,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "viewer.tts.change_ref": "更换参考音频",
         "viewer.tts.change_ref_title": "选择参考音频文件",
         "viewer.tts.ref_changed": "参考音频已更换：下次执行时将从头重新合成。",
+        "viewer.tts.separating": "人声分离中… {pct}%",
+        "viewer.tts.still_separating": (
+            "参考音频人声分离仍在进行，请等待完成后再关闭窗口。"
+        ),
         "viewer.tts.final_audio": "成品音频",
         "viewer.tts.lang": "语言：{lang}",
         # ---- 音频试听条 ----
@@ -724,6 +749,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "Unchecked: the whole track uses the separated background only, and those "
             "interjections are lost."
         ),
+        "task.separate": "Separate vocals",
+        "task.separate.tooltip": "Filter background noise and keep only human voice to improve recognition.",
         "task.output_dir": "Output directory",
         "task.choose_output_dir": "Choose output directory",
         "task.output_dir_placeholder": "Required: click … on the right to choose a directory",
@@ -1052,6 +1079,15 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "tts.lang_auto_detected": "Auto-detect ({lang})",
         "tts.speed": "Speech rate",
         "tts.generate_srt": "Generate SRT subtitles",
+        "tts.ref_separate": "Separate vocals in reference audio",
+        "tts.ref_separate.tooltip": (
+            "Filter background noise from the reference audio and keep only human voice for reference.\n"
+            "Automatically disabled when the selected file name already carries a pure-vocal marker (●纯人声 / ●Vocals)."
+        ),
+        "tts.ref_separate.pure_hint": (
+            "The selected file is already pure voice "
+            "(●纯人声 / ●Vocals); no extraction needed."
+        ),
         "tts.output_format": "Output format",
         "tts.format.wav": "WAV lossless",
         "tts.format.mp3": "MP3 general",
@@ -1103,6 +1139,17 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "edit_dialog.deleted": "(deleted)",
         # ---- Text-to-speech pipeline engine ----
         "tts_runner.started": "Text-to-speech started: {name}",
+        "tts_runner.ref_cache_hit": "Reference vocal cache hit, reusing: {name}",
+        "tts_runner.ref_separated": "Reference audio separated: {name}",
+        "tts_runner.ref_separate_device_fallback": (
+            "Vocal separation failed on {device} ({error}); retrying on CPU."
+        ),
+        "tts_runner.ref_cache_fallback": (
+            "Reference folder is not writable; separated result stored in the task folder: {name}"
+        ),
+        "tts_runner.ref_separate_failed": (
+            "Reference vocal separation failed: {error}; continuing with the original reference."
+        ),
         "tts_runner.no_text": "Sentence split is empty; nothing to synthesize.",
         "tts_runner.sentences": "Sentence split done: {count} sentences (language: {lang})",
         "tts_runner.lang_detect_failed": "Text language not detected; synthesizing as Chinese.",
@@ -1174,6 +1221,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "viewer.tts.change_ref": "Change reference audio",
         "viewer.tts.change_ref_title": "Choose a reference audio file",
         "viewer.tts.ref_changed": "Reference audio changed: the task will synthesize from scratch next time.",
+        "viewer.tts.separating": "Separating vocals… {pct}%",
+        "viewer.tts.still_separating": (
+            "Reference vocal separation is still running; please wait for it to "
+            "finish before closing the window."
+        ),
         "viewer.tts.final_audio": "Final audio",
         "viewer.tts.lang": "Language: {lang}",
         # ---- Audio player bar ----

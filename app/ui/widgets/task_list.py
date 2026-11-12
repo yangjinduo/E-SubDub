@@ -219,9 +219,13 @@ class TaskListPanel(QFrame):
         layout.addWidget(self._table, 1)
         logger.info("任务列表：布局总装完成")
 
-        # 队列事件 → 表格刷新
-        manager.task_added.connect(lambda _tid: self._rebuild())
-        manager.task_removed.connect(lambda _tid: self._rebuild())
+        # 队列事件 → 表格刷新。
+        # 连接必须用绑定方法而非 lambda：语言/主题切换会整体重建界面，
+        # setCentralWidget 销毁旧面板；绑定方法的连接随接收者销毁自动
+        # 断开，lambda 无接收者上下文会残留，信号再发射时报
+        # "Internal C++ object already deleted"。
+        manager.task_added.connect(self._rebuild)
+        manager.task_removed.connect(self._rebuild)
         logger.info("任务列表：增删信号已连接")
         manager.task_state_changed.connect(self._on_state_changed)
         manager.task_progress_changed.connect(self._on_progress_changed)
@@ -229,11 +233,9 @@ class TaskListPanel(QFrame):
         manager.task_step_changed.connect(self._on_step_changed)
         logger.info("任务列表：状态/进度信号已连接")
         # 队列结构/状态变化 → "继续执行"按钮可用性
-        manager.task_added.connect(lambda _tid: self._update_resume_button())
-        manager.task_removed.connect(lambda _tid: self._update_resume_button())
-        manager.task_state_changed.connect(
-            lambda _tid: self._update_resume_button()
-        )
+        manager.task_added.connect(self._update_resume_button)
+        manager.task_removed.connect(self._update_resume_button)
+        manager.task_state_changed.connect(self._update_resume_button)
         logger.info("任务列表：双态按钮信号已连接")
         self._update_resume_button()
         logger.info("任务列表：双态按钮已刷新")

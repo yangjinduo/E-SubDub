@@ -98,12 +98,28 @@ SUBTITLE_CHOICES = [
 
 
 class TaskSettingsPanel(QFrame):
-    """媒体任务设置卡片（配音与字幕 / 生成字幕共用）。"""
+    """媒体任务设置卡片（配音与字幕 / 生成字幕共用）。
 
-    def __init__(self, show_overlay: bool = True, parent=None) -> None:
-        """show_overlay：是否显示"混音后叠加原背景音"开关（仅配音窗口）。"""
+    show_separate：是否显示"人声分离"开关（仅生成字幕窗口；配音任务
+    恒分离，开关无意义故不显示，separate_enabled() 恒返回 True）。
+    """
+
+    # 人声分离开关切换信号（新状态；字幕窗口用于换装流程步骤链）
+    separate_toggled = Signal(bool)
+
+    def __init__(
+        self,
+        show_overlay: bool = True,
+        show_separate: bool = False,
+        parent=None,
+    ) -> None:
+        """show_overlay：是否显示"混音后叠加原背景音"开关（仅配音窗口）。
+
+        show_separate：是否显示"人声分离"开关（仅生成字幕窗口）。
+        """
         super().__init__(parent)
         self.setProperty("card", True)
+        self._show_separate = show_separate
 
         title = QLabel(tr("task.title"))
         title.setObjectName("sectionTitle")
@@ -165,6 +181,18 @@ class TaskSettingsPanel(QFrame):
         if not show_overlay:
             self._overlay_original_check.hide()
 
+        # 人声分离（仅生成字幕窗口显示，默认开启）：ASR 识别分离出的
+        # 纯人声，背景音较大时字幕准确率更高；配音任务恒分离不显示
+        self._separate_check = QCheckBox(tr("task.separate"))
+        self._separate_check.setChecked(True)  # 默认开启
+        self._separate_check.setToolTip(tr("task.separate.tooltip"))
+        self._separate_check.setToolTipDuration(24 * 60 * 60 * 1000)
+        self._separate_check.toggled.connect(
+            lambda checked: self.separate_toggled.emit(checked)
+        )
+        if not show_separate:
+            self._separate_check.hide()
+
         # 输出目录：无默认值（必填），预填上次使用的输出目录（持久化于
         # tasks.json 顶层 output_dir 键，可能为空），为空时 placeholder 提示
         self._output_edit = QLineEdit(str(get_setting("output_dir") or ""))
@@ -179,6 +207,8 @@ class TaskSettingsPanel(QFrame):
         option_row.setSpacing(12)
         if show_overlay:
             option_row.addWidget(self._overlay_original_check)
+        if show_separate:
+            option_row.addWidget(self._separate_check)
         option_row.addStretch(1)
         option_row.addWidget(output_label)
         option_row.addWidget(self._output_edit, 2)
@@ -222,6 +252,16 @@ class TaskSettingsPanel(QFrame):
         """混音后叠加原背景音开关状态（对白覆盖回原声，保留句间语气词）。"""
         return self._overlay_original_check.isChecked()
 
+    def separate_enabled(self) -> bool:
+        """人声分离开关状态（配音窗口无此开关，恒 True）。"""
+        return self._separate_check.isChecked()
+
+    def set_separate_enabled(self, enabled: bool) -> None:
+        """恢复人声分离开关（绑定已有任务/语言切换重建时；不发射信号）。"""
+        self._separate_check.blockSignals(True)
+        self._separate_check.setChecked(bool(enabled))
+        self._separate_check.blockSignals(False)
+
     def output_dir(self) -> str:
         """输出目录路径文本。"""
         return self._output_edit.text().strip()
@@ -235,6 +275,7 @@ class TaskSettingsPanel(QFrame):
             "target": self._target_combo.currentIndex(),
             "subtitle": self._subtitle_combo.currentIndex(),
             "overlay_original": self._overlay_original_check.isChecked(),
+            "separate": self._separate_check.isChecked(),
             "output": self._output_edit.text(),
         }
 
@@ -245,6 +286,7 @@ class TaskSettingsPanel(QFrame):
         widgets = (
             self._source_combo, self._target_combo,
             self._subtitle_combo, self._overlay_original_check,
+            self._separate_check,
         )
         for w in widgets:
             w.blockSignals(True)
@@ -257,6 +299,8 @@ class TaskSettingsPanel(QFrame):
                 self._subtitle_combo.setCurrentIndex(state["subtitle"])
             if "overlay_original" in state:
                 self._overlay_original_check.setChecked(state["overlay_original"])
+            if "separate" in state:
+                self._separate_check.setChecked(state["separate"])
             if "output" in state:
                 self._output_edit.setText(state["output"])
         finally:
@@ -266,8 +310,12 @@ class TaskSettingsPanel(QFrame):
     def set_selected_codes(
         self, source: str, target: str, subtitle: str,
         overlay_original: bool, output_dir: str,
+        separate: bool = True,
     ) -> None:
-        """按稳定代码恢复设置（任务窗口绑定已有任务时使用）。"""
+        """按稳定代码恢复设置（任务窗口绑定已有任务时使用）。
+
+        separate 仅生成字幕窗口使用（配音窗口开关隐藏，恢复无副作用）。
+        """
         for combo, code in (
             (self._source_combo, source),
             (self._target_combo, target),
@@ -277,6 +325,11 @@ class TaskSettingsPanel(QFrame):
             if index >= 0:
                 combo.setCurrentIndex(index)
         self._overlay_original_check.setChecked(overlay_original)
+        # 阻塞信号：避免 toggled 触发步骤链换装，调用方随后统一
+        # _on_separate_toggled + _restore_pipeline（防双重恢复）
+        self._separate_check.blockSignals(True)
+        self._separate_check.setChecked(separate)
+        self._separate_check.blockSignals(False)
         self._output_edit.setText(output_dir)
 
     # ------------------------------------------------------------------ 交互
@@ -347,7 +400,16 @@ class TtsSettingsPanel(QFrame):
             pair.addWidget(widget, stretch)
             row1.addLayout(pair, stretch)
 
-        # 第二行：生成 SRT 字幕开关 / 输出格式 / 输出目录
+        # 第二行：参考音频人声分离 / 生成 SRT 字幕开关 / 输出格式 / 输出目录
+        # 参考人声分离（默认开启）：Demucs 去除参考中的背景杂音后再克隆；
+        # 所选文件已带纯人声标记时由任务窗口自动取消勾选并禁用
+        self._ref_separate_check = QCheckBox(tr("tts.ref_separate"))
+        self._ref_separate_check.setChecked(True)
+        self._ref_separate_check.setToolTip(tr("tts.ref_separate.tooltip"))
+        self._ref_separate_check.setToolTipDuration(24 * 60 * 60 * 1000)
+        # 纯人声文件强制禁用前的用户勾选记忆（恢复可勾选时还原）
+        self._ref_separate_locked_state: bool | None = None
+
         self._srt_check = QCheckBox(tr("tts.generate_srt"))
         self._srt_check.setChecked(True)  # 默认生成字幕
 
@@ -368,6 +430,7 @@ class TtsSettingsPanel(QFrame):
 
         row2 = QHBoxLayout()
         row2.setSpacing(12)
+        row2.addWidget(self._ref_separate_check)
         row2.addWidget(self._srt_check)
         row2.addStretch(1)
         format_pair = QHBoxLayout()
@@ -410,6 +473,34 @@ class TtsSettingsPanel(QFrame):
         """是否生成 SRT 字幕（时间轴按合成音频实际时长生成）。"""
         return self._srt_check.isChecked()
 
+    def ref_separate_enabled(self) -> bool:
+        """参考音频人声分离开关状态（纯人声文件强制禁用时恒 False）。"""
+        return self._ref_separate_check.isChecked()
+
+    def set_ref_separate_for_pure_voice(self, pure: bool) -> None:
+        """按所选参考是否带纯人声标记切换开关可用性（选中文件时调用）。
+
+        pure=True：记忆当前勾选后取消勾选并禁用（防重复分离）；
+        pure=False：恢复可用，并还原记忆的勾选状态（无记忆则保持现值）。
+        """
+        check = self._ref_separate_check
+        if pure:
+            if check.isEnabled():
+                self._ref_separate_locked_state = check.isChecked()
+            check.blockSignals(True)
+            check.setChecked(False)
+            check.blockSignals(False)
+            check.setEnabled(False)
+            check.setToolTip(tr("tts.ref_separate.pure_hint"))
+            return
+        check.setEnabled(True)
+        check.setToolTip(tr("tts.ref_separate.tooltip"))
+        if self._ref_separate_locked_state is not None:
+            check.blockSignals(True)
+            check.setChecked(self._ref_separate_locked_state)
+            check.blockSignals(False)
+            self._ref_separate_locked_state = None
+
     def output_format(self) -> str:
         """输出音频格式代码（"wav"/"mp3"/"m4a"/"flac"）。"""
         return self._format_combo.currentData()
@@ -450,6 +541,8 @@ class TtsSettingsPanel(QFrame):
             "lang": self._lang_combo.currentIndex(),
             "speed": self._speed_combo.currentIndex(),
             "srt": self._srt_check.isChecked(),
+            "ref_separate": self._ref_separate_check.isChecked(),
+            "ref_separate_enabled_widget": self._ref_separate_check.isEnabled(),
             "format": self._format_combo.currentIndex(),
             "output": self._output_edit.text(),
         }
@@ -461,6 +554,7 @@ class TtsSettingsPanel(QFrame):
         widgets = (
             self._name_edit, self._lang_combo,
             self._speed_combo, self._srt_check, self._format_combo,
+            self._ref_separate_check,
         )
         for w in widgets:
             w.blockSignals(True)
@@ -473,6 +567,13 @@ class TtsSettingsPanel(QFrame):
                 self._speed_combo.setCurrentIndex(state["speed"])
             if "srt" in state:
                 self._srt_check.setChecked(state["srt"])
+            if "ref_separate" in state:
+                self._ref_separate_check.setChecked(state["ref_separate"])
+            if "ref_separate_enabled_widget" in state:
+                # 纯人声文件的强制禁用随 state 一并还原（语言切换重建）
+                self._ref_separate_check.setEnabled(
+                    state["ref_separate_enabled_widget"]
+                )
             if "format" in state:
                 self._format_combo.setCurrentIndex(state["format"])
             if "output" in state:
@@ -484,8 +585,13 @@ class TtsSettingsPanel(QFrame):
     def set_selected_values(
         self, task_name: str, lang: str, speed: float,
         generate_srt: bool, output_format: str, output_dir: str,
+        ref_separate: bool = True,
     ) -> None:
-        """按稳定代码恢复设置（任务窗口绑定已有 TTS 任务时使用）。"""
+        """按稳定代码恢复设置（任务窗口绑定已有 TTS 任务时使用）。
+
+        ref_separate 为任务配置的参考人声分离开关；所选参考为纯人声
+        文件时随后的 _set_ref_audio 会强制禁用并记忆该值。
+        """
         self._name_edit.setText(task_name)
         for combo, code in ((self._lang_combo, lang), (self._format_combo, output_format)):
             index = combo.findData(code)
@@ -495,6 +601,7 @@ class TtsSettingsPanel(QFrame):
         if index >= 0:
             self._speed_combo.setCurrentIndex(index)
         self._srt_check.setChecked(bool(generate_srt))
+        self._ref_separate_check.setChecked(bool(ref_separate))
         self._output_edit.setText(output_dir)
 
     # ------------------------------------------------------------------ 交互

@@ -55,12 +55,14 @@ from app.core.task_manager import TaskItem, TaskManager, TaskState
 from app.core.tts_runner import TtsTaskConfig, split_sentences
 from app.core.workspace import STAGE_REVIEW
 from app.pipeline.llm_engine import resolve_llama_server_exe
+from app.pipeline.ref_separate import is_pure_voice_file
 from app.resources.model import get_resource_manager
 from app.ui.style import themed_icon, tokens
 from app.ui.widgets.import_area import ImportArea
 from app.ui.widgets.pipeline_panel import (
     PIPELINE_STEPS,
     SUBTITLE_PIPELINE_STEPS,
+    SUBTITLE_SEPARATE_PIPELINE_STEPS,
     TTS_PIPELINE_STEPS,
     STEP_ACTIVE,
     STEP_DONE,
@@ -592,7 +594,29 @@ class MediaTaskWindowBase(TaskWindowBase):
         layout.addWidget(self._import_area, 1)
 
     def _create_settings_panel(self) -> TaskSettingsPanel:
-        return TaskSettingsPanel(show_overlay=self._show_overlay)
+        panel = TaskSettingsPanel(
+            show_overlay=self._show_overlay,
+            show_separate=not self._dubbing_enabled,
+        )
+        panel.separate_toggled.connect(self._on_separate_toggled)
+        return panel
+
+    def _on_separate_toggled(self, checked: bool) -> None:
+        """字幕任务"人声分离"开关切换：换装流程步骤链并恢复步骤状态。
+
+        设置面板在任务执行中被禁用，切换只发生在空闲期（无中途换装）；
+        开关状态由任务启动记入 manifest，切换后 ASR 及下游失效重跑
+        （runner 侧处理），此处仅刷新显示。
+        """
+        steps = (
+            SUBTITLE_SEPARATE_PIPELINE_STEPS if checked
+            else SUBTITLE_PIPELINE_STEPS
+        )
+        self._steps = steps
+        self._panel.set_steps(steps)
+        item = self._current_item()
+        if item is not None:
+            self._restore_pipeline(item)
 
     def _input_widgets(self) -> list:
         return [self._import_area, *super()._input_widgets()]
@@ -603,9 +627,11 @@ class MediaTaskWindowBase(TaskWindowBase):
         self._task_settings.set_selected_codes(
             cfg.source_lang_code, cfg.target_lang_code, cfg.subtitle_mode,
             cfg.overlay_original_audio, cfg.output_dir,
+            separate=cfg.separate_enabled,
         )
         if self._auto_accept_check is not None:
             self._auto_accept_check.setChecked(cfg.auto_accept_reviews)
+        self._on_separate_toggled(self._task_settings.separate_enabled())
 
     def _collect_configs(self) -> list:
         """校验通过后按导入区文件逐个构造配置（首个失败即中止）。"""
@@ -776,6 +802,7 @@ class MediaTaskWindowBase(TaskWindowBase):
                 and self._auto_accept_check.isChecked()
             ),
             overlay_original_audio=self._task_settings.overlay_original_audio(),
+            separate_enabled=self._task_settings.separate_enabled(),
             asr_model_dir=resource_manager.get_resource_path("transcribe") or "",
             tts_model_dir=resource_manager.get_resource_path("tts") or "",
             llm_model_path=str(gguf) if gguf else "",
@@ -796,7 +823,8 @@ class DubbingTaskWindow(MediaTaskWindowBase):
 
 
 class SubtitleTaskWindow(MediaTaskWindowBase):
-    """生成字幕任务窗口（6 步：提取/识别/审核/翻译/译文审核/封装输出，无配音链路）。"""
+    """生成字幕任务窗口（无配音链路；"人声分离"开关默认开 → 7 步，
+    取消勾选后 6 步：提取/识别/审核/翻译/译文审核/封装输出）。"""
 
     _dubbing_enabled = False
     _show_overlay = False
@@ -1186,6 +1214,20 @@ class _ManualTextCard(QFrame):
         super().mousePressEvent(event)
 
 
+class _RecordedRefCombo(QComboBox):
+    """已录制音频下拉：每次展开前通知宿主刷新列表。
+
+    人声分离（含任务执行落盘的 ●纯人声/●Vocals 产物）与录制保存都会
+    在窗口存续期间改变录制目录内容，仅构建时填充会漏掉新文件，故
+    展开时由宿主重建一次。
+    """
+
+    popupAboutToShow = Signal()
+
+    def showPopup(self) -> None:
+        self.popupAboutToShow.emit()
+        super().showPopup()
+
 
 
 
@@ -1300,8 +1342,11 @@ class TtsTaskWindow(TaskWindowBase):
         self._record_button = QPushButton(tr("tts.record_ref"))
         self._record_button.setIcon(themed_icon(AppConfig.ICONS_DIR / "mic.svg"))
         self._record_button.clicked.connect(self._on_record_ref_clicked)
-        self._recorded_combo = QComboBox()
+        self._recorded_combo = _RecordedRefCombo()
         self._recorded_combo.activated.connect(self._on_recorded_activated)
+        # 每次展开重建列表：不关闭窗口也能拾取新生成的参考音频
+        # （录制保存 / 人声分离落盘的 ●纯人声/●Vocals 产物）
+        self._recorded_combo.popupAboutToShow.connect(self._refresh_recorded_list)
         self._ref_label = QLabel(tr("tts.ref_unset"))
         self._ref_label.setStyleSheet("color: #6B7280;")
         # 紧挨文件名标签右侧：删除当前选中的已录制音频（无选中时禁用）
@@ -1349,11 +1394,14 @@ class TtsTaskWindow(TaskWindowBase):
 
     def _apply_config(self, cfg: TtsTaskConfig) -> None:
         self._text_edit.setPlainText(cfg.text)
-        self._set_ref_audio(cfg.ref_audio_path)
+        # 先恢复设置再设参考：参考为纯人声文件时 _set_ref_audio 会
+        # 强制禁用分离开关并记忆此处的配置值（避免被禁用态覆盖）
         self._task_settings.set_selected_values(
             cfg.task_name, cfg.lang_code, cfg.speed, cfg.generate_srt,
             cfg.output_format, cfg.output_dir,
+            ref_separate=cfg.ref_separate_enabled,
         )
+        self._set_ref_audio(cfg.ref_audio_path)
         self._emotions = dict(cfg.emotions or {})
         # 恢复为手动输入形态：任务名字段复位（文件列表不还原，
         # 文本内容直接进输入框）
@@ -1521,12 +1569,20 @@ class TtsTaskWindow(TaskWindowBase):
             self._set_ref_audio(path)
 
     def _set_ref_audio(self, path: str) -> None:
-        """设置参考音频：更新标签并加载到试听条。"""
+        """设置参考音频：更新标签、加载试听条，并按纯人声标记联动开关。
+
+        文件名带 ●纯人声 / ●Vocals 标记（两种语言后缀都识别）时自动
+        取消勾选并禁用"参考音频人声分离"（防重复分离）；换回普通文件
+        时恢复可用并还原此前的勾选状态。
+        """
         self._ref_audio_path = str(path)
         self._ref_label.setText(Path(path).name)
         self._ref_label.setToolTip(str(path))
         self._audio_player.set_source(str(path))
         self._sync_recorded_selection(str(path))
+        self._task_settings.set_ref_separate_for_pure_voice(
+            is_pure_voice_file(path)
+        )
 
     # ------------------------------------------------------------ 录制参考音频
 
@@ -1548,6 +1604,17 @@ class TtsTaskWindow(TaskWindowBase):
         self._set_ref_audio(path)
         self._panel.log(tr("tts.record_saved", name=Path(path).name))
         self._refresh_recorded_combo(select_path=path)
+
+    def _refresh_recorded_list(self) -> None:
+        """下拉展开前重建列表（保持当前选中项，文件仍在列表时不变）。
+
+        窗口存续期间任务执行可能已向录制目录写入新的参考音频（含
+        ●纯人声/●Vocals 分离产物），每次展开重建即可不关窗口选用。
+        """
+        current = self._recorded_combo.currentData()
+        self._refresh_recorded_combo(
+            select_path=str(current) if current else ""
+        )
 
     def _refresh_recorded_combo(self, select_path: str = "") -> None:
         """重建"已录制音频"下拉（录制目录内 WAV，新→旧排序）。
@@ -1818,6 +1885,7 @@ class TtsTaskWindow(TaskWindowBase):
             task_name=task_name,
             text=text,
             ref_audio_path=self._ref_audio_path,
+            ref_separate_enabled=self._task_settings.ref_separate_enabled(),
             output_dir=self._task_settings.output_dir(),
             lang_code=self._task_settings.lang_code(),
             speed=self._task_settings.speed(),

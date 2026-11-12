@@ -3,7 +3,9 @@
 
 阶段（与 pipeline_panel 的 TTS_PIPELINE_STEPS 对应）：
 01 文本处理 → 分句（。！？!?… 换行，英文句点仅后随空白时切分）、
-    语言自动检测（langid + 中英混排判 zhen）、参考音频 ffmpeg 规范化
+    语言自动检测（langid + 中英混排判 zhen）、参考音频可选人声分离
+    （Demucs 去背景杂音，结果缓存于源参考同目录，见
+    app/pipeline/ref_separate.py）+ ffmpeg 规范化
     （22050Hz 单声道 WAV，规避解码兼容问题）+ RMS 响度归一化
     （低电平参考会连累克隆输出整体偏低，见 _loudness_normalize）；
 02 语音合成 → IndexTTS-2.5 逐句克隆合成（自由时长：不向原片时长对齐，
@@ -35,7 +37,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from app.core.i18n import tr
-from app.core.runner import ReviewPayload, ReviewResult
+from app.core.runner import ReviewPayload, ReviewResult, _file_sig
 from app.core.segment import Segment
 from app.core.workspace import (
     STAGE_TTS_MUX,
@@ -192,6 +194,8 @@ class TtsTaskConfig:
     task_category: str = "文本转语音"  # 工作夹名后缀（固定中文）
     emotions: dict = field(default_factory=dict)  # {句子文本: 情绪 key}
     auto_accept_reviews: bool = False  # 自动通过人工审核（挂机批量）
+    ref_separate_enabled: bool = True  # 参考音频人声分离（去背景杂音；
+    # 分离结果缓存于源参考同目录，选中"●纯人声"文件时任务窗口自动禁用）
     tts_model_dir: str = ""
 
 
@@ -337,7 +341,7 @@ class TtsRunner(QThread):
                 raise RuntimeError(tr("tts_runner.no_text"))
             lang = self._resolve_language(sentences)
             cfg.lang_code = lang
-            self._normalize_ref_audio()
+            self._prepare_ref_audio()
             self._write_json(self._ws.tts_sentences_json, {
                 "lang": lang,
                 "sentences": [
@@ -437,6 +441,38 @@ class TtsRunner(QThread):
     def _normalize_ref_audio(self) -> None:
         """参考音频规范化（模块级 normalize_ref_audio 的薄封装）。"""
         normalize_ref_audio(Path(self._cfg.ref_audio_path), self._ws.tts_ref_audio)
+
+    def _prepare_ref_audio(self) -> None:
+        """参考音频分离（可选）+ 规范化，写入 01_文本处理/ref_audio.wav。
+
+        分离是增强而非必需：失败（含 CPU 重试后仍失败）仅记警告并用
+        原始参考继续；用户取消照常上抛。分离结果缓存于源参考同目录
+        （见 app/pipeline/ref_separate.py），命中缓存时不重跑 Demucs。
+        """
+        from app.pipeline.ref_separate import (
+            is_pure_voice_file,
+            separate_reference_audio,
+        )
+
+        cfg = self._cfg
+        src = Path(cfg.ref_audio_path)
+        if not cfg.ref_separate_enabled or is_pure_voice_file(src):
+            self._normalize_ref_audio()
+            return
+        try:
+            effective = separate_reference_audio(
+                src, self._ws.ensure_stage_dir(STAGE_TTS_TEXT),
+                device=cfg.device,
+                progress=self._stage_progress(STAGE_TTS_TEXT),
+                log=self._log,
+                cancel_exceptions=(_TtsCancelled,),
+            )
+        except _TtsCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 增强步骤失败不终止任务
+            self._log(tr("tts_runner.ref_separate_failed", error=str(exc)))
+            effective = src
+        normalize_ref_audio(effective, self._ws.tts_ref_audio)
 
     def _run_synth(self, sentences: list[dict], lang: str) -> tuple[list[dict], dict]:
         """逐句合成（自由时长），返回 (逐句结果, 复核上下文)；句级断点复用。
@@ -764,16 +800,19 @@ class TtsRunner(QThread):
     def _input_fingerprint(self) -> str:
         """合成输入结构指纹：文本/语速/情绪/参考音频/模型目录任一变化即失效。
 
-        语言不进指纹（auto 识别结果会回写 cfg.lang_code，重试同一配置
-        对象时与原始选择不一致），由 _effective_lang 与 tts_synth_lang
-        标记单独对比。
+        参考音频按文件内容哈希（同路径替换文件内容同样失效）；人声分离
+        开关进指纹（开关切换 → 参考形态变化 → 四阶段重跑）。语言不进
+        指纹（auto 识别结果会回写 cfg.lang_code，重试同一配置对象时与
+        原始选择不一致），由 _effective_lang 与 tts_synth_lang 标记单独
+        对比。
         """
         cfg = self._cfg
         payload = json.dumps({
             "text": cfg.text,
             "speed": float(cfg.speed),
             "emotions": {k: v for k, v in sorted(cfg.emotions.items())},
-            "ref": str(Path(cfg.ref_audio_path).resolve()),
+            "ref": _file_sig(cfg.ref_audio_path),
+            "ref_sep": bool(cfg.ref_separate_enabled),
             "model": cfg.tts_model_dir,
         }, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
