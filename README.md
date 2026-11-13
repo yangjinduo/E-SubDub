@@ -4,7 +4,7 @@
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
-## E-SubDub —— 简单易用的视频字幕与 AI 配音生成工具。
+## E‑SubDub — 声音克隆、AI 配音与视频字幕一体化工具
 
 [English](README-EN.md) | 简体中文
 
@@ -17,30 +17,29 @@
 
 ## 界面预览
 
-![主界面](assets/main-window.png)
+主窗口：
 
-<table>
-  <tr>
-    <td><img src="assets/dubbing-subtitles.png" width="400"></td>
-    <td><img src="assets/generate-subtitles.png" width="400"></td>
-  </tr>
-  <tr>
-    <td align="center">配音与字幕</td>
-    <td align="center">生成字幕</td>
-  </tr>
-  <tr>
-    <td><img src="assets/text-to-speech.png" width="400"></td>
-    <td><img src="assets/settings.png" width="400"></td>
-  </tr>
-  <tr>
-    <td align="center">文本转语音</td>
-    <td align="center">设置</td>
-  </tr>
-</table>
+![主窗口](assets/main-window.png)
+
+配音与字幕：
+
+![配音与字幕](assets/dubbing-subtitles.png)
+
+生成字幕：
+
+![生成字幕](assets/generate-subtitles.png)
+
+文本转语音：
+
+![文本转语音](assets/text-to-speech.png)
+
+设置：
+
+![设置](assets/settings.png)
 
 ## 应用场景
 
-- **短剧出海与多语种译制**：批量导入剧集，自动完成多语种配音与双语字幕，助力短剧出海；也可将喜爱的电视剧译成正在学习的外语，让追剧变成外语学习素材。
+- **短剧出海与多语种译制**：批量导入剧集，通过原说话人音色克隆，自动完成多语种配音与双语字幕，助力短剧出海；也可将喜爱的电视剧译成正在学习的外语，让追剧变成外语学习素材。
 - **有声书批量制作**：提供一段参考音频即可克隆音色，将文本批量合成为有声书音频，并按每句实际时长同步生成 SRT。
 - **音视频字幕生成**：自动识别音视频中的人声，生成带时间轴的分句 SRT 字幕，省去手动听打。
 
@@ -167,8 +166,8 @@ tar -xzf cpython-3.13.5+20250723-x86_64-pc-windows-msvc-install_only_stripped.ta
 | 产物                                  | 说明                                                                                                                                                                  |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `build\dist\ESubDub\`               | onedir 发行目录                                                                                                                                                         |
-| `build\dist\update-feed\`           | Velopack 更新 feed：`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-<版本>.exe`（feed 内首装入口：Inno 向导包以统一命名取代 vpk 原生 `yangjinduo.E-SubDub-win-Setup.exe`，发布资产名与本地构建产物一致） |
-| `build\dist\ESubDub-Setup-<版本>.exe` | Inno 首装包：向导式包装 Velopack Setup.exe（磁盘空间检测 / 分区选择 / 每用户安装），经 `--installto` 静默落盘到用户所选目录                                                                                |
+| `build\dist\update-feed\`           | Velopack 更新 feed：`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-Win64-<版本>.exe`（feed 内首装入口：Inno 向导包以统一命名取代 vpk 原生 `yangjinduo.E-SubDub-win-Setup.exe`，发布资产名与本地构建产物一致） |
+| `build\dist\ESubDub-Setup-Win64-<版本>.exe` | Inno 首装包：向导式包装 Velopack Setup.exe（磁盘空间检测 / 分区选择 / 每用户安装），经 `--installto` 静默落盘到用户所选目录                                                                                |
 
 ### 发版流程（每次出新版本）
 
@@ -214,7 +213,7 @@ $token = '<你的 GitHub Token>'
 vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed --token $token
 ```
 
-手动网页上传时，把 `build\dist\update-feed\` 内**全部文件**（`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-<版本>.exe`）上传到对应 tag 的 Release，覆盖同名旧文件。
+手动网页上传时，把 `build\dist\update-feed\` 内**全部文件**（`releases.win.json` + 全量/增量 nupkg + `ESubDub-Setup-Win64-<版本>.exe`）上传到对应 tag 的 Release，覆盖同名旧文件。
 
 GitHub Token 获取（仅方式二的命令行上传需要，网页上传和云端发布都不需要）：打开 <https://github.com/settings/personal-access-tokens/new> 生成 Fine-grained token——Repository access 只选 `E-SubDub` 仓库，Permissions 里给 **Contents: Read and write**；生成后复制 `github_pat_` 开头的串，发布时贴进上面的 `$token` 变量。个人 token 只在运行命令时临时使用，**切勿写进任何文件提交到仓库**（不慎泄露立即回该页面撤销）。token **不是一次性的**：有效期内（生成时可选，默认 30 天，也可选更长或自定义日期）可反复用于多次发布，到期后重新生成一个即可；发版频率低的话，建议每次现用现生成短有效期 token。
 

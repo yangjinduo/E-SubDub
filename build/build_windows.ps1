@@ -3,10 +3,10 @@
 # 产物：
 #   build\dist\ESubDub\                        onedir 发行目录
 #   build\dist\update-feed\                    Velopack 更新 feed
-#     releases.win.json + 全量/增量 nupkg + ESubDub-Setup-<版本>.exe
+#     releases.win.json + 全量/增量 nupkg + ESubDub-Setup-Win64-<版本>.exe
 #     （feed 内首装入口由 Inno 首装包以统一命名提供，取代 vpk 原生的
 #      yangjinduo.E-SubDub-win-Setup.exe，见阶段 6.6）
-#   build\dist\ESubDub-Setup-<版本>.exe        Inno 首装包
+#   build\dist\ESubDub-Setup-Win64-<版本>.exe        Inno 首装包
 #     （向导式包装 Velopack Setup.exe：磁盘空间检测 / 分区选择沿用，
 #      经 --installto 静默落盘到用户所选目录，见 installer_velopack.iss）
 #
@@ -366,12 +366,12 @@ if ($SkipInstaller) {
 
         # ---- 6.6 Inno 首装包以统一命名进入 feed：删除 vpk 原生
         #      Setup.exe（yangjinduo.E-SubDub-win-Setup.exe），把 Inno 包
-        #      以 ESubDub-Setup-<版本>.exe 复制进 feed，发布资产名与本地
+        #      以 ESubDub-Setup-Win64-<版本>.exe 复制进 feed，发布资产名与本地
         #      产物统一。改名不影响更新链路：releases.win.json 只引用
         #      nupkg，vpk download（下一版生成增量）只拉 Full nupkg，
         #      均不引用 Setup.exe；assets.win.json 的 Installer 条目同步
         #      改名保持元数据一致 ----
-        $InnoSetupExe = Join-Path $DistDir "ESubDub-Setup-$Version.exe"
+        $InnoSetupExe = Join-Path $DistDir "ESubDub-Setup-Win64-$Version.exe"
         if (-not (Test-Path -LiteralPath $InnoSetupExe)) {
             throw "Inno 首装包未找到：$InnoSetupExe"
         }
@@ -384,10 +384,10 @@ if ($SkipInstaller) {
         $AssetsJsonPath = Join-Path $UpdateFeedDir 'assets.win.json'
         if (Test-Path -LiteralPath $AssetsJsonPath) {
             $AssetsJson = Get-Content -Raw -LiteralPath $AssetsJsonPath
-            $AssetsJson = $AssetsJson.Replace($VeloSetupName, "ESubDub-Setup-$Version.exe")
+            $AssetsJson = $AssetsJson.Replace($VeloSetupName, "ESubDub-Setup-Win64-$Version.exe")
             [System.IO.File]::WriteAllText($AssetsJsonPath, $AssetsJson)
         }
-        Write-Host "== 首装包已进入 feed（统一命名 ESubDub-Setup-$Version.exe）==" -ForegroundColor Green
+        Write-Host "== 首装包已进入 feed（统一命名 ESubDub-Setup-Win64-$Version.exe）==" -ForegroundColor Green
     }
 }
 

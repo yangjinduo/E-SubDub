@@ -4,7 +4,7 @@
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
-## E-SubDub — An easy-to-use tool for video subtitles and AI dubbing.
+## E‑SubDub — All‑in‑one tool for voice cloning, AI dubbing and video subtitle generation
 
 English | [简体中文](README.md)
 
@@ -17,30 +17,29 @@ English | [简体中文](README.md)
 
 ## Screenshots
 
+Main Window:
+
 ![Main Window](assets/main-window.png)
 
-<table>
-  <tr>
-    <td><img src="assets/dubbing-subtitles.png" width="400"></td>
-    <td><img src="assets/generate-subtitles.png" width="400"></td>
-  </tr>
-  <tr>
-    <td align="center">Dubbing & Subtitles</td>
-    <td align="center">Generate Subtitles</td>
-  </tr>
-  <tr>
-    <td><img src="assets/text-to-speech.png" width="400"></td>
-    <td><img src="assets/settings.png" width="400"></td>
-  </tr>
-  <tr>
-    <td align="center">Text-to-Speech</td>
-    <td align="center">Settings</td>
-  </tr>
-</table>
+Dubbing & Subtitles:
+
+![Dubbing & Subtitles](assets/dubbing-subtitles.png)
+
+Generate Subtitles:
+
+![Generate Subtitles](assets/generate-subtitles.png)
+
+Text-to-Speech:
+
+![Text-to-Speech](assets/text-to-speech.png)
+
+Settings:
+
+![Settings](assets/settings.png)
 
 ## Use Cases
 
-- **Short-drama localization & multi-language dubbing**: batch-import episodes and automatically produce multi-language dubbing with bilingual subtitles — ideal for taking short dramas global. You can also translate your favorite TV series into the language you are learning and turn watching into foreign-language study material.
+- **Short-drama localization & multi-language dubbing**: batch-import episodes, clone the original speaker’s voice, and automatically produce multi-language dubbing with bilingual subtitles — ideal for taking short dramas global. You can also translate your favorite TV series into the language you are learning and turn watching into foreign-language study material.
 - **Audiobook batch production**: provide a single reference audio to clone a voice, batch-synthesize texts into audiobook audio, with SRT subtitles generated from actual sentence durations.
 - **Audio/video subtitling**: automatically recognize speech in audio and video and generate timestamped, sentence-level SRT subtitles — no more manual transcription.
 
@@ -154,7 +153,7 @@ How to package (from the project root, in a terminal with the build venv activat
 .\build\build_windows.ps1 -SkipInstaller # Produce only the onedir distribution
 ```
 
-Artifacts: `build\dist\ESubDub\` (onedir distribution), `build\dist\update-feed\` (Velopack update feed: `releases.win.json` + full/delta nupkg + Setup.exe) and `build\dist\ESubDub-Setup-<version>.exe` (Inno Setup installer). The single source of truth for the version number is `APP_VERSION` in `app/core/config.py`; the script parses it from that file automatically.
+Artifacts: `build\dist\ESubDub\` (onedir distribution), `build\dist\update-feed\` (Velopack update feed: `releases.win.json` + full/delta nupkg + Setup.exe) and `build\dist\ESubDub-Setup-Win64-<version>.exe` (Inno Setup installer). The single source of truth for the version number is `APP_VERSION` in `app/core/config.py`; the script parses it from that file automatically.
 
 ### Release Workflow (per new version)
 
@@ -200,7 +199,7 @@ $token = '<your GitHub token>'
 vpk upload github --repoUrl https://github.com/yangjinduo/E-SubDub --publish --tag v0.1.1 --outputDir build\dist\update-feed --token $token
 ```
 
-For manual web upload, upload **all files** inside `build\dist\update-feed\` (`releases.win.json` + full/delta nupkg + `ESubDub-Setup-<version>.exe`) to the Release of the corresponding tag, overwriting same-named files.
+For manual web upload, upload **all files** inside `build\dist\update-feed\` (`releases.win.json` + full/delta nupkg + `ESubDub-Setup-Win64-<version>.exe`) to the Release of the corresponding tag, overwriting same-named files.
 
 Getting a GitHub token (only needed for the CLI upload in Option 2 — neither the web upload nor the cloud build needs one): open https://github.com/settings/personal-access-tokens/new and generate a fine-grained token — under Repository access select only the `E-SubDub` repository, and grant **Contents: Read and write** under Permissions. Copy the generated `github_pat_...` string and paste it into the `$token` variable above when publishing. Use the personal token only at command runtime and **never commit it to any file in the repo** (revoke it immediately on that page if leaked). The token is **not single-use**: within its expiration (selected at creation, 30 days by default, with longer or custom options) it can be reused for multiple releases — simply generate a new one once it expires; for infrequent releases, generating a short-lived token on demand each time is recommended.
 

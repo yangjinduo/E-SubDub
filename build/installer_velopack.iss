@@ -58,7 +58,7 @@ PrivilegesRequired=lowest
 ; 安装根目录（含 models 等数据）
 Uninstallable=no
 OutputDir=dist
-OutputBaseFilename=ESubDub-Setup-{#AppVersion}
+OutputBaseFilename=ESubDub-Setup-Win64-{#AppVersion}
 SetupIconFile=..\app\resources\logo\E-SubDub.ico
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
