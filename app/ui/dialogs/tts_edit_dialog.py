@@ -12,7 +12,7 @@
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QStyle,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -58,16 +61,42 @@ def emotion_color(key) -> str:
     return "#0D9488"
 
 
+class _EmotionItemDelegate(QStyledItemDelegate):
+    """弹出列表委托：悬停/选中高亮时保持各情绪自己的文字颜色。
+
+    全局 QSS 的 selection-color 只有一个（高亮文字灰），会盖掉 item
+    的 ForegroundRole 着色；QSS 无法按 item 写 selection-color，这里
+    在绘制时把该项的 HighLightedText 一并改成其自身颜色，使高亮只改
+    背景、不改字色。
+    """
+
+    def paint(self, painter, option, index) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        color = index.data(Qt.ItemDataRole.ForegroundRole)
+        if isinstance(color, QColor):
+            opt.palette.setBrush(QPalette.ColorRole.Text, color)
+            opt.palette.setBrush(QPalette.ColorRole.HighlightedText, color)
+        widget = opt.widget
+        style = widget.style() if widget is not None else self.parent().style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+
 class _EmotionCombo(QComboBox):
     """情绪选择下拉：当前选项以对应颜色显示。"""
 
     def __init__(self, current, parent=None) -> None:
         super().__init__(parent)
+        # QComboBox 自带的弹出列表委托忽略 ForegroundRole（各选项无法
+        # 各自着色），且高亮态会被全局 QSS 的 selection-color 拍成同一
+        # 灰色；换自定义委托后按 item 数据着色、高亮不改字色
+        self.view().setItemDelegate(_EmotionItemDelegate(self.view()))
         for item_key, i18n_key, color in EMOTION_ITEMS:
             self.addItem(tr(i18n_key), item_key)
-            # 下拉列表项文本着色（弹出菜单内一目了然）
+            # 下拉列表项文本着色（弹出菜单内一目了然）。必须传 QColor：
+            # 字符串不会按 ForegroundRole 转成画刷，着色会被静默忽略
             self.setItemData(
-                self.count() - 1, color, Qt.ItemDataRole.ForegroundRole,
+                self.count() - 1, QColor(color), Qt.ItemDataRole.ForegroundRole,
             )
         index = next(
             (i for i, (k, _ik, _c) in enumerate(EMOTION_ITEMS) if k == current),
@@ -78,10 +107,13 @@ class _EmotionCombo(QComboBox):
         self.currentIndexChanged.connect(lambda _i: self._apply_color())
 
     def _apply_color(self) -> None:
-        """当前情绪的文本颜色应用到下拉框（表格内快速识别）。"""
-        color = emotion_color(self.currentData())
+        """当前情绪的文本颜色应用到下拉框收起态（表格内快速识别）。
+
+        不能用 QPalette：全局 QSS 的 QWidget{color} 会覆盖调色板取色。
+        """
         self.setStyleSheet(
-            f"QComboBox {{ color: {color}; font-weight: 600; }}"
+            f"QComboBox {{ color: {emotion_color(self.currentData())}; font-weight: 600; }}"
+            f"QComboBox:disabled {{ color: {tokens()['input_disabled_text']}; }}"
         )
 
     def emotion_key(self):
