@@ -11,13 +11,17 @@ requests 默认读取系统代理（浏览器同栈），connect/read 超时按 
 职责（全部同步阻塞，调用方负责放后台线程，见 app/ui/updater_flow.py）：
 - fetch_feed()：拉取 releases.win.json，官方 / 镜像按设置优先，
   一端失败自动换另一端；
-- pick_full_asset()：选出 feed 中版本最高的 Full nupkg 条目
-  （不做 delta 选择复制，正确性优先；增量能力由回退的 velopack
-  原生流程保留）；
+- pick_full_asset()：选出 feed 中版本最高的 Full nupkg 条目；
+- pick_delta_asset()：选与目标 Full 同版本的 Delta nupkg 条目
+  （有则启用增量：只下载几 MB 的补丁，由 velopack 在本机用
+  packages 目录里的基线 full 包重建目标 full 包；无则走全量）；
 - download_nupkg()：流式下载 + 实时进度 + 取消 + SHA256 校验；
-- build_local_feed()：把选中条目写为单条目本地 feed，供本地目录源
-  的 UpdateManager 消费（check / download / apply 全走本地文件，
-  不再碰网络）。
+- build_local_feed()：把选中条目写为本地 feed，供本地目录源的
+  UpdateManager 消费（check / download / apply 全走本地文件，
+  不再碰网络）。增量路径写入 Full+Delta 两条目——velopack 的
+  策略：feed 中存在与目标版本同 Version 的 Delta 条目即启用
+  增量，基线取自本机 packages 目录已安装的 full 包，补丁重建
+  由 Update.exe patch 完成，重建失败自动回退从源下载 full。
 """
 
 from __future__ import annotations
@@ -120,6 +124,23 @@ def pick_full_asset(feed: dict) -> dict | None:
     return max(fulls, key=lambda a: _version_key(a.get("Version", "")))
 
 
+def pick_delta_asset(feed: dict, full_asset: dict) -> dict | None:
+    """与目标 Full 同版本的 Delta nupkg 条目（无则返回 None）。
+
+    velopack（vpk pack）只为相邻版本生成 delta，且 GitHub
+    releases/latest 的 feed 只含最新版本条目——因此只有"用户
+    已装上一版、最新版正好有 delta"时才有增量机会，其余情况
+    返回 None 走全量，不影响正确性。
+    """
+    target = str(full_asset.get("Version") or "")
+    if not target:
+        return None
+    for a in feed.get("Assets", []):
+        if a.get("Type") == "Delta" and str(a.get("Version")) == target:
+            return a
+    return None
+
+
 def is_newer(asset: dict, current_version: str) -> bool:
     """feed 条目版本是否高于本地已安装版本。"""
     return _version_key(asset.get("Version", "")) > _version_key(current_version)
@@ -181,14 +202,16 @@ def download_nupkg(
     return dest
 
 
-def build_local_feed(dest_dir: Path, asset: dict) -> Path:
-    """把选中条目写为单条目本地 feed（releases.win.json）。
+def build_local_feed(dest_dir: Path, assets: list[dict]) -> Path:
+    """把选中的条目写为本地 feed（releases.win.json）。
 
-    单条目（仅目标 Full 包）保证本地源的 UpdateManager 不会试图
-    拉取未下载的 delta / 旧版条目。
+    只写入已下载到位的条目（增量路径 = Full+Delta 两条，全量路径
+    = Full 一条），保证本地源的 UpdateManager 不会试图拉取未下载
+    的条目；Full 条目必须始终在场——它是 velopack 增量重建失败时
+    的回退目标。
     """
     feed_path = dest_dir / FEED_NAME
     feed_path.write_text(
-        json.dumps({"Assets": [asset]}, ensure_ascii=False), encoding="utf-8"
+        json.dumps({"Assets": assets}, ensure_ascii=False), encoding="utf-8"
     )
     return feed_path

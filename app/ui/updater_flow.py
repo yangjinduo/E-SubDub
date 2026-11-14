@@ -3,10 +3,12 @@
 流程（2026-11 破局改造，两层）：
 1. 首选自建传输层（app/core/updater_net.py：requests 走系统代理、
    连接/读超时真实生效、流式下载可随时中止——与浏览器同栈）：
-   拉取 feed 比较版本 → 确认弹窗 → 下载 Full nupkg 到用户目录缓存 →
-   写单条目本地 feed → UpdateManager(本地路径) check → download
-   （本地拷贝）→ 询问重启时机 → 立即重启或稍后安装（下次启动生
-   效）。修复国内代理网络下
+   拉取 feed 比较版本 → 确认弹窗 → 下载更新包到用户目录缓存
+   （增量优先：有 Delta 条目时只下载几 MB 的补丁包，由 velopack
+   用本机 packages 目录的基线 full 包重建目标 full 包，任一环节
+   失败自动改走全量下载）→ 写本地 feed → UpdateManager(本地路径)
+   check → download（本地拷贝）→ 询问重启时机 → 立即重启或稍后
+   安装（下次启动生效）。修复国内代理网络下
    velopack（ureq 不读系统代理 + 默认永不超时）"检测不到 / 下载
    永远 0%"的死局。
 2. 传输层两端（官方 + 镜像）都失败时，回退 velopack 原生网络流程
@@ -260,7 +262,7 @@ class UpdateController(QObject):
     """一次更新流程的控制器：后台任务的信号汇聚点（主线程）。"""
 
     # ---- 自建传输层（首选路径）----
-    net_check_finished = Signal(object)     # {"asset","base"} 或 None（已最新）
+    net_check_finished = Signal(object)     # {"full","delta","base"} 或 None（已最新）
     net_check_failed = Signal(str)
     net_download_progress = Signal(int)     # 0-100
     net_download_finished = Signal(object)  # {"info","manager"}
@@ -284,8 +286,8 @@ class UpdateController(QObject):
     def start_net_check(self) -> None:
         QThreadPool.globalInstance().start(_NetCheckTask(self))
 
-    def start_net_download(self, asset: dict, base: str) -> None:
-        QThreadPool.globalInstance().start(_NetDownloadTask(self, asset, base))
+    def start_net_download(self, full: dict, delta: dict | None, base: str) -> None:
+        QThreadPool.globalInstance().start(_NetDownloadTask(self, full, delta, base))
 
     def start_check(self) -> None:
         QThreadPool.globalInstance().start(_CheckTask(self))
@@ -311,71 +313,136 @@ class _NetCheckTask(QRunnable):
                 c.net_check_failed.emit(f"无法读取当前版本：{exc}")
                 return
             feed, base = updater_net.fetch_feed()
-            asset = updater_net.pick_full_asset(feed)
-            if asset is None or not updater_net.is_newer(asset, current):
+            full = updater_net.pick_full_asset(feed)
+            if full is None or not updater_net.is_newer(full, current):
                 c.net_check_finished.emit(None)
             else:
-                c.net_check_finished.emit({"asset": asset, "base": base})
+                delta = updater_net.pick_delta_asset(feed, full)
+                if delta is not None:
+                    logger.info(
+                        "发现增量更新：目标 %s（delta %.1f MB / full %.1f MB）",
+                        full.get("Version"),
+                        (delta.get("Size") or 0) / 1024 / 1024,
+                        (full.get("Size") or 0) / 1024 / 1024,
+                    )
+                c.net_check_finished.emit(
+                    {"full": full, "delta": delta, "base": base}
+                )
         except Exception as exc:
             logger.exception("自建传输层检查更新失败")
             c.net_check_failed.emit(str(exc))
 
 
 class _NetDownloadTask(QRunnable):
-    """自建传输层下载：Full nupkg 流式下载（官方/镜像互备）→ 写本地
-    feed → 本地源 UpdateManager check/download（本地拷贝）。"""
+    """自建传输层下载：增量优先，失败自动改走全量。
 
-    def __init__(self, controller: UpdateController, asset: dict, base: str) -> None:
+    增量路径：requests 下载 delta nupkg（几 MB）→ 本地 feed 写
+    Full+Delta 两条目 → 本地源 UpdateManager check/download——
+    velopack 自行用本机 packages 目录的基线 full 包执行 Update.exe
+    patch 重建目标 full 包；基线不匹配 / 补丁损坏时 zstd 字典解码
+    校验失败，velopack 内部先试从本地源取 Full 回退（全量文件未
+    下载、必然失败），最终抛错到这里——统一改走全量路径。
+
+    全量路径：requests 下载 full nupkg（百余 MB）→ 单条目 feed →
+    本地 check/download（秒级本地拷贝）。
+    """
+
+    def __init__(
+        self,
+        controller: UpdateController,
+        full: dict,
+        delta: dict | None,
+        base: str,
+    ) -> None:
         super().__init__()
         self._controller = controller
-        self._asset = asset
+        self._full = full
+        self._delta = delta
         self._base = base
+
+    # 清空下载缓存（旧 nupkg / 中断的 .part / 上一路径的半成品），
+    # 固定目录反复复用，不产生孤儿临时文件
+    @staticmethod
+    def _clean_cache(cache) -> None:
+        for stale in cache.iterdir():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
+    def _bases(self) -> list[str]:
+        bases = [self._base]
+        other = (
+            updater_net.MIRROR_BASE
+            if self._base == updater_net.OFFICIAL_BASE
+            else updater_net.OFFICIAL_BASE
+        )
+        if other not in bases:
+            bases.append(other)
+        return bases
+
+    def _download(self, asset: dict, cache) -> None:
+        """官方/镜像互备下载一个 nupkg 条目（进度/取消接控制器）。"""
+        c = self._controller
+        errors: list[str] = []
+        for base in self._bases():
+            try:
+                updater_net.download_nupkg(
+                    base,
+                    asset,
+                    cache,
+                    progress=lambda pct: c.net_download_progress.emit(pct),
+                    cancelled=c.net_cancel.is_set,
+                )
+                return
+            except UpdateCancelled:
+                raise
+            except Exception as exc:
+                logger.warning("更新包下载失败（%s）：%s", base, exc)
+                errors.append(f"{base}: {exc}")
+        raise updater_net.UpdateNetError("；".join(errors))
+
+    def _check_and_download(self, cache, feed_assets: list[dict]):
+        """写本地 feed → 本地源 check → download（返回 UpdateInfo）。
+
+        download 的进度回调照常转发：本地源拷贝有进度；增量路径的
+        patch 重建阶段（zstd 解压基线 + 打补丁 + 重压缩，约十几秒）
+        不产进度信号——60 秒下载看门狗期间恰好覆盖，真机验证后如
+        有误杀再调看门狗。
+        """
+        c = self._controller
+        updater_net.build_local_feed(cache, feed_assets)
+        manager = updater.create_local_update_manager(cache)
+        info = manager.check_for_updates()
+        if info is None:
+            raise updater_net.UpdateNetError("本地更新源未发现新版本")
+        manager.download_updates(
+            info, lambda pct: c.net_download_progress.emit(int(pct))
+        )
+        return info, manager
 
     def run(self) -> None:
         c = self._controller
         try:
             cache = updater_net.update_cache_dir()
-            # 清空上次残留（旧 nupkg / 中断的 .part），固定目录反复复用
-            for stale in cache.iterdir():
+            # 增量路径：任一环节失败 → 清缓存改走全量（用户取消除外）
+            if self._delta is not None:
                 try:
-                    stale.unlink()
-                except OSError:
-                    pass
-            bases = [self._base]
-            other = (
-                updater_net.MIRROR_BASE
-                if self._base == updater_net.OFFICIAL_BASE
-                else updater_net.OFFICIAL_BASE
-            )
-            if other not in bases:
-                bases.append(other)
-            downloaded = False
-            errors: list[str] = []
-            for base in bases:
-                try:
-                    updater_net.download_nupkg(
-                        base,
-                        self._asset,
-                        cache,
-                        progress=lambda pct: c.net_download_progress.emit(pct),
-                        cancelled=c.net_cancel.is_set,
+                    self._clean_cache(cache)
+                    self._download(self._delta, cache)
+                    info, manager = self._check_and_download(
+                        cache, [self._full, self._delta]
                     )
-                    downloaded = True
-                    break
+                    c.net_download_finished.emit({"info": info, "manager": manager})
+                    return
                 except UpdateCancelled:
                     raise
                 except Exception as exc:
-                    logger.warning("更新包下载失败（%s）：%s", base, exc)
-                    errors.append(f"{base}: {exc}")
-            if not downloaded:
-                raise updater_net.UpdateNetError("；".join(errors))
-            updater_net.build_local_feed(cache, self._asset)
-            manager = updater.create_local_update_manager(cache)
-            info = manager.check_for_updates()
-            if info is None:
-                c.net_download_failed.emit("本地更新源未发现新版本")
-                return
-            manager.download_updates(info)  # 本地拷贝（秒级），无需进度
+                    logger.warning("增量更新失败，改走全量下载：%s", exc)
+            # 全量路径
+            self._clean_cache(cache)
+            self._download(self._full, cache)
+            info, manager = self._check_and_download(cache, [self._full])
             c.net_download_finished.emit({"info": info, "manager": manager})
         except UpdateCancelled:
             c.net_download_cancelled.emit()
@@ -433,13 +500,16 @@ def _confirm_and_install_net(
     on_done：流程到达终态（拒绝 / 关闭窗口 / 取消 / 失败 / 应用异常 /
     选择稍后重启）时回调；选择立即重启且成功则直接重启进程，不回调。
     """
-    asset = payload["asset"]
-    version = str(asset.get("Version") or "?")
-    size = int(asset.get("Size") or 0)
+    full = payload["full"]
+    delta = payload.get("delta")
+    version = str(full.get("Version") or "?")
+    # 体积提示按实际下载量：有增量时显示补丁体积（几 MB），否则全量
+    size_asset = delta if delta is not None else full
+    size = int(size_asset.get("Size") or 0)
     size_hint = (
         tr("updater.size_hint", size=f"{size / 1024 / 1024:.0f}") if size > 0 else ""
     )
-    notes = (asset.get("NotesMarkdown") or "").strip()
+    notes = (full.get("NotesMarkdown") or "").strip()
     if not _ask_confirm(version, size_hint, notes):
         _release(controller)
         if on_done is not None:
@@ -531,7 +601,7 @@ def _confirm_and_install_net(
         controller.net_download_failed.connect(on_failed)
         controller.net_download_cancelled.connect(on_cancelled)
         stall.start()
-        controller.start_net_download(asset, payload["base"])
+        controller.start_net_download(full, delta, payload["base"])
     except Exception as exc:
         # 0.1.4 的教训：冻结版无控制台，槽内异常无声消失，进度窗变
         # 僵尸——这里兜底：日志 + 关窗 + 错误框 + 逃生链接
