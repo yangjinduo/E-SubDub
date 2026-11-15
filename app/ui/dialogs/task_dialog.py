@@ -608,6 +608,11 @@ class MediaTaskWindowBase(TaskWindowBase):
         开关状态由任务启动记入 manifest，切换后 ASR 及下游失效重跑
         （runner 侧处理），此处仅刷新显示。
         """
+        # 配音任务恒走 10 步全量链（分离是固有步骤，无开关）：重开已完成
+        # 任务时 _apply_config 也会调到此处，须跳过以防步骤链被字幕任务的
+        # 6/7 步列表覆盖（tts / tts_review / mix 三步丢失）
+        if self._dubbing_enabled:
+            return
         steps = (
             SUBTITLE_SEPARATE_PIPELINE_STEPS if checked
             else SUBTITLE_PIPELINE_STEPS
