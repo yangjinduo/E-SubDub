@@ -49,7 +49,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "common.model_homepage": "模型主页",
         "common.log_hint": "详细日志：{path}",
         # ---- 主窗口 ----
-        "main.title": "E-SubDub",
+        # 中文名"声幕"为界面中文显示名（真值源：AppConfig.APP_NAME_ZH）；
+        # 英文界面显示 E-SubDub（AppConfig.APP_NAME），技术标识符仍为 ESubDub
+        "main.title": "声幕",
         "main.start": "开始处理",
         "main.start_batch": "开始批量处理",
         "main.log.batch_started": "开始批量处理：共 {count} 个文件",

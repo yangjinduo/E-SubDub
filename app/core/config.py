@@ -68,11 +68,17 @@ _APP_ROOT, _DATA_ROOT = _resolve_roots()
 class AppConfig:
     """全局配置类。"""
 
-    # 应用名称：E 表示 EASY（与中文“易”同音）；SubDub = Subtitle + Dubbing
+    # 应用英文名（规范名，对外统一标识）：E 表示 EASY（与中文“易”同音）；SubDub = Subtitle + Dubbing。技术标识符（exe 名 / 配置目录名）
+    # 为无空格无连字符的 ESubDub，见 i18n.APP_NAME
     APP_NAME: str = "E-SubDub"
 
+    # 应用中文名：声 = 声音克隆，幕 = 字幕（亦合"银幕"的视频语境）。
+    # 界面语言为中文时的显示名（窗口标题等），英文界面仍显示 APP_NAME；
+    # 取词见 i18n 的 main.title
+    APP_NAME_ZH: str = "声幕"
+
     # 应用版本（语义化版本）
-    APP_VERSION: str = "0.1.7"
+    APP_VERSION: str = "0.1.8"
 
     # 应用根目录（程序自身资源所在，等价于 Velopack 的 current：
     # 开发态=项目根；冻结态=exe 所在目录，只读资源随包分发）

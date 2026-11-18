@@ -1,12 +1,12 @@
-﻿E-SubDub End User License Agreement (EULA)
+﻿E-SubDub (声幕) End User License Agreement (EULA)
 
-Version: v1.0    Effective date: November 7, 2026
+Version: v1.1    Effective date: November 18, 2026
 
-IMPORTANT: This Agreement is a legal agreement between you and the copyright holder of this software (the "Developer") covering the E-SubDub installer and its bundled components. Please read it in full before installing, in particular Section 3 (Restrictions on Use) and Section 5 (Disclaimer), which set out your obligations and the allocation of risk. By clicking "I accept the agreement", or by continuing to install or run this software, you confirm that you have read, understood and agree to be bound by all of its terms. If you do not agree, click "Cancel" to exit the installer and delete the downloaded file.
+IMPORTANT: This Agreement is a legal agreement between you and the copyright holder of this software (the "Developer") covering the 声幕 (E-SubDub) installer and its bundled components. Please read it in full before installing, in particular Section 3 (Restrictions on Use) and Section 5 (Disclaimer), which set out your obligations and the allocation of risk. By clicking "I accept the agreement", or by continuing to install or run this software, you confirm that you have read, understood and agree to be bound by all of its terms. If you do not agree, click "Cancel" to exit the installer and delete the downloaded file.
 
 1. Definitions
 
-1.1 "Software" means the E-SubDub desktop application, including the program files in the installer, the bundled FFmpeg, third-party runtimes and components, samples and documentation, and any version subsequently delivered through automatic updates.
+1.1 "Software" means the 声幕 (E-SubDub) desktop application, including the program files in the installer, the bundled FFmpeg, third-party runtimes and components, samples and documentation, and any version subsequently delivered through automatic updates.
 
 1.2 "Developer" means the copyright holder of the Software and its authorized distributors. Contact details are in Section 9.
 
@@ -22,7 +22,7 @@ IMPORTANT: This Agreement is a legal agreement between you and the copyright hol
 
 2.3 Local, offline nature. The Software is a local, offline tool and provides no cloud service. Except for the network activity described in Section 6, the Developer neither hosts, receives nor stores your input materials or Generated Content.
 
-2.4 Reservation of rights. All rights not expressly granted are reserved by the Developer. This Agreement grants you no right to use the "E-SubDub" name or marks for commercial promotion, other than fair use permitted by Section 6 of Apache-2.0 and objectively descriptive references.
+2.4 Reservation of rights. All rights not expressly granted are reserved by the Developer. This Agreement grants you no right to use the "E-SubDub" or "声幕" name or marks for commercial promotion, other than fair use permitted by Section 6 of Apache-2.0 and objectively descriptive references.
 
 3. Restrictions on Use (core provisions — please read carefully)
 

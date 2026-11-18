@@ -4,13 +4,13 @@
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
-## E‑SubDub — All‑in‑one tool for voice cloning, AI dubbing and video subtitle generation
+## 声幕 (E‑SubDub) — All‑in‑one tool for voice cloning, AI dubbing and video subtitle generation
 
 English | [简体中文](README.md)
 
 </div>
 
-> **About the name**: E = Easy (simple to use); SubDub = Subtitle + Dubbing.
+> **About the name**: The Chinese name **声幕** (Shēngmù) combines 声 (voice) and 幕 (subtitle / screen). E = Easy (simple to use); SubDub = Subtitle + Dubbing.
 
 - Platforms: Windows / macOS
 - UI languages: 简体中文 / English

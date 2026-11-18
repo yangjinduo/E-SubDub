@@ -1,16 +1,16 @@
 <div align="center">
 
-# E-SubDub
+# 声幕（E-SubDub）
 
 ![E-SubDub](app/resources/logo/E-SubDub.png)
 
-## E‑SubDub — 声音克隆、AI 配音与视频字幕一体化工具
+## 声幕（E‑SubDub）— 声音克隆、AI 配音与视频字幕一体化工具
 
 [English](README-EN.md) | 简体中文
 
 </div>
 
-> **名称由来**：E = Easy（容易，与中文“易”同音，操作简单）；SubDub = Subtitle + Dubbing（字幕 + 配音）。
+> **名称由来**：中文名**声幕**——声，即声音克隆；幕，即字幕，亦合"银幕"的视频语境。英文名 E = Easy（容易，与中文"易"同音，操作简单）；SubDub = Subtitle + Dubbing（字幕 + 配音）。
 
 - 平台：Windows / macOS
 - 界面语言：简体中文 / English

@@ -1,10 +1,10 @@
-﻿E-SubDub Notice and Disclaimer
+﻿E-SubDub (声幕) Notice and Disclaimer
 
-Version: v1.0    Last updated: November 7, 2026
+Version: v1.1    Last updated: November 18, 2026
 
 1. General
 
-1.1 This Notice applies to all users of E-SubDub (the "Software"), a locally-run, offline subtitle-generation and AI dubbing tool built on open-source models for speech recognition, subtitle translation, voice cloning and audio/video packaging.
+1.1 This Notice applies to all users of E-SubDub, also known as 声幕 (the "Software"), a locally-run, offline subtitle-generation and AI dubbing tool built on open-source models for speech recognition, subtitle translation, voice cloning and audio/video packaging.
 
 1.2 By using the Software you confirm that you have read, understood and agree to this Notice in full. If you do not agree, stop using the Software and uninstall it.
 

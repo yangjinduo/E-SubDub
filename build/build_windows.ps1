@@ -131,7 +131,7 @@ $NuitkaArgs = @(
     '--windows-console-mode=disable'
     '--windows-icon-from-ico=app\resources\logo\E-SubDub.ico'
     '--company-name=ESubDub'
-    '--product-name=E-SubDub'
+    '--product-name=声幕（E-SubDub）'
     "--file-version=$Version"
     "--product-version=$Version"
     '--file-description=极简字幕与 AI 配音生成工具'
@@ -248,7 +248,9 @@ if ($SkipInstaller) {
         '--packVersion', $Version,
         '--packDir', $AppDist,
         '--mainExe', 'ESubDub.exe',
-        '--packTitle', 'E-SubDub',
+        # packTitle 与 Inno 快捷方式名保持一致（声幕），避免 Velopack
+        # 更新重建快捷方式时产生两套命名
+        '--packTitle', '声幕',
         '--channel', 'win',
         # 不产 Portable.zip：便携包无许可协议页，与"唯一安装入口"冲突
         '--noPortable',

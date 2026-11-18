@@ -39,7 +39,7 @@
 
 [Setup]
 AppId={{5A1F0E2B-3C4D-4E5F-8A9B-6C7D8E9F0A1B}
-AppName=E-SubDub
+AppName=声幕（E-SubDub）
 AppVersion={#AppVersion}
 AppPublisher=E-SubDub
 ; 默认目录经 {code:} 脚本化（见 GetDefaultDir）：剩余空间最大的固定
@@ -47,7 +47,7 @@ AppPublisher=E-SubDub
 ; ——那会把静默安装的 /DIR= 命令行参数一并覆盖掉
 DefaultDirName={code:GetDefaultDir}
 UsePreviousAppDir=no
-DefaultGroupName=E-SubDub
+DefaultGroupName=声幕（E-SubDub）
 DisableProgramGroupPage=yes
 ; 跳过欢迎页：双击安装后直接进入目录选择页
 DisableWelcomePage=yes
@@ -92,15 +92,17 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 Source: "{#VeloSetupPath}"; DestDir: "{tmp}"; DestName: "ESubDub-Velopack-Setup.exe"; Flags: deleteafterinstall
 
 [Icons]
-; current 目录名跨 Velopack 更新稳定：快捷方式始终指向有效启动桩
-Name: "{autoprograms}\E-SubDub"; Filename: "{app}\current\ESubDub.exe"
-Name: "{autodesktop}\E-SubDub"; Filename: "{app}\current\ESubDub.exe"; Tasks: desktopicon
+; current 目录名跨 Velopack 更新稳定：快捷方式始终指向有效启动桩。
+; 快捷方式名「声幕」与 vpk packTitle 一致（Velopack 更新时按 packTitle
+; 重建快捷方式，两侧命名不同会产生重复快捷方式）
+Name: "{autoprograms}\声幕"; Filename: "{app}\current\ESubDub.exe"
+Name: "{autodesktop}\声幕"; Filename: "{app}\current\ESubDub.exe"; Tasks: desktopicon
 
 [Run]
 ; Velopack 静默安装到用户所选目录：产出 {app}\current\（onedir 程序）
 ; 与 {app}\Update.exe（更新器），全程无界面
-Filename: "{tmp}\ESubDub-Velopack-Setup.exe"; Parameters: "--installto ""{app}"" --silent"; Flags: waituntilterminated; StatusMsg: "正在安装 E-SubDub…"
-Filename: "{app}\current\ESubDub.exe"; Description: "启动 E-SubDub"; Flags: nowait postinstall skipifsilent
+Filename: "{tmp}\ESubDub-Velopack-Setup.exe"; Parameters: "--installto ""{app}"" --silent"; Flags: waituntilterminated; StatusMsg: "正在安装声幕（E-SubDub）…"
+Filename: "{app}\current\ESubDub.exe"; Description: "启动声幕"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
